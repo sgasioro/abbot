@@ -233,6 +233,20 @@ class Campaign:
             return
         self._seed_queue.extend(list(designs))
 
+    def load_history(self, history: History) -> None:
+        """Append already-measured records (e.g. imported from CSV) to the history.
+
+        Unlike ``seed`` (which queues designs to be *run*), these are prior results
+        folded straight in and persisted, so the next ``suggest`` fits on them. Any
+        unmeasured seed queue is cleared — imported data supersedes it.
+        """
+        self._seed_queue.clear()
+        for record in history.records:
+            step = len(self.history)
+            self.history.append(record)
+            if self.store is not None:
+                self.store.save_step(step, record)
+
     # -- ask/tell --
 
     def suggest(self, n: int = 1) -> list[dict]:

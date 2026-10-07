@@ -59,7 +59,12 @@ model): an **adaptive model view** — 1-D posterior mean ± uncertainty band, 2
 posterior-mean contour, or a 1-D/2-D slice through the best point for 3-D+ (with
 variable selectors) — plus a dimension-agnostic **parity plot** (predicted vs
 observed), a **convergence / hypervolume** trace, the recommended design(s), and
-the history table.
+the history table. Per-step the plots **update in place** (`update_figure`),
+rebuilt only on create/reset/selector-change, so auto-run stays smooth.
+
+**Import / export** (via `abbot/io.py`, pure functions): download the `ProblemSpec`
+as JSON or the run history as CSV; upload a spec JSON to populate the editor, or a
+history CSV to seed/resume a campaign (`Campaign.load_history`).
 
 The engine is **natively multi-objective** and **maximize-canonical**: an
 `evaluate` callback returns raw physical measurements (one column per objective,

@@ -59,6 +59,15 @@ class UIState:
         # Auto-run state — created ONCE per page (see _build_page), never inside a
         # refreshable, so a panel refresh can't orphan the timer or reset the flag.
         self.auto_running = False
+        # Panel refreshers + viz widget handles, set during _build_page / _viz_panel.
+        # Per-step updates mutate these in place (no teardown -> no jitter).
+        self._left = None
+        self._right = None
+        self._plot_model = None
+        self._plot_conv = None
+        self._plot_parity = None
+        self._rec_box = None
+        self._table = None
 
     def start_campaign(self) -> None:
         spec = build_spec(self.variable_rows, self.objective_rows)  # may raise
@@ -314,6 +323,7 @@ def _build_page() -> None:
                     ui.button("Create campaign", icon="rocket_launch", on_click=_create).props(
                         "color=indigo"
                     )
+                    _import_spec_control(state)
                 else:
                     _control_panel(state)
 
@@ -348,7 +358,7 @@ def _build_page() -> None:
             logger.exception("auto step failed")
             state.auto_running = False
             return
-        state._right.refresh()
+        _update_viz(state)  # in-place update; no teardown -> smooth
 
     ui.timer(0.5, _auto_tick)  # always active; gated by state.auto_running
 
@@ -375,6 +385,71 @@ def _control_panel(state: UIState) -> None:
             _auto_controls(state)
         else:
             _manual_controls(state)
+
+        ui.separator()
+        _data_io_controls(state)
+
+
+def _data_io_controls(state: UIState) -> None:
+    """Export spec/history, and import history CSV into the running campaign."""
+    from abbot import io as abbot_io
+
+    spec = state.spec
+    with ui.row().classes("gap-1 flex-wrap items-center"):
+
+        def export_spec() -> None:
+            ui.download.content(abbot_io.spec_to_json(spec).encode(), "abbot_spec.json")
+
+        def export_history() -> None:
+            text = abbot_io.history_to_csv(state.controller.campaign.history, spec)
+            ui.download.content(text.encode(), "abbot_history.csv")
+
+        ui.button("Spec JSON", icon="download", on_click=export_spec).props("flat dense color=indigo")
+        ui.button("History CSV", icon="download", on_click=export_history).props("flat dense color=indigo")
+
+        def import_history(e) -> None:
+            text = e.content.read().decode()
+            try:
+                hist = abbot_io.history_from_csv(text, spec)
+            except Exception as exc:  # noqa: BLE001
+                ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
+                return
+            state.controller.campaign.load_history(hist)
+            ui.notify(f"Imported {len(hist)} measurement(s).", type="positive")
+            state._left.refresh()
+            state._right.refresh()
+
+        ui.upload(on_upload=import_history, auto_upload=True, label="Import history CSV").props(
+            "flat dense accept=.csv"
+        ).classes("max-w-xs")
+
+
+def _import_spec_control(state: UIState) -> None:
+    """Upload a ProblemSpec JSON to populate the editor rows."""
+    from abbot import io as abbot_io
+    from abbot.problem import ContinuousDomain, EnumeratedDomain
+
+    def on_upload(e) -> None:
+        try:
+            spec = abbot_io.spec_from_json(e.content.read().decode())
+        except Exception as exc:  # noqa: BLE001
+            ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
+            return
+        rows = []
+        for d in spec.domain:
+            if isinstance(d, ContinuousDomain):
+                rows.append({"kind": "continuous", "name": d.name, "lower": d.lower, "upper": d.upper})
+            elif isinstance(d, EnumeratedDomain):
+                rows.append({"kind": "enumerated", "name": d.name,
+                             "values": ", ".join(str(v) for v in d.values)})
+        state.variable_rows = rows or state.variable_rows
+        state.objective_rows = [{"name": o.name, "direction": o.direction} for o in spec.objectives]
+        ui.notify("Spec loaded into the editor.", type="positive")
+        state._left.refresh()
+
+    ui.upload(on_upload=on_upload, auto_upload=True, label="Import spec JSON").props(
+        "flat dense accept=.json"
+    ).classes("max-w-xs")
 
 
 def _reset(state: UIState) -> None:
@@ -425,7 +500,11 @@ def _manual_controls(state: UIState) -> None:
                 state.pending = None
                 ui.notify("Recorded.", type="positive")
                 state._left.refresh()
-                state._right.refresh()
+                # First measurement builds the viz structure; later ones update in place.
+                if len(ctrl.campaign.history) <= 1 or state._plot_conv is None:
+                    state._right.refresh()
+                else:
+                    _update_viz(state)
 
             ui.button("Submit", icon="check", on_click=do_submit).props("color=indigo")
 
@@ -447,13 +526,17 @@ def _auto_controls(state: UIState) -> None:
         state._left.refresh()
 
     def do_step() -> None:
+        n_before = len(ctrl.campaign.history)
         try:
             ctrl.step_once()
         except Exception as exc:  # noqa: BLE001
             ui.notify(str(exc), type="negative")
             return
         state._left.refresh()
-        state._right.refresh()
+        if n_before == 0 or state._plot_conv is None:
+            state._right.refresh()  # build structure on the first point
+        else:
+            _update_viz(state)
 
     def do_stop() -> None:
         state.auto_running = False
@@ -474,6 +557,13 @@ def _auto_controls(state: UIState) -> None:
 
 
 def _viz_panel(state: UIState) -> None:
+    """Build the viz STRUCTURE once (plots/table widgets), then update in place.
+
+    Rebuilt only on rare events (create / reset / selector change); per-step data
+    goes through ``_update_viz`` which calls ``update_figure`` on the existing
+    plot widgets, so the panels update smoothly instead of being torn down and
+    recreated each tick (the stutter/jitter the user saw).
+    """
     if state.controller is None or len(state.controller.campaign.history) == 0:
         with ui.card().classes("w-full"), ui.row().classes("items-center gap-2 text-gray-500"):
             ui.icon("insights").classes("text-gray-400")
@@ -483,7 +573,6 @@ def _viz_panel(state: UIState) -> None:
     spec = state.spec
     model = state.fitted_model()
 
-    # Viz selectors (which objective, which vars to slice).
     if model is not None and (spec.n_objectives > 1 or len(spec.domain) > 2):
         with ui.row().classes("items-center gap-2"), ui.card().classes("w-full"):
             if spec.n_objectives > 1:
@@ -501,22 +590,48 @@ def _viz_panel(state: UIState) -> None:
 
     with ui.row().classes("w-full no-wrap gap-3"):
         with ui.card().classes("grow"):
-            if model is not None:
-                ui.plotly(_model_fig(state, model)).classes("w-full")
-            else:
-                ui.label("Model view appears after the first fit.").classes("text-gray-500 text-sm")
+            state._plot_model = ui.plotly(
+                _model_fig(state, model) if model is not None else _blank_fig("model")
+            ).classes("w-full")
         with ui.card().classes("grow"):
-            ui.plotly(_convergence_fig(state)).classes("w-full")
+            state._plot_conv = ui.plotly(_convergence_fig(state)).classes("w-full")
 
+    with ui.card().classes("w-full"):
+        state._plot_parity = ui.plotly(
+            _parity_fig(state, model) or _blank_fig("parity") if model is not None
+            else _blank_fig("parity")
+        ).classes("w-full")
+
+    state._rec_box = ui.column().classes("w-full gap-0")
+    with ui.expansion("History", icon="table_rows").classes("w-full"):
+        state._table = ui.table(
+            columns=_history_columns(spec), rows=_history_rows(state), row_key="step"
+        ).classes("w-full")
+
+    _update_recommendation(state)
+
+
+def _update_viz(state: UIState) -> None:
+    """Push new data into the existing plot/table widgets (no teardown)."""
+    if getattr(state, "_plot_conv", None) is None or state.controller is None:
+        return
+    if len(state.controller.campaign.history) == 0:
+        return
+    model = state.fitted_model()
+    state._plot_conv.update_figure(_convergence_fig(state))
     if model is not None:
+        state._plot_model.update_figure(_model_fig(state, model))
         pf = _parity_fig(state, model)
         if pf is not None:
-            with ui.card().classes("w-full"):
-                ui.plotly(pf).classes("w-full")
+            state._plot_parity.update_figure(pf)
+    if state._table is not None:
+        state._table.rows = _history_rows(state)
+        state._table.update()
+    _update_recommendation(state)
 
-    _recommendation(state)
-    with ui.expansion("History", icon="table_rows").classes("w-full"):
-        _history_table(state)
+
+def _blank_fig(_name: str) -> dict:
+    return {"data": [], "layout": {**_PLOT_LAYOUT, "title": "building…"}}
 
 
 def _reviz(state: UIState, attr: str, value) -> None:
@@ -539,13 +654,18 @@ def _status_chip(ctrl: RunController) -> None:
         ui.label(f"⚠ {ctrl.campaign.halted}").classes("text-red-600 text-sm")
 
 
-def _recommendation(state: UIState) -> None:
+def _update_recommendation(state: UIState) -> None:
+    """Repopulate the small recommendation box in place (cheap; no plot teardown)."""
+    box = getattr(state, "_rec_box", None)
+    if box is None:
+        return
+    box.clear()
     rec = state.controller.campaign.recommend()
     if not rec:
         return
     hist = state.controller.campaign.history
     spec = state.spec
-    with ui.card().classes("bg-green-50 w-full"):
+    with box, ui.card().classes("bg-green-50 w-full"):
         ui.label("Recommended" + (" (Pareto set)" if len(rec) > 1 else " design")).classes(
             "font-semibold text-green-900"
         )
@@ -560,10 +680,17 @@ def _recommendation(state: UIState) -> None:
             ui.label(f"{setting}  →  {outs}").classes("font-mono text-sm")
 
 
-def _history_table(state: UIState) -> None:
+def _history_columns(spec) -> list[dict]:
+    cols = [{"name": "step", "label": "step", "field": "step", "align": "left"}]
+    cols += [{"name": n, "label": n, "field": n} for n in spec.variable_names]
+    cols += [{"name": o.name, "label": o.name, "field": o.name} for o in spec.objectives]
+    return cols
+
+
+def _history_rows(state: UIState) -> list[dict]:
     hist = state.controller.campaign.history
     spec = state.spec
-    rows = [
+    return [
         {
             "step": i,
             **{n: round(float(v), 4) for n, v in zip(spec.variable_names, r.candidate.reshape(-1).tolist())},
@@ -572,10 +699,6 @@ def _history_table(state: UIState) -> None:
         for i, r in enumerate(hist.records)
         if r.outputs is not None
     ]
-    cols = [{"name": "step", "label": "step", "field": "step", "align": "left"}]
-    cols += [{"name": n, "label": n, "field": n} for n in spec.variable_names]
-    cols += [{"name": o.name, "label": o.name, "field": o.name} for o in spec.objectives]
-    ui.table(columns=cols, rows=rows, row_key="step").classes("w-full")
 
 
 # --------------------------------------------------------------------------- #
