@@ -1,0 +1,38 @@
+[project]
+name = "abbot"
+version = "0.1.0"
+description = "Active-learning-for-labs layer on top of BoTorch: a Bayesian guide for lab experiments (from A to B)."
+authors = [{name = "Sean Gasiorowski"}]
+requires-python = ">=3.11,<3.13"
+readme = "README.md"
+
+# Core deps: BoTorch is the surrogate substrate (its Model/Posterior ABC IS the
+# surrogate-agnostic layer). gest-api (pydantic-only) carries the VOCS/Generator
+# standard for interop. torch/numpy/pydantic are the shared primitives.
+dependencies = [
+    "torch>=2.7",
+    "botorch>=0.12",
+    "numpy>=1.26",
+    "pydantic>=2",
+    "gest-api",
+]
+
+[project.optional-dependencies]
+# Orchestrator / Badger path. Core never hard-depends on Xopt.
+xopt = ["xopt>=3.2"]
+# SBI design-optimization app (M2).
+sbi = ["sbi>=0.22,<0.23", "pyro-ppl>=1.9"]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/abbot"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
