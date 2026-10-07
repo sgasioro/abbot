@@ -352,13 +352,20 @@ def _build_page() -> None:
             state._left.refresh()
             state._right.refresh()
             return
+        first = len(ctrl.campaign.history) == 0 or state._plot_conv is None
         try:
             ctrl.step_once()
         except Exception:
             logger.exception("auto step failed")
             state.auto_running = False
             return
-        _update_viz(state)  # in-place update; no teardown -> smooth
+        if first:
+            # The campaign started with queued-but-unrun seeds, so the viz panel was
+            # built in its empty state (no plot widgets). The first step produces
+            # history -> rebuild the structure once, then update in place after.
+            state._right.refresh()
+        else:
+            _update_viz(state)  # in-place update; no teardown -> smooth
 
     ui.timer(0.5, _auto_tick)  # always active; gated by state.auto_running
 
