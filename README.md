@@ -15,7 +15,7 @@ It unifies the method that is currently reimplemented across several SLAC repos
 (sbido, BAXstics, nn-bax) — surrogate + acquisition/BAX + propose→evaluate→retrain
 — behind one serializable `ProblemSpec` and an ask/tell loop.
 
-## Status: M1 (shared core skeleton)
+## Status: M1 core + M3 lab frontend
 
 ```
 src/abbot/
@@ -25,16 +25,34 @@ src/abbot/
     ensemble.py   # ToyEnsembleModel — the non-GP smoke test for the ModelConstructor seam
   acq_opt.py      # CandidateOptimizer seam: Continuous | DiscreteArgmax
   policy.py       # Policy (ask/tell) + SimpleBO, ParetoBO, UncertaintySampling; uq_requirement
-  loop.py         # run_campaign(...) -> CampaignResult — ask/tell driver (resume, retry/halt,
-                  #   maximize-canonical direction handling, denoised recommend / Pareto front)
+  session.py      # Campaign — the step-based ask/tell session (suggest/ingest/step/state/
+                  #   recommend), resume, on_step hook; shared engine helpers; CampaignResult
+  loop.py         # run_campaign(...) -> CampaignResult — thin blocking driver over a Campaign
+  analysis.py     # live-analysis built-ins (convergence, hypervolume, recommended_set)
   history.py      # Record{candidate, observation, outputs, aux, fault} + History + DataStore
-  experiment.py   # Experiment / PosteriorSampler / Supervisor protocols, Verdict
+  experiment.py   # Experiment / PosteriorSampler / Supervisor protocols, Verdict, ManualExperiment
   config.py       # name -> class registries
   goal.py         # Goal protocol (BAX goal-as-algorithm)   [stub — F1]
   reduce.py       # ObjectiveReducer protocol (composite SBI) [stub — M2]
+  ui/             # NiceGUI web client [extra: ui] — thin over Campaign
+    controller.py # RunController: auto/manual run-state machine (framework-free, testable)
+    builder.py    # form rows -> ProblemSpec; optimizer selection (surfaces mixed-space limit)
+    app.py        # Define -> Run -> Progress screens; `python -m abbot.ui`
   interop/
     xopt.py       # gest-api VOCS <-> spec + CorePolicyGenerator [stub — F3]
 ```
+
+### Session API & frontend
+The optimization engine is exposed as a headless, step-based `Campaign`
+(`suggest` / `ingest` / `step` / `state` / `recommend`) — the same ask/tell surface
+a web UI, a notebook, or an agent drives. `run_campaign` is a thin blocking driver
+over it. The **NiceGUI** web client (`abbot[ui]`, `python -m abbot.ui`) is a thin
+layer over `Campaign` with three screens: a **type-polymorphic variable editor**
+(Continuous | Enumerated — the Badger differentiator), a manual run loop
+(suggest → enter measurement → ingest), and live progress plots fed by the
+`on_step` hook. Auto-run (controller drives `Campaign.step` with run/pause/step/stop)
+is available in the library when a programmatic `Experiment` is attached; manual vs.
+auto is a UI-driver concern, kept out of the core.
 
 The engine is **natively multi-objective** and **maximize-canonical**: an
 `evaluate` callback returns raw physical measurements (one column per objective,
@@ -53,20 +71,22 @@ and **ask/tell as the public contract**.
 
 ```bash
 conda activate abbot          # torch, botorch, pydantic, gest-api, pytest, ruff
-pip install -e .
-pytest        # SimpleBO recovers a known optimum; EnsembleModel passes the Model
-              # contract; ProblemSpec round-trips to JSON
+pip install -e '.[ui]'        # add the NiceGUI frontend extra (nicegui, plotly)
+pytest        # engine (optimum recovery, MO, direction), session API, analysis,
+              # controller, UI builder/import
 ruff check src/ tests/
+python -m abbot.ui            # launch the lab frontend in a browser
 ```
 
 ## Roadmap
 
-- **M1** — shared core skeleton on botorch *(current)*.
+- **M1** — shared core skeleton on botorch *(done)*.
+- **M3** — non-expert lab BO tool: NiceGUI web frontend on the shared `Campaign`
+  session API, with a type-polymorphic variable editor *(done; FastAPI+React
+  split and `optimize_acqf_mixed` are follow-ons)*.
 - **M2** — SBI design-optimization app (the lead build): composite objective +
   `SBIPosteriorSampler` + real experiments. Acceptance = reproduce sbido's
   benchmark entirely on the `abbot` core.
-- **M3** — non-expert lab BO tool: new web frontend on the shared core, with a
-  type-polymorphic variable editor.
 - **F-tier** — BAXstics goal-BAX port, full nn-bax productionization + upstreaming
   to Xopt, Xopt/Badger interop via gest-api, and agent integration (setup-copilot,
   then an MCP server).

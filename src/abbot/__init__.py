@@ -9,7 +9,7 @@ serialization). If it drifts into "framework", stop.
 
 from abbot.experiment import ManualExperiment
 from abbot.history import DataStore, History, Record
-from abbot.loop import CampaignResult, run_campaign
+from abbot.loop import run_campaign
 from abbot.model import (
     ModelConstructor,
     ModelListConstructor,
@@ -26,12 +26,15 @@ from abbot.problem import (
     ProblemSpec,
     StructuredDomain,
 )
+from abbot.session import Campaign, CampaignResult, CampaignState
 
 __version__ = "0.1.0"
 
 __all__ = [
     "Box",
+    "Campaign",
     "CampaignResult",
+    "CampaignState",
     "ContinuousDomain",
     "DataStore",
     "EnumeratedDomain",

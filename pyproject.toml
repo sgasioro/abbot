@@ -22,6 +22,8 @@ dependencies = [
 xopt = ["xopt>=3.2"]
 # SBI design-optimization app (M2).
 sbi = ["sbi>=0.22,<0.23", "pyro-ppl>=1.9"]
+# Web frontend (M3). NiceGUI is FastAPI-based; plotly for live progress plots.
+ui = ["nicegui>=1.4", "plotly>=5"]
 dev = ["pytest>=8", "ruff>=0.8"]
 
 [build-system]
