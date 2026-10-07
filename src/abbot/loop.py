@@ -63,7 +63,7 @@ def run_campaign(
     spec: ProblemSpec,
     policy: Policy,
     model_constructor: ModelConstructor,
-    evaluate: Callable[[object], torch.Tensor],
+    evaluate: Callable[[object], object],
     initial_designs: torch.Tensor,
     n_shots: int = 40,
     store: DataStore | None = None,
@@ -74,9 +74,15 @@ def run_campaign(
 ) -> tuple[torch.Tensor, float, History]:
     """Run the propose -> evaluate -> retrain loop.
 
-    ``evaluate`` maps a raw observation to a scalar objective value (the M1
-    stand-in for the M2 reducer); it returns a 0-d or (1,) tensor. Returns the
-    recommended best design, its score, and the full history.
+    ``evaluate`` maps a raw observation to the objective value(s) the surrogate is
+    fit on. It may return either:
+      - a tensor (0-d / (1,) / (m,))  — the plain lab-BO case; aux is None; or
+      - a ``(outputs, aux)`` tuple    — the composite-SBI case, where ``aux`` is an
+        opaque payload (e.g. cached theta posterior samples) persisted on the
+        Record so a re-scorable reducer avoids re-sampling.
+    This single seam is what lets the SAME loop drive both the lab-BO tool (M3)
+    and the SBI app (M2) without change. Returns the recommended best design, its
+    score, and the full history.
     """
     check_uq_pairing(policy, model_uq)
 
@@ -114,8 +120,10 @@ def run_campaign(
                 x = _propose(policy, spec, model_constructor, history, step)
 
         observation = experiment.run(x)
-        y = evaluate(observation).reshape(-1).double()
-        record = Record(candidate=x, observation=observation, outputs=y, retry_of=retry_of)
+        y, aux = _split_eval(evaluate(observation))
+        record = Record(
+            candidate=x, observation=observation, outputs=y, aux=aux, retry_of=retry_of
+        )
         history.append(record)
 
         verdict = supervisor(history) if supervisor is not None else Verdict()
@@ -153,6 +161,18 @@ def run_campaign(
             best_y = float(history.records[idx].outputs.reshape(-1)[0])
 
     return best_x, best_y, history
+
+
+def _split_eval(result: object) -> tuple[torch.Tensor, object | None]:
+    """Normalize an ``evaluate`` return into ``(outputs, aux)``.
+
+    Accepts a bare tensor (aux=None) or an ``(outputs, aux)`` tuple.
+    """
+    if isinstance(result, tuple):
+        outputs, aux = result
+    else:
+        outputs, aux = result, None
+    return outputs.reshape(-1).double(), aux
 
 
 def _fit(model_constructor: ModelConstructor, history: History):

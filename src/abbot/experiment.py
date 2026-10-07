@@ -52,3 +52,42 @@ class Supervisor(Protocol):
     """
 
     def __call__(self, history: Any) -> Verdict: ...
+
+
+class ManualExperiment:
+    """Human-in-the-loop Experiment: a person measures the proposed candidate.
+
+    This is the M3 lab-tool's "experiment" — the loop proposes a design, a human
+    runs the real-world reaction/synthesis and types back the measured value(s).
+    By default it prompts on stdin, but a ``responder`` callable can be injected
+    (so the same flow is headless-testable, and so a web frontend or an agent can
+    supply the measurement instead of a terminal). The responder receives the
+    proposed candidate tensor and returns the measured output(s).
+    """
+
+    def __init__(
+        self,
+        responder: Any | None = None,
+        variable_names: list[str] | None = None,
+        output_names: list[str] | None = None,
+    ) -> None:
+        self.responder = responder
+        self.variable_names = variable_names
+        self.output_names = output_names or ["value"]
+
+    def run(self, candidate: torch.Tensor) -> torch.Tensor:
+        if self.responder is not None:
+            out = self.responder(candidate)
+            return out if isinstance(out, torch.Tensor) else torch.as_tensor(out)
+        return self._prompt(candidate)
+
+    def _prompt(self, candidate: torch.Tensor) -> torch.Tensor:  # pragma: no cover
+        vals = candidate.reshape(-1).tolist()
+        names = self.variable_names or [f"x{i}" for i in range(len(vals))]
+        setting = ", ".join(f"{n}={v:.4g}" for n, v in zip(names, vals))
+        print(f"\nRun the experiment at: {setting}")
+        measured = []
+        for name in self.output_names:
+            raw = input(f"  measured {name}: ")
+            measured.append(float(raw))
+        return torch.tensor(measured, dtype=torch.double)

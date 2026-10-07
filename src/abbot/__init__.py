@@ -7,6 +7,7 @@ Model/Posterior layer, the BO/US loop primitives, async/batch, and
 serialization). If it drifts into "framework", stop.
 """
 
+from abbot.experiment import ManualExperiment
 from abbot.history import DataStore, History, Record
 from abbot.model import (
     ModelConstructor,
@@ -33,6 +34,7 @@ __all__ = [
     "EnumeratedDomain",
     "History",
     "InequalitySpec",
+    "ManualExperiment",
     "ModelConstructor",
     "ModelListConstructor",
     "ObjectiveSpec",

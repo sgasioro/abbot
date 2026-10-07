@@ -40,6 +40,19 @@ class Continuous:
     def optimize(
         self, acq: AcquisitionFunction, spec: ProblemSpec, n: int
     ) -> torch.Tensor:
+        from abbot.problem import ContinuousDomain
+
+        # Day-one scope is a homogeneous continuous space. A mixed continuous +
+        # enumerated space needs optimize_acqf_mixed, which is NOT wired yet — fail
+        # loudly rather than silently relaxing the enumerated axis to a float range.
+        if any(not isinstance(d, ContinuousDomain) for d in spec.domain):
+            kinds = {type(d).__name__ for d in spec.domain}
+            raise NotImplementedError(
+                "Continuous optimizer requires an all-continuous domain, but got "
+                f"{sorted(kinds)}. Mixed continuous+enumerated proposal "
+                "(optimize_acqf_mixed) is deferred; for an all-enumerated space use "
+                "DiscreteArgmax instead."
+            )
         bounds = spec.bounds_tensor()
         candidates, _ = optimize_acqf(
             acq,
