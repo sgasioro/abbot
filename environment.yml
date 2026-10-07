@@ -1,0 +1,25 @@
+# Conda environment for abbot development (incl. the NiceGUI frontend).
+#
+#   conda env create -f environment.yml
+#   conda activate abbot
+#   pip install -e '.[ui,dev]'      # editable install + UI/dev extras
+#   python -m abbot.ui              # launch the lab frontend
+#
+# CPU by default (fine for the UI and the toy tests). For GPU, add
+# `pytorch-cuda=12.*` under dependencies and use the nvidia channel.
+name: abbot
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.12
+  - pytorch>=2.7
+  - botorch>=0.12
+  - numpy>=1.26
+  - pydantic>=2
+  - pip
+  - pip:
+      # gest-api is on PyPI (not conda); the UI/dev extras pull nicegui, plotly,
+      # pytest, ruff. Installing the project editable brings its core deps too.
+      - gest-api
+      - --editable .[ui,dev]

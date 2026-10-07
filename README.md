@@ -67,15 +67,39 @@ a ~day of wrapper work (not an architecture change): **headless-first**,
 **typed JSON-serializable `ProblemSpec` + run state** (no live-object references),
 and **ask/tell as the public contract**.
 
+## Local setup
+
+```bash
+# Option A — conda (reproducible; CPU by default):
+conda env create -f environment.yml
+conda activate abbot
+pip install -e '.[ui,dev]'    # editable install + UI (nicegui, plotly) + dev (pytest, ruff)
+
+# Option B — venv + pip (3.11 or 3.12; pyproject requires <3.13):
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e '.[ui,dev]'    # pulls torch/botorch/pydantic/gest-api + nicegui/plotly
+```
+
+`gest-api` is on PyPI, so no git/`--no-deps` tricks are needed. Torch installs the
+CPU wheel by default (all the UI and toy tests need); for GPU, follow the comment
+in `environment.yml`.
+
+## Run the frontend
+
+```bash
+python -m abbot.ui                 # http://127.0.0.1:8080, opens a browser tab
+python -m abbot.ui --port 9000     # pick a port
+python -m abbot.ui --no-show       # headless (e.g. on a cluster) — tunnel the port:
+                                   #   ssh -L 8080:localhost:8080 <cluster>
+```
+Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`.
+
 ## Develop
 
 ```bash
-conda activate abbot          # torch, botorch, pydantic, gest-api, pytest, ruff
-pip install -e '.[ui]'        # add the NiceGUI frontend extra (nicegui, plotly)
 pytest        # engine (optimum recovery, MO, direction), session API, analysis,
-              # controller, UI builder/import
+              # controller, UI builder/import  (~3 min; many GP fits)
 ruff check src/ tests/
-python -m abbot.ui            # launch the lab frontend in a browser
 ```
 
 ## Roadmap

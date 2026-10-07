@@ -272,14 +272,38 @@ def _build_page() -> None:
             progress_panel()
 
 
-def main() -> None:
-    """Entry point: build the page and launch the server."""
+def main(argv: list[str] | None = None) -> None:
+    """Entry point: build the page and launch the server.
+
+    Flags (also honored via env vars so a headless/cluster run can set them):
+      --host (ABBOT_UI_HOST, default 127.0.0.1)
+      --port (ABBOT_UI_PORT, default 8080)
+      --show / --no-show (ABBOT_UI_SHOW=1/0) — open a browser tab on start.
+    On a cluster, use --no-show and tunnel the port; locally, --show pops a tab.
+    """
+    import argparse
+    import os
+
+    def _env_bool(name: str, default: bool) -> bool:
+        val = os.environ.get(name)
+        return default if val is None else val.strip().lower() in {"1", "true", "yes", "on"}
+
+    parser = argparse.ArgumentParser(prog="abbot.ui", description="Launch the abbot lab frontend.")
+    parser.add_argument("--host", default=os.environ.get("ABBOT_UI_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("ABBOT_UI_PORT", "8080")))
+    show_default = _env_bool("ABBOT_UI_SHOW", True)
+    show_group = parser.add_mutually_exclusive_group()
+    show_group.add_argument("--show", dest="show", action="store_true", default=show_default,
+                            help="open a browser tab on start (default locally)")
+    show_group.add_argument("--no-show", dest="show", action="store_false",
+                            help="do not open a browser (use on a headless/cluster host)")
+    args = parser.parse_args(argv)
 
     @ui.page("/")
     def index() -> None:
         _build_page()
 
-    ui.run(title="abbot", reload=False, show=False)
+    ui.run(title="abbot", host=args.host, port=args.port, show=args.show, reload=False)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
