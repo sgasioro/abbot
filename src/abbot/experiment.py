@@ -91,3 +91,53 @@ class ManualExperiment:
             raw = input(f"  measured {name}: ")
             measured.append(float(raw))
         return torch.tensor(measured, dtype=torch.double)
+
+
+class SyntheticExperiment:
+    """A spec-adaptive virtual experiment for mock / offline runs.
+
+    Produces smooth, deterministic (seeded) RAW-physical outputs for WHATEVER
+    ``ProblemSpec`` you built — any number of variables, any number of objectives,
+    optional observation noise. This is what makes the UI self-demonstrating: with
+    a programmatic ``Experiment`` attached, auto-run (run/pause/step/stop) becomes
+    available and a whole campaign drives itself without typed measurements.
+
+    Each objective is a smooth Gaussian bump over the design space with its own
+    (seeded) optimum location, so a single-objective problem has a clear maximum
+    and a multi-objective problem has a genuine trade-off (the bumps peak in
+    different places). Outputs are RAW and always "larger is better" in shape; the
+    engine applies ``objective_signs`` for MINIMIZE objectives, so the mock does
+    NOT need to know directions. Values are mapped to a friendly ~[0, 100] range.
+
+    Deterministic: the landscape is fixed by ``seed`` and, when ``noise`` > 0, the
+    per-evaluation noise is seeded by the candidate itself (so re-measuring the
+    same point gives the same value — honest for a resumable run).
+    """
+
+    def __init__(self, spec: Any, *, seed: int = 0, noise: float = 0.0) -> None:
+        self.spec = spec
+        self.seed = seed
+        self.noise = float(noise)
+        bounds = spec.bounds_tensor()
+        self._lo = bounds[0]
+        self._hi = bounds[1]
+        d = bounds.shape[-1]
+        m = spec.n_objectives
+        # Per-objective optima and widths, fixed by the seed.
+        g = torch.Generator().manual_seed(seed)
+        self._centers = torch.rand(m, d, generator=g, dtype=torch.double)
+        self._widths = 0.15 + 0.25 * torch.rand(m, d, generator=g, dtype=torch.double)
+
+    def run(self, candidate: torch.Tensor) -> torch.Tensor:
+        x = candidate.reshape(-1).double()
+        span = (self._hi - self._lo).clamp(min=1e-9)
+        xn = ((x - self._lo) / span).clamp(0.0, 1.0)  # normalized to [0, 1]^d
+        # Gaussian bump per objective -> smooth value in (0, 100].
+        sq = ((xn.unsqueeze(0) - self._centers) / self._widths) ** 2  # (m, d)
+        vals = 100.0 * torch.exp(-0.5 * sq.sum(dim=-1))  # (m,)
+        if self.noise > 0.0:
+            # Seed noise by the candidate so a re-measurement repeats exactly.
+            key = int(abs(hash((self.seed, tuple(round(float(v), 6) for v in xn.tolist())))) % (2**31))
+            gn = torch.Generator().manual_seed(key)
+            vals = vals + self.noise * torch.randn(vals.shape, generator=gn, dtype=torch.double)
+        return vals

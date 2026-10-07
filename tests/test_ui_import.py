@@ -22,6 +22,28 @@ def test_app_imports():
     assert state.controller.can_auto is False  # manual UI session
 
 
+def test_uistate_mock_mode_enables_auto_run():
+    import torch
+
+    from abbot.ui.app import UIState
+
+    torch.manual_seed(0)
+    state = UIState()
+    state.variable_rows = [
+        {"kind": "continuous", "name": "x1", "lower": 0.0, "upper": 1.0},
+        {"kind": "continuous", "name": "x2", "lower": 0.0, "upper": 1.0},
+    ]
+    state.objective_rows = [{"name": "y", "direction": "MAXIMIZE"}]
+    state.mock = True
+    state.start_campaign()
+    assert state.controller.can_auto is True  # synthetic experiment attached
+    # The timer-driven auto path: a few step_once calls advance the campaign.
+    for _ in range(5):
+        state.controller.step_once()
+    assert len(state.controller.campaign.history) == 5
+    assert len(state.controller.campaign.recommend()) == 1
+
+
 def test_uistate_surfaces_mixed_space_error():
     from abbot.ui.app import UIState
 

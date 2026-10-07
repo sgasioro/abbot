@@ -7,7 +7,7 @@ Model/Posterior layer, the BO/US loop primitives, async/batch, and
 serialization). If it drifts into "framework", stop.
 """
 
-from abbot.experiment import ManualExperiment
+from abbot.experiment import ManualExperiment, SyntheticExperiment
 from abbot.history import DataStore, History, Record
 from abbot.loop import run_campaign
 from abbot.model import (
@@ -51,6 +51,7 @@ __all__ = [
     "SimpleBO",
     "SingleTaskGPConstructor",
     "StructuredDomain",
+    "SyntheticExperiment",
     "UncertaintySampling",
     "__version__",
     "default_constructor",

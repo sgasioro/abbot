@@ -88,11 +88,17 @@ in `environment.yml`.
 
 ```bash
 python -m abbot.ui                 # http://127.0.0.1:8080, opens a browser tab
-python -m abbot.ui --port 9000     # pick a port
+python -m abbot.ui --port 9000     # pick a port (auto-picks a free one if taken)
 python -m abbot.ui --no-show       # headless (e.g. on a cluster) — tunnel the port:
                                    #   ssh -L 8080:localhost:8080 <cluster>
 ```
 Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`.
+
+**Mock mode:** on the Define tab, toggle *Mock mode* before creating the campaign
+to attach a spec-adaptive `SyntheticExperiment` (smooth, seeded landscape over
+whatever variables/objectives you defined). This enables **auto-run**
+(run / pause / step / stop) on the Run tab, so a whole campaign drives itself
+with no typed measurements — the quickest way to see the loop and plots working.
 
 ## Develop
 
