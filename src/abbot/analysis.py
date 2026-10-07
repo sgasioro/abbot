@@ -89,4 +89,119 @@ def recommended_set(history: History, spec: ProblemSpec, model=None) -> list[int
     return observed_front(history, spec)
 
 
-__all__ = ["canonical_Y", "convergence", "hypervolume", "recommended_set"]
+# --- model visualization ------------------------------------------------------
+# The surrogate is fit in maximize-canonical space (see session.canonical_Y), so
+# these un-apply the objective signs to report posterior values in RAW units.
+
+
+def _posterior_raw(model, X: torch.Tensor, spec: ProblemSpec):
+    """Posterior (mean, std) at X, converted back to RAW objective units.
+
+    Returns tensors shaped (n, m). The sign flip maps canonical -> raw for the
+    mean; std is sign-invariant.
+    """
+    signs = spec.objective_signs()
+    with torch.no_grad():
+        post = model.posterior(X.double())
+        mean = post.mean.reshape(X.shape[0], -1) * signs
+        std = post.variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
+    return mean, std
+
+
+def parity(history: History, spec: ProblemSpec, model) -> dict:
+    """Predicted (posterior mean ± std) vs. observed, per objective — dimension-agnostic.
+
+    Returns ``{objective_name: {"observed": [...], "predicted": [...], "std": [...]}}``.
+    The go-to "is the model any good?" view when the design space is too high-D to plot.
+    """
+    clean = history.clean
+    if not len(clean):
+        return {}
+    X = clean.designs.double()
+    Y = clean.outputs.double()  # raw observed
+    mean, std = _posterior_raw(model, X, spec)
+    out = {}
+    for j, obj in enumerate(spec.objectives):
+        out[obj.name] = {
+            "observed": Y[:, j].tolist(),
+            "predicted": mean[:, j].tolist(),
+            "std": std[:, j].tolist(),
+        }
+    return out
+
+
+def _anchor_point(history: History, spec: ProblemSpec) -> torch.Tensor:
+    """The design to hold the non-varied dimensions at: the recommended/best point."""
+    rec = observed_front(history, spec)
+    idx = rec[0] if rec else 0
+    return history.records[idx].candidate.reshape(-1).double()
+
+
+def slice_1d(
+    history: History,
+    spec: ProblemSpec,
+    model,
+    var: int = 0,
+    objective: int = 0,
+    n: int = 80,
+) -> dict:
+    """1-D posterior slice: vary one variable over its range, others fixed at the
+    recommended point. Returns grid ``x``, raw ``mean``, and ``std`` for a band.
+    """
+    bounds = spec.bounds_tensor()
+    lo, hi = float(bounds[0, var]), float(bounds[1, var])
+    anchor = _anchor_point(history, spec)
+    xs = torch.linspace(lo, hi, n, dtype=torch.double)
+    grid = anchor.repeat(n, 1)
+    grid[:, var] = xs
+    mean, std = _posterior_raw(model, grid, spec)
+    return {
+        "x": xs.tolist(),
+        "mean": mean[:, objective].tolist(),
+        "std": std[:, objective].tolist(),
+        "var_name": spec.variable_names[var],
+        "objective_name": spec.objectives[objective].name,
+    }
+
+
+def slice_2d(
+    history: History,
+    spec: ProblemSpec,
+    model,
+    var_x: int = 0,
+    var_y: int = 1,
+    objective: int = 0,
+    n: int = 40,
+) -> dict:
+    """2-D posterior-mean slice: vary two variables over a grid, others fixed at the
+    recommended point. Returns ``x``, ``y`` axes and a ``z`` matrix (raw mean).
+    """
+    bounds = spec.bounds_tensor()
+    xs = torch.linspace(float(bounds[0, var_x]), float(bounds[1, var_x]), n, dtype=torch.double)
+    ys = torch.linspace(float(bounds[0, var_y]), float(bounds[1, var_y]), n, dtype=torch.double)
+    anchor = _anchor_point(history, spec)
+    gx, gy = torch.meshgrid(xs, ys, indexing="xy")
+    grid = anchor.repeat(n * n, 1)
+    grid[:, var_x] = gx.reshape(-1)
+    grid[:, var_y] = gy.reshape(-1)
+    mean, _ = _posterior_raw(model, grid, spec)
+    z = mean[:, objective].reshape(n, n)
+    return {
+        "x": xs.tolist(),
+        "y": ys.tolist(),
+        "z": z.tolist(),
+        "var_x_name": spec.variable_names[var_x],
+        "var_y_name": spec.variable_names[var_y],
+        "objective_name": spec.objectives[objective].name,
+    }
+
+
+__all__ = [
+    "canonical_Y",
+    "convergence",
+    "hypervolume",
+    "parity",
+    "recommended_set",
+    "slice_1d",
+    "slice_2d",
+]

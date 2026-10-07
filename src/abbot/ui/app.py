@@ -1,17 +1,15 @@
-"""NiceGUI web client for abbot — a thin UI over :class:`abbot.session.Campaign`.
+"""NiceGUI web client for abbot — a thin, single-page dashboard over Campaign.
 
-Three tabs: Define -> Run -> Progress. All optimization logic is delegated to the
-core (``Campaign``, ``RunController``, ``builder``, ``analysis``); this module only
-builds widgets and wires events. Per-client state lives on a ``UIState`` created
-inside the page function (NiceGUI gives each connection its own) — no module-global
-``ProgramState`` trap like BAXstics had.
+Left column: define the problem (type-polymorphic variable editor), mock toggle,
+and the run controls (manual suggest/measure, or mock auto-run run/pause/step/stop).
+Right column: live model visualization (adaptive to dimensionality) + convergence,
+the recommended design(s), and the history table. One scrolling dashboard, no
+click-through screens.
 
-Two run modes share one ``RunController``:
-  - Manual: the user enters each measurement.
-  - Auto (mock): a ``SyntheticExperiment`` is attached to the campaign, which
-    enables run/pause/step/stop — the campaign drives itself with no typed values.
-
-Run with ``python -m abbot.ui``.
+All optimization logic is delegated to the core (``Campaign``, ``RunController``,
+``builder``, ``analysis``); this module only builds widgets and wires events.
+Per-client state lives on a ``UIState`` created inside the page function — no
+module-global state. Run with ``python -m abbot.ui``.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ import logging
 import torch
 from nicegui import ui
 
-from abbot.analysis import convergence, hypervolume
+from abbot import analysis
 from abbot.experiment import SyntheticExperiment
 from abbot.model import default_constructor
 from abbot.policy import ParetoBO, SimpleBO
@@ -31,19 +29,19 @@ from abbot.ui.controller import RunController, RunStatus
 
 logger = logging.getLogger(__name__)
 
-# A calm, legible Plotly layout shared by both progress plots.
 _PLOT_LAYOUT = {
-    "height": 340,
-    "margin": {"l": 60, "r": 20, "t": 48, "b": 48},
+    "height": 300,
+    "margin": {"l": 56, "r": 16, "t": 44, "b": 44},
     "template": "plotly_white",
-    "font": {"size": 13},
+    "font": {"size": 12},
     "showlegend": False,
 }
 _ACCENT = "#4f46e5"
+_BAND = "rgba(79,70,229,0.18)"
 
 
 class UIState:
-    """Per-client session state: editor rows + the live controller."""
+    """Per-client session state: editor rows, the live controller, viz selections."""
 
     def __init__(self) -> None:
         self.variable_rows: list[dict] = [
@@ -54,6 +52,13 @@ class UIState:
         self.spec = None
         self.pending: list[dict] | None = None
         self.mock: bool = False
+        # Model-viz selections (which objective / which vars to slice).
+        self.viz_obj = 0
+        self.viz_vx = 0
+        self.viz_vy = 1
+        # Auto-run state — created ONCE per page (see _build_page), never inside a
+        # refreshable, so a panel refresh can't orphan the timer or reset the flag.
+        self.auto_running = False
 
     def start_campaign(self) -> None:
         spec = build_spec(self.variable_rows, self.objective_rows)  # may raise
@@ -70,12 +75,21 @@ class UIState:
         campaign.seed(seeds)
         self.spec = spec
         self.pending = None
-        # Mock mode attaches a synthetic experiment -> auto-run becomes available.
+        self.viz_obj = 0
+        self.viz_vx = 0
+        self.viz_vy = 1 if len(spec.domain) > 1 else 0
+        self.auto_running = False
         if self.mock:
             exp = SyntheticExperiment(spec, seed=0, noise=0.0)
             self.controller = RunController(campaign, experiment=exp, evaluate=lambda o: o)
         else:
             self.controller = RunController(campaign)
+
+    def fitted_model(self):
+        """The current fitted surrogate (canonical space) or None."""
+        if self.controller is None:
+            return None
+        return self.controller.campaign._safe_fit()
 
 
 # --------------------------------------------------------------------------- #
@@ -86,33 +100,33 @@ class UIState:
 def _variable_editor(state: UIState) -> None:
     with ui.row().classes("items-center gap-2"):
         ui.icon("tune").classes("text-indigo-600")
-        ui.label("Design variables").classes("text-lg font-semibold")
+        ui.label("Design variables").classes("text-base font-semibold")
     container = ui.column().classes("gap-2 w-full")
 
     def redraw() -> None:
         container.clear()
         with container:
             for i, row in enumerate(state.variable_rows):
-                with ui.row().classes("items-center gap-2 w-full"):
+                with ui.row().classes("items-center gap-1 w-full"):
                     ui.select(
                         {"continuous": "Continuous", "enumerated": "Enumerated"},
                         value=row["kind"],
                         on_change=lambda e, r=row: (_set(r, "kind", e.value), redraw()),
-                    ).props("dense outlined").classes("w-36")
+                    ).props("dense outlined").classes("w-32")
                     ui.input("name", value=row.get("name", "")).bind_value(row, "name").props(
                         "dense outlined"
-                    ).classes("w-28")
+                    ).classes("w-24")
                     if row["kind"] == "continuous":
-                        ui.number("lower", value=row.get("lower", 0.0)).bind_value(row, "lower").props(
+                        ui.number("lo", value=row.get("lower", 0.0)).bind_value(row, "lower").props(
                             "dense outlined"
-                        ).classes("w-28")
-                        ui.number("upper", value=row.get("upper", 1.0)).bind_value(row, "upper").props(
+                        ).classes("w-20")
+                        ui.number("hi", value=row.get("upper", 1.0)).bind_value(row, "upper").props(
                             "dense outlined"
-                        ).classes("w-28")
+                        ).classes("w-20")
                     else:
-                        ui.input(
-                            "values (comma/space-separated)", value=row.get("values", "0, 1, 2")
-                        ).bind_value(row, "values").props("dense outlined").classes("w-64")
+                        ui.input("values", value=row.get("values", "0, 1, 2")).bind_value(
+                            row, "values"
+                        ).props("dense outlined").classes("w-48")
                     ui.button(
                         icon="delete",
                         on_click=lambda _, idx=i: (_pop(state.variable_rows, idx), redraw()),
@@ -130,21 +144,21 @@ def _variable_editor(state: UIState) -> None:
 def _objective_editor(state: UIState) -> None:
     with ui.row().classes("items-center gap-2"):
         ui.icon("flag").classes("text-indigo-600")
-        ui.label("Objectives").classes("text-lg font-semibold")
+        ui.label("Objectives").classes("text-base font-semibold")
     container = ui.column().classes("gap-2 w-full")
 
     def redraw() -> None:
         container.clear()
         with container:
             for i, row in enumerate(state.objective_rows):
-                with ui.row().classes("items-center gap-2 w-full"):
+                with ui.row().classes("items-center gap-1 w-full"):
                     ui.input("name", value=row.get("name", "")).bind_value(row, "name").props(
                         "dense outlined"
-                    ).classes("w-40")
+                    ).classes("w-32")
                     ui.select(
                         {"MAXIMIZE": "Maximize", "MINIMIZE": "Minimize"},
                         value=row["direction"],
-                    ).bind_value(row, "direction").props("dense outlined").classes("w-40")
+                    ).bind_value(row, "direction").props("dense outlined").classes("w-36")
                     ui.button(
                         icon="delete",
                         on_click=lambda _, idx=i: (_pop(state.objective_rows, idx), redraw()),
@@ -169,174 +183,214 @@ def _pop(rows: list, idx: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Plot builders
+# Plot builders (pure dict -> ui.plotly)
 # --------------------------------------------------------------------------- #
 
 
-def _progress_figure(state: UIState):
+def _convergence_fig(state: UIState):
     hist = state.controller.campaign.history
     spec = state.spec
     if spec.n_objectives == 1:
-        series = convergence(hist, spec)
+        y = analysis.convergence(hist, spec)
+        title, ylab = f"Best {spec.objectives[0].name} so far", spec.objectives[0].name
+    else:
+        y = analysis.hypervolume(hist, spec)
+        title, ylab = "Dominated hypervolume", "hypervolume"
+    return {
+        "data": [{
+            "y": y, "x": list(range(len(y))), "type": "scatter", "mode": "lines+markers",
+            "line": {"color": _ACCENT, "width": 2}, "marker": {"color": _ACCENT, "size": 6},
+        }],
+        "layout": {**_PLOT_LAYOUT, "title": title, "xaxis": {"title": "step"}, "yaxis": {"title": ylab}},
+    }
+
+
+def _model_fig(state: UIState, model):
+    """Adaptive model view: 1-D band, 2-D contour, or 3-D+ slice through best point."""
+    spec = state.spec
+    hist = state.controller.campaign.history
+    d = len(spec.domain)
+    obj = state.viz_obj
+    if d == 1:
+        s = analysis.slice_1d(hist, spec, model, var=0, objective=obj)
+        upper = [m + sd for m, sd in zip(s["mean"], s["std"])]
+        lower = [m - sd for m, sd in zip(s["mean"], s["std"])]
+        px = [r.candidate.reshape(-1)[0].item() for r in hist.clean.records]
+        py = [r.outputs.reshape(-1)[obj].item() for r in hist.clean.records]
         return {
             "data": [
-                {
-                    "y": series,
-                    "x": list(range(len(series))),
-                    "type": "scatter",
-                    "mode": "lines+markers",
-                    "line": {"color": _ACCENT, "width": 2},
-                    "marker": {"color": _ACCENT, "size": 7},
-                }
+                {"x": s["x"] + s["x"][::-1], "y": upper + lower[::-1], "fill": "toself",
+                 "fillcolor": _BAND, "line": {"color": "rgba(0,0,0,0)"}, "type": "scatter",
+                 "hoverinfo": "skip"},
+                {"x": s["x"], "y": s["mean"], "type": "scatter", "mode": "lines",
+                 "line": {"color": _ACCENT, "width": 2}, "name": "posterior mean"},
+                {"x": px, "y": py, "type": "scatter", "mode": "markers",
+                 "marker": {"color": "#111", "size": 7}, "name": "observed"},
             ],
-            "layout": {
-                **_PLOT_LAYOUT,
-                "title": f"Best {spec.objectives[0].name} so far",
-                "xaxis": {"title": "step"},
-                "yaxis": {"title": spec.objectives[0].name},
-            },
+            "layout": {**_PLOT_LAYOUT, "title": f"Posterior over {s['var_name']}",
+                       "xaxis": {"title": s["var_name"]}, "yaxis": {"title": s["objective_name"]}},
         }
-    series = hypervolume(hist, spec)
+    # 2-D (or a 2-var slice of higher-D) contour.
+    vx, vy = state.viz_vx, state.viz_vy
+    s = analysis.slice_2d(hist, spec, model, var_x=vx, var_y=vy, objective=obj)
+    px = [r.candidate.reshape(-1)[vx].item() for r in hist.clean.records]
+    py = [r.candidate.reshape(-1)[vy].item() for r in hist.clean.records]
+    title = f"Posterior mean of {s['objective_name']}"
+    if d > 2:
+        title += " (slice through best point)"
     return {
         "data": [
-            {
-                "y": series,
-                "x": list(range(len(series))),
-                "type": "scatter",
-                "mode": "lines+markers",
-                "line": {"color": _ACCENT, "width": 2},
-                "marker": {"color": _ACCENT, "size": 7},
-            }
+            {"x": s["x"], "y": s["y"], "z": s["z"], "type": "contour",
+             "colorscale": "Viridis", "colorbar": {"title": s["objective_name"]}},
+            {"x": px, "y": py, "type": "scatter", "mode": "markers",
+             "marker": {"color": "white", "size": 7, "line": {"color": "black", "width": 1}}},
         ],
-        "layout": {
-            **_PLOT_LAYOUT,
-            "title": "Dominated hypervolume",
-            "xaxis": {"title": "step"},
-            "yaxis": {"title": "hypervolume"},
-        },
+        "layout": {**_PLOT_LAYOUT, "title": title,
+                   "xaxis": {"title": s["var_x_name"]}, "yaxis": {"title": s["var_y_name"]}},
+    }
+
+
+def _parity_fig(state: UIState, model):
+    spec = state.spec
+    p = analysis.parity(state.controller.campaign.history, spec, model)
+    name = spec.objectives[state.viz_obj].name
+    d = p.get(name)
+    if not d:
+        return None
+    obs, pred, std = d["observed"], d["predicted"], d["std"]
+    lo = min(obs + pred)
+    hi = max(obs + pred)
+    return {
+        "data": [
+            {"x": [lo, hi], "y": [lo, hi], "type": "scatter", "mode": "lines",
+             "line": {"color": "#999", "dash": "dash"}, "hoverinfo": "skip"},
+            {"x": obs, "y": pred, "error_y": {"type": "data", "array": std, "visible": True},
+             "type": "scatter", "mode": "markers", "marker": {"color": _ACCENT, "size": 7}},
+        ],
+        "layout": {**_PLOT_LAYOUT, "title": f"Parity — {name}",
+                   "xaxis": {"title": "observed"}, "yaxis": {"title": "predicted"}},
     }
 
 
 # --------------------------------------------------------------------------- #
-# Page
+# Page (single dashboard)
 # --------------------------------------------------------------------------- #
 
 
 def _build_page() -> None:
     state = UIState()
 
-    with ui.header().classes("items-center bg-indigo-700"), ui.row().classes(
-        "items-center gap-2"
-    ):
+    with ui.header().classes("items-center bg-indigo-700"), ui.row().classes("items-center gap-2"):
         ui.icon("science").classes("text-white text-2xl")
         ui.label("abbot").classes("text-white text-xl font-bold")
         ui.label("a Bayesian guide for lab experiments").classes("text-indigo-200 text-sm")
 
-    with ui.tabs().classes("w-full") as tabs:
-        tab_define = ui.tab("1 · Define", icon="edit")
-        tab_run = ui.tab("2 · Run", icon="play_arrow")
-        tab_progress = ui.tab("3 · Progress", icon="insights")
+    def _create() -> None:
+        try:
+            state.start_campaign()
+        except Exception as exc:  # noqa: BLE001 - surface build/validation errors as a toast
+            ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
+            return
+        mode = "mock / auto-run" if state.mock else "manual"
+        ui.notify(f"Campaign ready ({mode}).", type="positive")
+        state._left.refresh()
+        state._right.refresh()
 
-    with ui.tab_panels(tabs, value=tab_define).classes("w-full"):
-        # ---- Define ----
-        with ui.tab_panel(tab_define), ui.column().classes("gap-4 max-w-3xl"):
-            with ui.card().classes("w-full"):
-                _variable_editor(state)
-            with ui.card().classes("w-full"):
-                _objective_editor(state)
-            with ui.card().classes("w-full"):
-                mock_toggle = ui.switch(
-                    "Mock mode — attach a synthetic experiment (enables auto-run, no "
-                    "typing of measurements)"
-                ).bind_value(state, "mock")
-                mock_toggle.props("color=indigo")
-
-            def do_start() -> None:
-                try:
-                    state.start_campaign()
-                except Exception as exc:  # noqa: BLE001 - surface build/validation errors as a toast
-                    ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
-                    return
-                mode = "mock / auto-run" if state.mock else "manual"
-                ui.notify(
-                    f"Campaign ready ({len(state.spec.domain)} variable(s), "
-                    f"{state.spec.n_objectives} objective(s), {mode}). Go to Run.",
-                    type="positive",
-                )
-                tabs.set_value(tab_run)
-                run_panel.refresh()
-                progress_panel.refresh()
-
-            ui.button("Create campaign", icon="rocket_launch", on_click=do_start).props(
-                "color=indigo size=lg"
-            )
-
-        # ---- Run ----
-        with ui.tab_panel(tab_run), ui.column().classes("gap-4 w-full").style("max-width: 60rem"):
+    with ui.row().classes("w-full no-wrap gap-4 p-2"):
+        # ---------- left: setup + controls ----------
+        with ui.column().classes("gap-3").style("min-width: 24rem; max-width: 28rem"):
 
             @ui.refreshable
-            def run_panel() -> None:
+            def left() -> None:
                 if state.controller is None:
-                    _empty("Create a campaign on the Define tab first.")
-                    return
-                ctrl = state.controller
-
-                with ui.row().classes("items-center gap-3"):
-                    _status_chip(ctrl)
-                    ui.label(f"{len(ctrl.campaign.history)} experiment(s) recorded").classes(
-                        "text-sm text-gray-600"
+                    with ui.card().classes("w-full"):
+                        _variable_editor(state)
+                    with ui.card().classes("w-full"):
+                        _objective_editor(state)
+                    with ui.card().classes("w-full"):
+                        ui.switch(
+                            "Mock mode (synthetic experiment → auto-run)"
+                        ).bind_value(state, "mock").props("color=indigo")
+                    ui.button("Create campaign", icon="rocket_launch", on_click=_create).props(
+                        "color=indigo"
                     )
-
-                if ctrl.can_auto:
-                    _auto_controls(state)
                 else:
-                    _manual_controls(state)
+                    _control_panel(state)
 
-                ui.separator()
-                ui.label("Live progress").classes("text-sm font-semibold text-gray-700")
-                mini_progress()
+            left()
+            state._left = left
 
-            @ui.refreshable
-            def mini_progress() -> None:
-                if state.controller is None or len(state.controller.campaign.history) == 0:
-                    _empty("No measurements yet.")
-                    return
-                ui.plotly(_progress_figure(state)).classes("w-full")
-                _recommendation(state)
-
-            run_panel()
-
-        # ---- Progress ----
-        with ui.tab_panel(tab_progress), ui.column().classes("gap-4 w-full").style("max-width: 60rem"):
+        # ---------- right: live viz ----------
+        with ui.column().classes("grow gap-3"):
 
             @ui.refreshable
-            def progress_panel() -> None:
-                if state.controller is None or len(state.controller.campaign.history) == 0:
-                    _empty("No measurements yet — create and run a campaign.")
-                    return
-                ui.plotly(_progress_figure(state)).classes("w-full")
-                _recommendation(state)
-                _history_table(state)
+            def right() -> None:
+                _viz_panel(state)
 
-            progress_panel()
+            right()
+            state._right = right  # so viz selectors + the timer can re-render it
 
-    # Expose refreshers on state so control handlers can trigger redraws.
-    state._run_panel = run_panel
-    state._mini_progress = mini_progress
-    state._progress_panel = progress_panel
+    # One auto-run timer, created once; the tick reads stable state and refreshes
+    # via state._right, so refreshing any panel never orphans it (this was the
+    # "Run didn't keep stepping" bug — the timer used to be rebuilt on refresh).
+    def _auto_tick() -> None:
+        if not state.auto_running or state.controller is None:
+            return
+        ctrl = state.controller
+        if ctrl.status in (RunStatus.HALTED, RunStatus.DONE):
+            state.auto_running = False
+            state._left.refresh()
+            state._right.refresh()
+            return
+        try:
+            ctrl.step_once()
+        except Exception:
+            logger.exception("auto step failed")
+            state.auto_running = False
+            return
+        state._right.refresh()
+
+    ui.timer(0.5, _auto_tick)  # always active; gated by state.auto_running
 
 
-# --------------------------------------------------------------------------- #
-# Run-tab controls
-# --------------------------------------------------------------------------- #
+def _control_panel(state: UIState) -> None:
+    ctrl = state.controller
+    with ui.card().classes("w-full"):
+        with ui.row().classes("items-center justify-between w-full"):
+            with ui.row().classes("items-center gap-2"):
+                _status_chip(ctrl)
+                ui.label(f"{len(ctrl.campaign.history)} experiment(s)").classes(
+                    "text-sm text-gray-600"
+                )
+            ui.button(icon="restart_alt", on_click=lambda: _reset(state)).props(
+                "flat dense round color=grey"
+            ).tooltip("New campaign")
+
+        spec = state.spec
+        ui.label(
+            f"{len(spec.domain)} variable(s), {spec.n_objectives} objective(s)"
+        ).classes("text-xs text-gray-500")
+
+        if ctrl.can_auto:
+            _auto_controls(state)
+        else:
+            _manual_controls(state)
+
+
+def _reset(state: UIState) -> None:
+    state.auto_running = False
+    state.controller = None
+    state.spec = None
+    state.pending = None
+    state._left.refresh()
+    state._right.refresh()
 
 
 def _manual_controls(state: UIState) -> None:
     ctrl = state.controller
-    ui.markdown(
-        "**Manual mode** — suggest an experiment, run it in the lab, enter the "
-        "measured value(s). _(Enable Mock mode on Define for hands-free auto-run.)_"
-    ).classes("text-sm text-gray-600")
+    ui.markdown("**Manual** — suggest, run in the lab, enter the value(s).").classes(
+        "text-sm text-gray-600"
+    )
 
     def do_suggest() -> None:
         try:
@@ -344,86 +398,53 @@ def _manual_controls(state: UIState) -> None:
         except Exception as exc:  # noqa: BLE001
             ui.notify(str(exc), type="negative")
             return
-        suggestion_card.refresh()
+        state._left.refresh()
 
-    ui.button("Suggest next experiment", icon="lightbulb", on_click=do_suggest).props(
-        "color=indigo"
-    )
+    ui.button("Suggest next experiment", icon="lightbulb", on_click=do_suggest).props("color=indigo")
 
-    @ui.refreshable
-    def suggestion_card() -> None:
-        if not state.pending:
-            return
+    if state.pending:
         cand = state.pending[0]
         with ui.card().classes("bg-indigo-50 w-full"):
-            ui.label("Run the experiment at:").classes("font-semibold text-indigo-900")
-            with ui.row().classes("gap-4 flex-wrap"):
+            ui.label("Run at:").classes("font-semibold text-indigo-900 text-sm")
+            with ui.row().classes("gap-3 flex-wrap"):
                 for name, val in cand.items():
                     with ui.column().classes("gap-0"):
                         ui.label(name).classes("text-xs text-gray-500")
-                        ui.label(f"{val:.4g}").classes("text-lg font-mono")
-            ui.separator()
+                        ui.label(f"{val:.4g}").classes("font-mono")
             inputs = {}
-            with ui.row().classes("gap-3 flex-wrap"):
+            with ui.row().classes("gap-2 flex-wrap"):
                 for obj in state.spec.objectives:
-                    inputs[obj.name] = ui.number(f"measured {obj.name}").props("outlined dense")
+                    inputs[obj.name] = ui.number(f"{obj.name}").props("outlined dense").classes("w-28")
 
             def do_submit() -> None:
                 vals = [inputs[o.name].value for o in state.spec.objectives]
                 if any(v is None for v in vals):
                     ui.notify("Enter all measured values first.", type="warning")
                     return
-                state.controller.submit(torch.tensor(vals, dtype=torch.double))
+                ctrl.submit(torch.tensor(vals, dtype=torch.double))
                 state.pending = None
-                ui.notify("Measurement recorded.", type="positive")
-                suggestion_card.refresh()
-                state._run_panel.refresh()
-                state._mini_progress.refresh()
-                state._progress_panel.refresh()
+                ui.notify("Recorded.", type="positive")
+                state._left.refresh()
+                state._right.refresh()
 
-            ui.button("Submit measurement", icon="check", on_click=do_submit).props("color=indigo")
-
-    suggestion_card()
+            ui.button("Submit", icon="check", on_click=do_submit).props("color=indigo")
 
 
 def _auto_controls(state: UIState) -> None:
     ctrl = state.controller
-    ui.markdown(
-        "**Mock / auto-run** — a synthetic experiment is attached; the campaign "
-        "drives itself. Use the controls below."
-    ).classes("text-sm text-gray-600")
-
-    # A per-run flag the Pause/Stop buttons flip; the timer checks it each tick.
-    flags = {"running": False}
-
-    def _refresh_all() -> None:
-        state._run_panel.refresh()
-        state._mini_progress.refresh()
-        state._progress_panel.refresh()
-
-    def tick() -> None:
-        if not flags["running"]:
-            return
-        if ctrl.status in (RunStatus.HALTED, RunStatus.DONE):
-            flags["running"] = False
-            _refresh_all()
-            return
-        ctrl.step_once()
-        state._mini_progress.refresh()
-
-    timer = ui.timer(0.6, tick, active=False)
+    ui.markdown("**Mock / auto-run** — the synthetic experiment drives the loop.").classes(
+        "text-sm text-gray-600"
+    )
 
     def do_run() -> None:
-        flags["running"] = True
+        state.auto_running = True
         ctrl.status = RunStatus.RUNNING
-        timer.activate()
-        state._run_panel.refresh()
+        state._left.refresh()
 
     def do_pause() -> None:
-        flags["running"] = False
+        state.auto_running = False
         ctrl.pause()
-        timer.deactivate()
-        _refresh_all()
+        state._left.refresh()
 
     def do_step() -> None:
         try:
@@ -431,15 +452,16 @@ def _auto_controls(state: UIState) -> None:
         except Exception as exc:  # noqa: BLE001
             ui.notify(str(exc), type="negative")
             return
-        _refresh_all()
+        state._left.refresh()
+        state._right.refresh()
 
     def do_stop() -> None:
-        flags["running"] = False
+        state.auto_running = False
         ctrl.stop()
-        timer.deactivate()
-        _refresh_all()
+        state._left.refresh()
+        state._right.refresh()
 
-    with ui.row().classes("gap-2"):
+    with ui.row().classes("gap-1"):
         ui.button("Run", icon="play_arrow", on_click=do_run).props("color=indigo")
         ui.button("Pause", icon="pause", on_click=do_pause).props("flat color=indigo")
         ui.button("Step", icon="skip_next", on_click=do_step).props("flat color=indigo")
@@ -447,20 +469,72 @@ def _auto_controls(state: UIState) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Shared widgets
+# Right panel: visualization
 # --------------------------------------------------------------------------- #
+
+
+def _viz_panel(state: UIState) -> None:
+    if state.controller is None or len(state.controller.campaign.history) == 0:
+        with ui.card().classes("w-full"), ui.row().classes("items-center gap-2 text-gray-500"):
+            ui.icon("insights").classes("text-gray-400")
+            ui.label("Create a campaign and take a few steps to see model + progress.")
+        return
+
+    spec = state.spec
+    model = state.fitted_model()
+
+    # Viz selectors (which objective, which vars to slice).
+    if model is not None and (spec.n_objectives > 1 or len(spec.domain) > 2):
+        with ui.row().classes("items-center gap-2"), ui.card().classes("w-full"):
+            if spec.n_objectives > 1:
+                ui.select(
+                    {j: o.name for j, o in enumerate(spec.objectives)},
+                    value=state.viz_obj, label="objective",
+                    on_change=lambda e: _reviz(state, "viz_obj", e.value),
+                ).props("dense outlined")
+            if len(spec.domain) > 2:
+                names = {i: n for i, n in enumerate(spec.variable_names)}
+                ui.select(names, value=state.viz_vx, label="x-axis var",
+                          on_change=lambda e: _reviz(state, "viz_vx", e.value)).props("dense outlined")
+                ui.select(names, value=state.viz_vy, label="y-axis var",
+                          on_change=lambda e: _reviz(state, "viz_vy", e.value)).props("dense outlined")
+
+    with ui.row().classes("w-full no-wrap gap-3"):
+        with ui.card().classes("grow"):
+            if model is not None:
+                ui.plotly(_model_fig(state, model)).classes("w-full")
+            else:
+                ui.label("Model view appears after the first fit.").classes("text-gray-500 text-sm")
+        with ui.card().classes("grow"):
+            ui.plotly(_convergence_fig(state)).classes("w-full")
+
+    if model is not None:
+        pf = _parity_fig(state, model)
+        if pf is not None:
+            with ui.card().classes("w-full"):
+                ui.plotly(pf).classes("w-full")
+
+    _recommendation(state)
+    with ui.expansion("History", icon="table_rows").classes("w-full"):
+        _history_table(state)
+
+
+def _reviz(state: UIState, attr: str, value) -> None:
+    """A viz selector changed: update the selection and re-render the right panel."""
+    setattr(state, attr, value)
+    right = getattr(state, "_right", None)
+    if right is not None:
+        right.refresh()
 
 
 def _status_chip(ctrl: RunController) -> None:
     colors = {
-        RunStatus.IDLE: ("grey", "idle"),
-        RunStatus.RUNNING: ("green", "running"),
-        RunStatus.PAUSED: ("amber", "paused"),
-        RunStatus.DONE: ("blue", "done"),
+        RunStatus.IDLE: ("grey", "idle"), RunStatus.RUNNING: ("green", "running"),
+        RunStatus.PAUSED: ("amber", "paused"), RunStatus.DONE: ("blue", "done"),
         RunStatus.HALTED: ("red", "halted"),
     }
     color, text = colors.get(ctrl.status, ("grey", str(ctrl.status)))
-    ui.badge(text).props(f"color={color}").classes("text-sm")
+    ui.badge(text).props(f"color={color}")
     if ctrl.campaign.halted:
         ui.label(f"⚠ {ctrl.campaign.halted}").classes("text-red-600 text-sm")
 
@@ -472,13 +546,13 @@ def _recommendation(state: UIState) -> None:
     hist = state.controller.campaign.history
     spec = state.spec
     with ui.card().classes("bg-green-50 w-full"):
-        label = "Recommended design" + ("s (Pareto set)" if len(rec) > 1 else "")
-        ui.label(label).classes("font-semibold text-green-900")
+        ui.label("Recommended" + (" (Pareto set)" if len(rec) > 1 else " design")).classes(
+            "font-semibold text-green-900"
+        )
         for i in rec:
             r = hist.records[i]
             setting = ", ".join(
-                f"{n} = {v:.4g}"
-                for n, v in zip(spec.variable_names, r.candidate.reshape(-1).tolist())
+                f"{n} = {v:.4g}" for n, v in zip(spec.variable_names, r.candidate.reshape(-1).tolist())
             )
             outs = ", ".join(
                 f"{o.name} = {float(r.outputs[j]):.4g}" for j, o in enumerate(spec.objectives)
@@ -504,12 +578,6 @@ def _history_table(state: UIState) -> None:
     ui.table(columns=cols, rows=rows, row_key="step").classes("w-full")
 
 
-def _empty(msg: str) -> None:
-    with ui.row().classes("items-center gap-2 text-gray-500"):
-        ui.icon("info").classes("text-gray-400")
-        ui.label(msg)
-
-
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -518,12 +586,11 @@ def _empty(msg: str) -> None:
 def main(argv: list[str] | None = None) -> None:
     """Entry point: build the page and launch the server.
 
-    Flags (also honored via env vars so a headless/cluster run can set them):
+    Flags (also honored via env vars for headless/cluster runs):
       --host (ABBOT_UI_HOST, default 127.0.0.1)
       --port (ABBOT_UI_PORT, default 8080) — auto-picks a free port if taken
       --strict-port — fail instead of auto-picking
       --show / --no-show (ABBOT_UI_SHOW=1/0) — open a browser tab on start.
-    On a cluster, use --no-show and tunnel the port; locally, --show pops a tab.
     """
     import argparse
     import os
@@ -563,7 +630,7 @@ def _free_port(host: str, preferred: int) -> int:
     """Return ``preferred`` if it can be bound, else an OS-assigned free port."""
     import socket
 
-    for candidate in (preferred, 0):  # 0 -> let the OS pick any open port
+    for candidate in (preferred, 0):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
@@ -571,7 +638,7 @@ def _free_port(host: str, preferred: int) -> int:
                 return sock.getsockname()[1]
             except OSError:
                 continue
-    return preferred  # both failed; let ui.run surface the error
+    return preferred
 
 
 if __name__ in {"__main__", "__mp_main__"}:

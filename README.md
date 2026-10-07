@@ -47,12 +47,19 @@ The optimization engine is exposed as a headless, step-based `Campaign`
 (`suggest` / `ingest` / `step` / `state` / `recommend`) — the same ask/tell surface
 a web UI, a notebook, or an agent drives. `run_campaign` is a thin blocking driver
 over it. The **NiceGUI** web client (`abbot[ui]`, `python -m abbot.ui`) is a thin
-layer over `Campaign` with three screens: a **type-polymorphic variable editor**
-(Continuous | Enumerated — the Badger differentiator), a manual run loop
-(suggest → enter measurement → ingest), and live progress plots fed by the
-`on_step` hook. Auto-run (controller drives `Campaign.step` with run/pause/step/stop)
-is available in the library when a programmatic `Experiment` is attached; manual vs.
-auto is a UI-driver concern, kept out of the core.
+layer over `Campaign`, laid out as a **single dashboard**: left column = a
+**type-polymorphic variable editor** (Continuous | Enumerated — the Badger
+differentiator) + run controls; right column = live visualization. Two run modes
+share one `RunController`: **manual** (suggest → enter measurement → ingest) and
+**mock auto-run** (a `SyntheticExperiment` drives `Campaign.step` on a timer with
+run/pause/step/stop). Manual vs. auto is a UI-driver concern, kept out of the core.
+
+Live visualization (via `abbot/analysis.py`, computed from history + the fitted
+model): an **adaptive model view** — 1-D posterior mean ± uncertainty band, 2-D
+posterior-mean contour, or a 1-D/2-D slice through the best point for 3-D+ (with
+variable selectors) — plus a dimension-agnostic **parity plot** (predicted vs
+observed), a **convergence / hypervolume** trace, the recommended design(s), and
+the history table.
 
 The engine is **natively multi-objective** and **maximize-canonical**: an
 `evaluate` callback returns raw physical measurements (one column per objective,
