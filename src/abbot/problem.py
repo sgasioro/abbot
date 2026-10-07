@@ -157,6 +157,24 @@ class ProblemSpec(BaseModel):
     def variable_names(self) -> list[str]:
         return [d.name for d in self.domain]
 
+    @property
+    def n_objectives(self) -> int:
+        return len(self.objectives)
+
+    def objective_signs(self, dtype=None, device=None):
+        """Per-objective sign vector: +1 for MAXIMIZE, -1 for MINIMIZE.
+
+        The engine is maximize-canonical: multiplying raw physical outputs by this
+        vector gives the "bigger is better" targets the surrogate/acquisition see,
+        so an ``evaluate`` callback returns raw measurements and never pre-negates.
+        The column order matches ``self.objectives``; an ``evaluate`` return must
+        have one column per objective in that same order.
+        """
+        import torch
+
+        signs = [1.0 if o.direction == "MAXIMIZE" else -1.0 for o in self.objectives]
+        return torch.tensor(signs, dtype=dtype or torch.double, device=device)
+
     def bounds_tensor(self, dtype=None, device=None):
         """Return a (2, d) lower/upper bounds tensor for ``optimize_acqf``.
 

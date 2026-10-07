@@ -109,3 +109,14 @@ class ModelListConstructor:
         model = ModelListGP(*gps)
         fit_gpytorch_mll(SumMarginalLogLikelihood(model.likelihood, model))
         return model
+
+
+def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstructor:
+    """Pick a sensible builtin: single-output GP for one objective, else ModelList.
+
+    A convenience so call sites don't branch on objective count; callers may still
+    pass their own ``ModelConstructor`` (e.g. a correlated MultiTaskGP for SBI).
+    """
+    if spec.n_objectives == 1:
+        return SingleTaskGPConstructor(bounds=bounds)
+    return ModelListConstructor(bounds=bounds)

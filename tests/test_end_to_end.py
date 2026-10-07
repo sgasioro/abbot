@@ -39,7 +39,7 @@ def test_lab_bo_continuous_via_manual_experiment(tmp_path):
     experiment = ManualExperiment(responder=responder, variable_names=["temp"])
     seeds = torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double)
 
-    best_x, _best_y, history = run_campaign(
+    result = run_campaign(
         experiment=experiment,
         spec=spec,
         policy=SimpleBO(),
@@ -49,8 +49,8 @@ def test_lab_bo_continuous_via_manual_experiment(tmp_path):
         n_shots=12,
         store=DataStore(tmp_path),
     )
-    assert len(history) == 3 + 12
-    assert abs(float(best_x) - opt) < 0.1
+    assert len(result.history) == 3 + 12
+    assert abs(float(result.best.candidate) - opt) < 0.1
 
 
 # --- M3: enumerated-discrete design space -------------------------------------
@@ -74,7 +74,7 @@ def test_lab_bo_enumerated_discrete():
     experiment = ManualExperiment(responder=responder)
     seeds = torch.tensor([[0.0], [5.0]], dtype=torch.double)
 
-    best_x, _best_y, _history = run_campaign(
+    result = run_campaign(
         experiment=experiment,
         spec=spec,
         policy=SimpleBO(optimizer=DiscreteArgmax()),
@@ -84,6 +84,7 @@ def test_lab_bo_enumerated_discrete():
         n_shots=8,
     )
     # Every proposed point must be one of the allowed values.
+    best_x = result.best.candidate
     assert float(best_x) in {0.0, 1.0, 2.0, 3.0, 4.0, 5.0}
     assert abs(float(best_x) - best_choice) <= 1.0
 
@@ -129,9 +130,9 @@ def test_sbi_aux_payload_persisted_and_resumed(tmp_path):
         assert r.aux.shape == (16, 2)
 
     # And a resumed run sees them.
-    _, _, history = run_campaign(n_shots=2, **kw)
-    assert len(history) == 6 + 2
-    assert history.records[0].aux is not None
+    result = run_campaign(n_shots=2, **kw)
+    assert len(result.history) == 6 + 2
+    assert result.history.records[0].aux is not None
 
 
 # --- Known gap, surfaced loudly: mixed continuous + enumerated ----------------

@@ -9,12 +9,14 @@ serialization). If it drifts into "framework", stop.
 
 from abbot.experiment import ManualExperiment
 from abbot.history import DataStore, History, Record
+from abbot.loop import CampaignResult, run_campaign
 from abbot.model import (
     ModelConstructor,
     ModelListConstructor,
     SingleTaskGPConstructor,
+    default_constructor,
 )
-from abbot.policy import Policy, SimpleBO, UncertaintySampling
+from abbot.policy import ParetoBO, Policy, SimpleBO, UncertaintySampling
 from abbot.problem import (
     Box,
     ContinuousDomain,
@@ -29,6 +31,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Box",
+    "CampaignResult",
     "ContinuousDomain",
     "DataStore",
     "EnumeratedDomain",
@@ -38,6 +41,7 @@ __all__ = [
     "ModelConstructor",
     "ModelListConstructor",
     "ObjectiveSpec",
+    "ParetoBO",
     "Policy",
     "ProblemSpec",
     "Record",
@@ -46,4 +50,6 @@ __all__ = [
     "StructuredDomain",
     "UncertaintySampling",
     "__version__",
+    "default_constructor",
+    "run_campaign",
 ]

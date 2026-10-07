@@ -54,13 +54,23 @@ class History:
 
     @property
     def outputs(self) -> torch.Tensor:
-        """Stacked outputs: (n, m). Requires every record to carry outputs."""
+        """Stacked raw outputs: (n, m). Requires every record to carry outputs.
+
+        Outputs are the *raw physical* measurements (the engine applies objective
+        signs for maximize-canonical fitting elsewhere, see ``loop._canonical_Y``).
+        """
         if not self.records:
             return torch.empty(0)
         vals = [r.outputs for r in self.records]
         if any(v is None for v in vals):
             raise ValueError("History.outputs: some records have no outputs set")
-        return torch.stack(vals)
+        widths = {int(v.reshape(-1).shape[0]) for v in vals}
+        if len(widths) != 1:
+            raise ValueError(
+                f"History.outputs: records have inconsistent objective counts {sorted(widths)}; "
+                "every evaluate() return must have the same number of columns."
+            )
+        return torch.stack([v.reshape(-1) for v in vals])
 
 
 class DataStore:

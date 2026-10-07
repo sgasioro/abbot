@@ -37,7 +37,7 @@ def test_simple_bo_recovers_optimum(tmp_path):
     bounds = spec.bounds_tensor()
     seeds = torch.tensor([[0.05], [0.5], [0.95]], dtype=torch.double)
 
-    best_x, _best_y, history = run_campaign(
+    result = run_campaign(
         experiment=_NegQuadratic(),
         spec=spec,
         policy=SimpleBO(),
@@ -47,7 +47,8 @@ def test_simple_bo_recovers_optimum(tmp_path):
         n_shots=12,
         store=DataStore(tmp_path),
     )
-    assert len(history) == len(seeds) + 12
+    assert len(result.history) == len(seeds) + 12
+    best_x = result.best.candidate
     assert abs(float(best_x) - _OPT) < 0.1, f"best_x={float(best_x)} not near {_OPT}"
 
 
@@ -66,9 +67,9 @@ def test_resume_from_store(tmp_path):
         "store": DataStore(tmp_path),
     }
     run_campaign(n_shots=4, **kw)
-    _, _, history = run_campaign(n_shots=3, **kw)
+    result = run_campaign(n_shots=3, **kw)
     # Resume picks up the 7 prior records and adds 3 more.
-    assert len(history) == 7 + 3
+    assert len(result.history) == 7 + 3
 
 
 def test_uq_pairing_guardrail():

@@ -24,8 +24,9 @@ src/abbot/
   models/
     ensemble.py   # ToyEnsembleModel — the non-GP smoke test for the ModelConstructor seam
   acq_opt.py      # CandidateOptimizer seam: Continuous | DiscreteArgmax
-  policy.py       # Policy (ask/tell) + SimpleBO, UncertaintySampling; uq_requirement capability
-  loop.py         # run_campaign(...) — the ask/tell driver (resume, retry/halt, denoised recommend)
+  policy.py       # Policy (ask/tell) + SimpleBO, ParetoBO, UncertaintySampling; uq_requirement
+  loop.py         # run_campaign(...) -> CampaignResult — ask/tell driver (resume, retry/halt,
+                  #   maximize-canonical direction handling, denoised recommend / Pareto front)
   history.py      # Record{candidate, observation, outputs, aux, fault} + History + DataStore
   experiment.py   # Experiment / PosteriorSampler / Supervisor protocols, Verdict
   config.py       # name -> class registries
@@ -34,6 +35,14 @@ src/abbot/
   interop/
     xopt.py       # gest-api VOCS <-> spec + CorePolicyGenerator [stub — F3]
 ```
+
+The engine is **natively multi-objective** and **maximize-canonical**: an
+`evaluate` callback returns raw physical measurements (one column per objective,
+in `spec.objectives` order), `ObjectiveSpec.direction` (`MINIMIZE`/`MAXIMIZE`)
+declares intent, and the loop applies the signs internally — no caller-side
+negation. `run_campaign` returns a `CampaignResult` whose `.recommended` is a
+single index (scalar) or the Pareto set (multi-objective); `.best` is the
+single-objective convenience.
 
 Three design properties are preserved from day one so agent integration is later
 a ~day of wrapper work (not an architecture change): **headless-first**,
