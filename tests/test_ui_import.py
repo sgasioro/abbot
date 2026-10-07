@@ -32,3 +32,20 @@ def test_uistate_surfaces_mixed_space_error():
     ]
     with pytest.raises(ValueError, match="Mixed"):
         state.start_campaign()
+
+
+def test_free_port_falls_back_when_busy():
+    import socket
+
+    from abbot.ui.app import _free_port
+
+    assert _free_port("127.0.0.1", 8531) == 8531  # free -> as requested
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", 8532))
+    s.listen()
+    try:
+        alt = _free_port("127.0.0.1", 8532)  # busy -> different free port
+        assert alt != 8532 and alt > 0
+    finally:
+        s.close()

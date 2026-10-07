@@ -297,13 +297,37 @@ def main(argv: list[str] | None = None) -> None:
                             help="open a browser tab on start (default locally)")
     show_group.add_argument("--no-show", dest="show", action="store_false",
                             help="do not open a browser (use on a headless/cluster host)")
+    parser.add_argument("--strict-port", action="store_true",
+                        help="fail if the requested port is taken instead of auto-picking a free one")
     args = parser.parse_args(argv)
+
+    port = args.port
+    if not args.strict_port:
+        port = _free_port(args.host, args.port)
+        if port != args.port:
+            logger.warning("port %d is in use; using %d instead.", args.port, port)
+            print(f"abbot.ui: port {args.port} busy -> using {port}")
 
     @ui.page("/")
     def index() -> None:
         _build_page()
 
-    ui.run(title="abbot", host=args.host, port=args.port, show=args.show, reload=False)
+    ui.run(title="abbot", host=args.host, port=port, show=args.show, reload=False)
+
+
+def _free_port(host: str, preferred: int) -> int:
+    """Return ``preferred`` if it can be bound, else an OS-assigned free port."""
+    import socket
+
+    for candidate in (preferred, 0):  # 0 -> let the OS pick any open port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, candidate))
+                return sock.getsockname()[1]
+            except OSError:
+                continue
+    return preferred  # both failed; let ui.run surface the error
 
 
 if __name__ in {"__main__", "__mp_main__"}:
