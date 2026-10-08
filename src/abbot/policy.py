@@ -268,3 +268,181 @@ class _SumPosteriorStd(torch.nn.Module):
         posterior = self.model.posterior(X)
         std = posterior.variance.clamp_min(1e-12).sqrt()  # (b, q, m)
         return std.sum(dim=-1).squeeze(-1)  # (b,)
+
+
+# --- BAX: goal-as-algorithm over a discrete candidate grid --------------------
+
+BAXStrategy = Literal["US", "MeanBAX", "SwitchBAX", "InfoBAX"]
+
+_BAX_UQ: dict[str, UQRequirement] = {
+    "US": "calibrated_variance",
+    "MeanBAX": "point",  # runs the goal on the posterior mean; a point net suffices
+    "SwitchBAX": "samples",  # stuck -> InfoBAX, which needs coherent samples
+    "InfoBAX": "samples",
+}
+
+
+class BAXPolicy:
+    """Bayesian Algorithm Execution over a discrete candidate grid.
+
+    One policy, strategy-dispatched over ``US`` / ``MeanBAX`` / ``SwitchBAX`` /
+    ``InfoBAX`` — ports multibax-sklearn's acquisition layer onto a botorch
+    ``Model`` (a multi-output ``ModelListGP`` for the theta-feature case). The
+    ``Goal`` identifies the target subset of the grid; the acquisition focuses
+    sampling to resolve that subset.
+
+    Discrete: the acquisition is a length-N vector over a Sobol candidate grid
+    (built once from the spec), selection is argmax, and already-collected grid
+    indices are masked to ``-inf`` (prevent-requery). Continuous proposal
+    (pathwise / seeded-ascent) is a deferred extension point.
+
+    Outputs are read in RAW units before the goal runs (the model is canonical;
+    ``objective_signs`` is un-applied), matching multibax's unnormalize step.
+    """
+
+    def __init__(
+        self,
+        goal,
+        strategy: BAXStrategy = "SwitchBAX",
+        *,
+        n_candidates: int = 1000,
+        n_posterior_samples: int = 20,
+        candidate_seed: int = 0,
+    ) -> None:
+        if strategy not in _BAX_UQ:
+            raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
+        self.goal = goal
+        self.strategy = strategy
+        self.n_candidates = n_candidates
+        self.n_posterior_samples = n_posterior_samples
+        self.candidate_seed = candidate_seed
+        self.uq_requirement: UQRequirement = _BAX_UQ[strategy]
+        self._grid: torch.Tensor | None = None
+        self._collected: list[int] = []
+        self.switched: bool = False  # last suggest fell back to the explore strategy
+
+    # -- grid --
+
+    def _ensure_grid(self, spec: ProblemSpec) -> torch.Tensor:
+        if self._grid is None:
+            from torch.quasirandom import SobolEngine
+
+            bounds = spec.bounds_tensor()
+            d = bounds.shape[-1]
+            sobol = SobolEngine(dimension=d, scramble=True, seed=self.candidate_seed)
+            draw = sobol.draw(self.n_candidates).double()
+            grid = bounds[0] + draw * (bounds[1] - bounds[0])
+            # Respect sparse inequality constraints (sum(coef*x[idx]) >= rhs).
+            cons = spec.inequality_constraints()
+            if cons:
+                keep = torch.ones(grid.shape[0], dtype=torch.bool)
+                for idx, coef, rhs in cons:
+                    keep &= (grid[:, idx] * coef).sum(dim=-1) >= rhs
+                grid = grid[keep]
+            self._grid = grid
+        return self._grid
+
+    @property
+    def collected_count(self) -> int:
+        """How many grid points have been proposed so far (prevent-requery state)."""
+        return len(self._collected)
+
+    def _raw_mean_std(self, model, X, spec):
+        """Posterior (mean, std) at X in RAW units: (N, d_y)."""
+        signs = spec.objective_signs()
+        with torch.no_grad():
+            post = model.posterior(X.double())
+            mean = post.mean.reshape(X.shape[0], -1) * signs
+            std = post.variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
+        return mean, std
+
+    # -- Policy API --
+
+    def suggest(
+        self, history: History, spec: ProblemSpec, model: Model, n: int = 1
+    ) -> torch.Tensor:
+        grid = self._ensure_grid(spec)
+        acq = self._acquisition(spec, model, grid)
+        acq = acq.clone()
+        acq[self._collected] = float("-inf")
+        picks = torch.topk(acq, k=min(n, acq.numel())).indices.tolist()
+        self._collected.extend(picks)
+        return grid[picks]
+
+    def ingest(self, results) -> None:
+        return None
+
+    def recommend(
+        self, history: History, spec: ProblemSpec, model: Model
+    ) -> list[int]:
+        # Hand over the observed non-dominated / best set (BAX's job is subset
+        # discovery, not single-point optimization); defer to the shared helper.
+        return _denoised_recommendation(history, spec, model)
+
+    # -- strategy dispatch (mirrors multibax acquisition.py) --
+
+    def _acquisition(self, spec, model, grid) -> torch.Tensor:
+        self.switched = False
+        mean, std = self._raw_mean_std(model, grid, spec)
+        if self.strategy == "US":
+            return std.mean(dim=-1)
+        # MeanBAX / SwitchBAX gate on the mean-execution target set.
+        if self.strategy in ("MeanBAX", "SwitchBAX"):
+            target = self.goal.identify_subspace(mean, grid)
+            if self._stuck(target):
+                self.switched = True
+                if self.strategy == "MeanBAX":
+                    return std.mean(dim=-1)  # fall back to US
+                return self._infobax(spec, model, grid, std)  # SwitchBAX -> InfoBAX
+            acq = torch.zeros(grid.shape[0], dtype=torch.double)
+            acq[target] = std.mean(dim=-1)[target]
+            return acq
+        # InfoBAX
+        return self._infobax(spec, model, grid, std)
+
+    def _stuck(self, target: list[int]) -> bool:
+        """multibax ``meanbax_stuck``: empty target set, or already all collected."""
+        return len(set(target)) == 0 or set(target).issubset(self._collected)
+
+    def _infobax(self, spec, model, grid, std) -> torch.Tensor:
+        """EIG via fantasy conditioning (multibax ``multiproperty_infobax``).
+
+        acq = H[current] - E_sample[ H[posterior | execution(sample)] ], averaged
+        over outputs. Coherent joint samples over the grid; condition the model on
+        each sample's goal-target points; recompute summed latent entropy.
+        """
+        term1 = _entropy(std)  # (N, d_y) current predictive entropy
+        signs = spec.objective_signs()
+        with torch.no_grad():
+            post = model.posterior(grid.double())
+            # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
+            samples = post.rsample(torch.Size([self.n_posterior_samples]))
+        term2 = torch.zeros_like(term1)
+        n = self.n_posterior_samples
+        for i in range(n):
+            f_canon = samples[i].reshape(grid.shape[0], -1)
+            f_raw = f_canon * signs
+            target = self.goal.identify_subspace(f_raw, grid)
+            if not target:
+                term2 += term1  # no execution info -> entropy unchanged
+                continue
+            try:
+                fant = model.condition_on_observations(
+                    grid[target].double(), f_canon[target]
+                )
+                _, fstd = self._raw_mean_std(fant, grid, spec)
+                term2 += _entropy(fstd)
+            except Exception:
+                logger.exception("InfoBAX fantasy conditioning failed for a sample.")
+                term2 += term1
+        term2 = term2 / n
+        eig = (term1 - term2).mean(dim=-1)  # (N,) averaged over outputs
+        return eig
+
+
+def _entropy(std: torch.Tensor) -> torch.Tensor:
+    """Gaussian differential entropy per candidate per output (multibax formula)."""
+    import math
+
+    var = std.clamp_min(1e-12) ** 2
+    return 0.5 * torch.log(2 * math.pi * var) + 0.5

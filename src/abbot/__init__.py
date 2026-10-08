@@ -8,6 +8,13 @@ serialization). If it drifts into "framework", stop.
 """
 
 from abbot.experiment import ManualExperiment, SyntheticExperiment
+from abbot.goal import (
+    BandIntersection,
+    Goal,
+    PercentileSet,
+    Wishlist,
+    goals_from_spec,
+)
 from abbot.history import DataStore, History, Record
 from abbot.loop import run_campaign
 from abbot.model import (
@@ -16,7 +23,7 @@ from abbot.model import (
     SingleTaskGPConstructor,
     default_constructor,
 )
-from abbot.policy import ParetoBO, Policy, SimpleBO, UncertaintySampling
+from abbot.policy import BAXPolicy, ParetoBO, Policy, SimpleBO, UncertaintySampling
 from abbot.problem import (
     Box,
     ContinuousDomain,
@@ -33,6 +40,8 @@ from abbot.session import Campaign, CampaignResult, CampaignState
 __version__ = "0.1.0"
 
 __all__ = [
+    "BAXPolicy",
+    "BandIntersection",
     "Box",
     "BoxMembershipReducer",
     "Campaign",
@@ -41,6 +50,7 @@ __all__ = [
     "ContinuousDomain",
     "DataStore",
     "EnumeratedDomain",
+    "Goal",
     "History",
     "InequalitySpec",
     "ManualExperiment",
@@ -49,6 +59,7 @@ __all__ = [
     "ObjectiveReducer",
     "ObjectiveSpec",
     "ParetoBO",
+    "PercentileSet",
     "Policy",
     "ProblemSpec",
     "Record",
@@ -57,8 +68,10 @@ __all__ = [
     "StructuredDomain",
     "SyntheticExperiment",
     "UncertaintySampling",
+    "Wishlist",
     "__version__",
     "default_constructor",
+    "goals_from_spec",
     "run_campaign",
     "sbi_evaluate",
 ]

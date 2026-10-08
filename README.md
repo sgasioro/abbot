@@ -24,7 +24,7 @@ src/abbot/
   models/
     ensemble.py   # ToyEnsembleModel — the non-GP smoke test for the ModelConstructor seam
   acq_opt.py      # CandidateOptimizer seam: Continuous | DiscreteArgmax
-  policy.py       # Policy (ask/tell) + SimpleBO, ParetoBO, UncertaintySampling; uq_requirement
+  policy.py       # Policy (ask/tell) + SimpleBO, ParetoBO, UncertaintySampling, BAXPolicy; uq_requirement
   session.py      # Campaign — the step-based ask/tell session (suggest/ingest/step/state/
                   #   recommend), resume, on_step hook; shared engine helpers; CampaignResult
   loop.py         # run_campaign(...) -> CampaignResult — thin blocking driver over a Campaign
@@ -32,7 +32,7 @@ src/abbot/
   history.py      # Record{candidate, observation, outputs, aux, fault} + History + DataStore
   experiment.py   # Experiment / PosteriorSampler / Supervisor protocols, Verdict, ManualExperiment
   config.py       # name -> class registries
-  goal.py         # Goal protocol (BAX goal-as-algorithm)   [stub — F1]
+  goal.py         # Goal (BAX goal-as-algorithm): PercentileSet, BandIntersection, Wishlist
   reduce.py       # ObjectiveReducer + BoxMembershipReducer (composite SBI, M2)
   sbi.py          # sbi_evaluate: PosteriorSampler + reducer -> (F, theta) evaluate seam; rescore
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
@@ -143,6 +143,12 @@ ruff check src/ tests/
   caching + the lazy `interop/sbido.py` adapter, validated on sbido's analytic
   posterior *(done)*. Follow-on: install `sbi` + reproduce sbido's mat_finder
   benchmark (regret-parity) on the abbot core.
+- **F1** — goal-BAX layer so sbido's BAX designers run on abbot (retires the
+  multibax-sklearn dep): `Goal` (`PercentileSet`/`BandIntersection`/`Wishlist`) +
+  `BAXPolicy` (US/MeanBAX/SwitchBAX/InfoBAX over a discrete grid, botorch-native
+  fantasy conditioning). Validated behaviorally on sbido's analytic benchmark
+  *(done)*. Follow-on: continuous BAX (pathwise / seeded-ascent); the sbido-side
+  cutover PR.
 - **F-tier** — BAXstics goal-BAX port, full nn-bax productionization + upstreaming
   to Xopt, Xopt/Badger interop via gest-api, and agent integration (setup-copilot,
   then an MCP server).

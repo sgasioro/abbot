@@ -73,3 +73,57 @@ def test_real_sbido_sbi_loop_on_abbot_core():
     assert all(r.aux is not None for r in c.history.records)  # theta cached
     best_x = float(c.history.records[c.recommend()[0]].candidate)
     assert abs(best_x - 0.5) < 0.2
+
+
+def test_bax_on_sbido_analytic_benchmark_concentrates_on_target():
+    """Behavioral parity: BAXPolicy + Wishlist over sbido's analytic benchmark map
+    (exact theta_true, no learned posterior) concentrates sampling in the oracle
+    target region — the multibax-replacement acceptance check.
+    """
+    torch.manual_seed(0)
+    bm = pytest.importorskip("sbido.testing.benchmark_maps")
+
+    from abbot.interop.sbido import bax_policy_for
+    from abbot.model import ModelListConstructor
+    from abbot.problem import Box, ContinuousDomain, ObjectiveSpec, ProblemSpec
+    from abbot.session import Campaign
+
+    level = "L0"  # monotone, most-feasible level -> a learnable target in few shots
+    # Model two tracked theta dims; target band = their oracle "diff" sub-target.
+    dims = ["r_diff", "sigma_diff"]
+    from sbido.mat_finder import PARAM_NAMES
+
+    dim_idx = [PARAM_NAMES.index(n) for n in dims]
+    band = {"r_diff": (20.0, 30.0), "sigma_diff": (-1e9, 0.1)}
+
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name=n, lower=float(lo), upper=float(hi))
+                for n, lo, hi in zip(bm.XI_NAMES, bm.XI_BOUNDS[0], bm.XI_BOUNDS[1])],
+        objectives=[ObjectiveSpec(name=d, direction="MAXIMIZE") for d in dims],
+        boxes=[Box(lower=[band[d][0] for d in dims], upper=[band[d][1] for d in dims])],
+    )
+
+    class _AnalyticExperiment:
+        def run(self, candidate):
+            theta = bm.theta_true(candidate.reshape(1, -1), level=level)[0]
+            return theta[dim_idx]  # the two tracked dims, exact
+
+    policy = bax_policy_for(spec, strategy="MeanBAX", scalar=False, n_candidates=400)
+    c = Campaign(spec, policy, ModelListConstructor(bounds=spec.bounds_tensor()))
+    # Seed from the policy's own grid so fits and proposals share the candidate set.
+    grid = policy._ensure_grid(spec)
+    c.seed(grid[torch.randperm(grid.shape[0])[:6]])
+    exp = _AnalyticExperiment()
+    for _ in range(20):
+        c.step(exp, lambda obs: obs)
+
+    # Fraction of post-seed shots whose true theta lands in the target band should
+    # exceed the base rate of the band over the design space (concentration).
+    def in_band(cand):
+        th = bm.theta_true(cand.reshape(1, -1), level=level)[0][dim_idx]
+        return bool((th[0] >= 20.0) and (th[0] <= 30.0) and (th[1] <= 0.1))
+
+    shots = [r.candidate for r in c.history.records[6:]]  # exclude seeds
+    hit_rate = sum(in_band(x) for x in shots) / len(shots)
+    base_rate = sum(in_band(grid[i]) for i in range(grid.shape[0])) / grid.shape[0]
+    assert hit_rate > base_rate, f"BAX hit rate {hit_rate:.2f} <= base rate {base_rate:.2f}"

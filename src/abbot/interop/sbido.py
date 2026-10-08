@@ -78,3 +78,34 @@ def conforms(obj: Any, protocol: type) -> bool:
     conformance test so a sbido API change surfaces here, not deep in a run.
     """
     return isinstance(obj, protocol)
+
+
+def bax_policy_for(
+    spec: Any,
+    strategy: str = "SwitchBAX",
+    *,
+    percentile: float = 80.0,
+    scalar: bool = True,
+    n_candidates: int = 1000,
+    n_posterior_samples: int = 20,
+):
+    """Build an abbot ``BAXPolicy`` matching a sbido BAX designer's intent.
+
+    sbido has two BAX modes (``~/sbido/src/sbido/methods/bax.py``):
+      - ``BaxDesigner``: GP over the scalar ``or_score`` + ``PercentileSet1D`` ->
+        here ``scalar=True`` -> ``BAXPolicy(PercentileSet, ...)`` on a 1-output model.
+      - ``ThetaBaxDesigner``: GP over per-dim theta means + ``Wishlist`` -> here
+        ``scalar=False`` -> ``BAXPolicy(goals_from_spec(spec), ...)`` on a
+        multi-output model (the "outputs" are the tracked theta-dim means, NOT the
+        BoxMembershipReducer scalar).
+    """
+    from abbot.goal import PercentileSet, goals_from_spec
+    from abbot.policy import BAXPolicy
+
+    goal = PercentileSet(percentile) if scalar else goals_from_spec(spec)
+    return BAXPolicy(
+        goal,
+        strategy=strategy,
+        n_candidates=n_candidates,
+        n_posterior_samples=n_posterior_samples,
+    )
