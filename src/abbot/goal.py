@@ -9,8 +9,13 @@ Ports multibax-sklearn's subset algorithms (``algorithms.py``) onto abbot: abbot
 has no sklearn scalers, so ``f`` arrives already in raw units (the ``BAXPolicy``
 converts the canonical-space model output before calling the goal, mirroring
 multibax's ``SubsetAlgorithm.unnormalize``). ``PercentileSet`` + ``Wishlist`` cover
-both sbido BAX designers; the richer multibax algorithms (Pareto, etc.) port on
-demand.
+both sbido BAX designers.
+
+Beyond the box/threshold builtins, ``FunctionGoal`` wraps an arbitrary
+``fn(f, X) -> indices`` (abbot's analogue of nn-bax ``FunctionAlgorithm``), so any
+goal expressible as "pick indices from (evaluated values, candidates)" is supported
+— ``LevelSet`` and ``TopK`` are two ready-made examples. The richer multibax
+algorithms (Pareto, etc.) port on demand on the same protocol.
 """
 
 from __future__ import annotations
@@ -91,6 +96,63 @@ class Wishlist:
         for bounds in self.bounds_list:
             ids.update(_band_indices(f, bounds))
         return sorted(ids)
+
+
+class FunctionGoal:
+    """Wrap an arbitrary goal function — the general goal-as-algorithm escape hatch.
+
+    ``fn(f, X) -> list[int]`` receives the evaluated outputs ``f`` of shape
+    ``(N, d_y)`` (raw units) and the candidate grid ``X`` of shape ``(N, d_x)``, and
+    returns target indices. This is abbot's analogue of nn-bax ``FunctionAlgorithm``,
+    adapted to abbot's convention that the goal sees the *evaluated values* (the
+    ``BAXPolicy`` pre-evaluates the sampled function on the grid), not a callable —
+    which keeps goals model/grid-agnostic and consistent with the box goals above.
+    Anything expressible as "pick indices from (values, candidates)" fits: level
+    sets, custom top-k, multi-output logic, x-dependent regions, etc.
+    """
+
+    def __init__(self, fn) -> None:
+        self.fn = fn
+
+    def identify_subspace(
+        self, f: torch.Tensor, X: torch.Tensor | None = None
+    ) -> list[int]:
+        return list(self.fn(f.reshape(f.shape[0], -1), X))
+
+
+class LevelSet:
+    """Super-level set on one output: indices where ``f[:, output] >= threshold``.
+
+    (A sub-level set is ``LevelSet(threshold, output, upper=True)`` -> ``<=``.)
+    """
+
+    def __init__(self, threshold: float, output: int = 0, upper: bool = False) -> None:
+        self.threshold = threshold
+        self.output = output
+        self.upper = upper
+
+    def identify_subspace(
+        self, f: torch.Tensor, X: torch.Tensor | None = None
+    ) -> list[int]:
+        col = f.reshape(f.shape[0], -1)[:, self.output]
+        mask = col <= self.threshold if self.upper else col >= self.threshold
+        return mask.nonzero(as_tuple=True)[0].tolist()
+
+
+class TopK:
+    """The ``k`` candidates with the highest (or lowest) value on one output."""
+
+    def __init__(self, k: int = 1, output: int = 0, largest: bool = True) -> None:
+        self.k = k
+        self.output = output
+        self.largest = largest
+
+    def identify_subspace(
+        self, f: torch.Tensor, X: torch.Tensor | None = None
+    ) -> list[int]:
+        col = f.reshape(f.shape[0], -1)[:, self.output]
+        k = min(self.k, col.numel())
+        return torch.topk(col, k, largest=self.largest).indices.tolist()
 
 
 def _band_indices(f: torch.Tensor, bounds: list[tuple[float, float]]) -> list[int]:

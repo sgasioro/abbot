@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from abbot.goal import BandIntersection, PercentileSet
+from abbot.goal import BandIntersection, FunctionGoal, PercentileSet
 from abbot.history import History, Record
 from abbot.loop import check_uq_pairing
 from abbot.model import SingleTaskGPConstructor
@@ -110,6 +110,21 @@ def test_coherent_samples_are_joint():
     adj = torch.corrcoef(torch.stack([s[:, 0], s[:, 1]]))[0, 1]
     distant = torch.corrcoef(torch.stack([s[:, 0], s[:, 49]]))[0, 1]
     assert float(adj) > float(distant)
+
+
+def test_function_goal_drives_bax():
+    """An arbitrary FunctionGoal works as a BAXPolicy goal (the flexibility hatch)."""
+    torch.manual_seed(0)
+    spec = _spec()
+    model = _fit(spec, [0.1, 0.3, 0.5, 0.7, 0.9], [0.0, 0.4, 1.0, 0.4, 0.0])[0]
+    # Custom goal: top third of candidates by the (single) output.
+    goal = FunctionGoal(
+        lambda f, X: (f[:, 0] >= f[:, 0].quantile(0.66)).nonzero(as_tuple=True)[0].tolist()
+    )
+    pol = BAXPolicy(goal, strategy="MeanBAX", n_candidates=150)
+    x = pol.suggest(History(), spec, model, n=1)
+    assert x.shape == (1, 1)
+    assert pol.collected_count == 1
 
 
 def test_uq_pairing_refuses_point_model_with_infobax():

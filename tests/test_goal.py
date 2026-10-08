@@ -5,7 +5,10 @@ import torch
 
 from abbot.goal import (
     BandIntersection,
+    FunctionGoal,
+    LevelSet,
     PercentileSet,
+    TopK,
     Wishlist,
     goals_from_spec,
 )
@@ -60,6 +63,33 @@ def test_goals_from_spec_unions_boxes():
     goal = goals_from_spec(spec)
     f = torch.tensor([[0.5, 10.5], [5.5, 20.5], [3.0, 3.0]])
     assert goal.identify_subspace(f) == [0, 1]
+
+
+def test_function_goal_wraps_arbitrary_fn():
+    f = torch.tensor([[0.1, 0.9], [0.8, 0.2], [0.5, 0.5]])
+    # "output 0 greater than output 1" — not expressible as a box.
+    goal = FunctionGoal(lambda f, X: (f[:, 0] > f[:, 1]).nonzero(as_tuple=True)[0].tolist())
+    assert goal.identify_subspace(f) == [1]
+
+
+def test_function_goal_receives_X():
+    f = torch.zeros(3, 1)
+    X = torch.tensor([[0.1], [0.5], [0.9]])
+    # x-dependent goal: candidates with x > 0.4.
+    goal = FunctionGoal(lambda f, X: (X[:, 0] > 0.4).nonzero(as_tuple=True)[0].tolist())
+    assert goal.identify_subspace(f, X) == [1, 2]
+
+
+def test_level_set():
+    f = torch.tensor([[1.0], [5.0], [3.0]])
+    assert LevelSet(threshold=3.0).identify_subspace(f) == [1, 2]       # >= 3
+    assert LevelSet(threshold=3.0, upper=True).identify_subspace(f) == [0, 2]  # <= 3
+
+
+def test_top_k():
+    f = torch.tensor([[1.0], [5.0], [3.0], [2.0]])
+    assert sorted(TopK(k=2).identify_subspace(f)) == [1, 2]            # two largest
+    assert sorted(TopK(k=2, largest=False).identify_subspace(f)) == [0, 3]  # two smallest
 
 
 def test_goals_from_spec_requires_boxes():

@@ -37,6 +37,9 @@ packages = ["src/abbot"]
 
 [tool.ruff]
 line-length = 88
+# Generated teaching notebooks: outputs are built by examples/_build_notebooks.py,
+# and import-ordering / didactic import style in cells isn't worth enforcing.
+extend-exclude = ["examples/*.ipynb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,8 +10,11 @@ serialization). If it drifts into "framework", stop.
 from abbot.experiment import ManualExperiment, SyntheticExperiment
 from abbot.goal import (
     BandIntersection,
+    FunctionGoal,
     Goal,
+    LevelSet,
     PercentileSet,
+    TopK,
     Wishlist,
     goals_from_spec,
 )
@@ -50,9 +53,11 @@ __all__ = [
     "ContinuousDomain",
     "DataStore",
     "EnumeratedDomain",
+    "FunctionGoal",
     "Goal",
     "History",
     "InequalitySpec",
+    "LevelSet",
     "ManualExperiment",
     "ModelConstructor",
     "ModelListConstructor",
@@ -67,6 +72,7 @@ __all__ = [
     "SingleTaskGPConstructor",
     "StructuredDomain",
     "SyntheticExperiment",
+    "TopK",
     "UncertaintySampling",
     "Wishlist",
     "__version__",

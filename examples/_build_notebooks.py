@@ -4,6 +4,9 @@ Run: ``python examples/_build_notebooks.py`` then execute them (the Makefile-fre
 way is ``jupyter nbconvert --to notebook --execute --inplace examples/*.ipynb``).
 Kept in-repo so the notebooks are regenerable rather than hand-edited JSON. Budgets
 are deliberately tiny so each notebook runs in seconds (they are CI-smoke-tested).
+
+NOTE: this OVERWRITES every notebook (clearing committed outputs), so always
+re-execute ALL of them after running this, not just the one you edited.
 """
 
 from __future__ import annotations
@@ -340,7 +343,7 @@ import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
     ProblemSpec, ContinuousDomain, ObjectiveSpec, Box,
-    BAXPolicy, Wishlist, goals_from_spec, ModelListConstructor, Campaign,
+    BAXPolicy, goals_from_spec, ModelListConstructor, Campaign,
 )
 torch.manual_seed(0)
 """),
@@ -382,10 +385,28 @@ print(f"fraction of BAX shots in the target region: {hit:.2f}")
 print("(the target box is ~20% of the x-range, so > 0.2 means BAX concentrated there)")
 """),
     md("""
-**What this showed:** given a *target region* rather than a maximum, BAX steers
-sampling toward designs that satisfy it. This is the goal-as-algorithm capability
-abbot ports from multibax — the same engine that drives sbido's BAX designers,
-now on botorch.
+### Beyond boxes: arbitrary goals
+`Wishlist`/`BandIntersection` cover target boxes, but a goal is just a function
+from predicted outputs to target indices. `FunctionGoal` wraps **any**
+`fn(f, X) -> indices`, so goals that aren't boxes — level sets, custom top-k,
+multi-output logic — plug into the same `BAXPolicy`:
+
+```python
+from abbot import FunctionGoal, LevelSet, TopK
+
+# ready-made non-box goals:
+goal = LevelSet(threshold=0.5, output=0)      # super-level set on output 0
+goal = TopK(k=5, output=0)                    # the 5 best candidates by output 0
+
+# or anything you can express as (values, candidates) -> indices:
+goal = FunctionGoal(lambda f, X: (f[:, 0] > f[:, 1]).nonzero(as_tuple=True)[0].tolist())
+```
+
+**What this showed:** given a *target region* (or any goal-as-code) rather than a
+maximum, BAX steers sampling toward designs that satisfy it. This is the
+goal-as-algorithm capability abbot ports from multibax — the same engine that
+drives sbido's BAX designers — with `FunctionGoal` giving the arbitrary-goal
+flexibility of nn-bax's `FunctionAlgorithm`, now on botorch.
 """),
 ])
 

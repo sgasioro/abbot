@@ -32,7 +32,8 @@ src/abbot/
   history.py      # Record{candidate, observation, outputs, aux, fault} + History + DataStore
   experiment.py   # Experiment / PosteriorSampler / Supervisor protocols, Verdict, ManualExperiment
   config.py       # name -> class registries
-  goal.py         # Goal (BAX goal-as-algorithm): PercentileSet, BandIntersection, Wishlist
+  goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
+                  #   FunctionGoal (arbitrary fn(f, X) -> indices — nn-bax-style flexibility)
   reduce.py       # ObjectiveReducer + BoxMembershipReducer (composite SBI, M2)
   sbi.py          # sbi_evaluate: PosteriorSampler + reducer -> (F, theta) evaluate seam; rescore
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
