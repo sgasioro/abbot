@@ -75,9 +75,15 @@ observed), a **convergence / hypervolume** trace, the recommended design(s), and
 the history table. Per-step the plots **update in place** (`update_figure`),
 rebuilt only on create/reset/selector-change, so auto-run stays smooth.
 
-**Import / export** (via `abbot/io.py`, pure functions): download the `ProblemSpec`
-as JSON or the run history as CSV; upload a spec JSON to populate the editor, or a
-history CSV to seed/resume a campaign (`Campaign.load_history`).
+**Import / export** (via `abbot/io.py`, pure functions). Two tiers:
+- **Self-describing CSV** (`spec_history_to_csv` / `spec_history_from_csv`) — one
+  lab-friendly file carrying the whole setup in `#` comment rows (variables,
+  objectives, boxes, version) *plus* the measurement table. Opens in Excel/pandas
+  (`read_csv(comment='#')`); refuses (not silently drops) parts it can't hold
+  (structured domains, constraints). The portable "email a campaign" format.
+- **Canonical JSON** (`spec_to_json`) — lossless `ProblemSpec` round-trip for the
+  cases CSV can't express. *(A run-level JSON serializer incl. the SBI `aux`
+  payload is a planned follow-on.)*
 
 The engine is **natively multi-objective** and **maximize-canonical**: an
 `evaluate` callback returns raw physical measurements (one column per objective,

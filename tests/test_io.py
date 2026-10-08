@@ -3,10 +3,13 @@
 import pytest
 import torch
 
+from abbot.history import History, Record
 from abbot.io import (
     history_from_csv,
     history_to_csv,
     spec_from_json,
+    spec_history_from_csv,
+    spec_history_to_csv,
     spec_to_json,
 )
 from abbot.model import default_constructor
@@ -38,8 +41,6 @@ def test_history_csv_round_trip():
     spec = _spec()
     campaign = Campaign(spec, SimpleBO(), default_constructor(spec, bounds=spec.bounds_tensor()))
     # Hand-build a couple of measured records via load_history.
-    from abbot.history import History, Record
-
     h = History()
     h.append(Record(candidate=torch.tensor([30.0, 1.0]), observation=None, outputs=torch.tensor([42.0, 5.0])))
     h.append(Record(candidate=torch.tensor([60.0, 2.0]), observation=None, outputs=torch.tensor([55.0, 3.0])))
@@ -72,7 +73,7 @@ def test_history_from_csv_bad_number():
 
 
 def test_load_history_feeds_the_fit(tmp_path):
-    from abbot.history import DataStore, History, Record
+    from abbot.history import DataStore
 
     spec = ProblemSpec(
         domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
@@ -93,3 +94,71 @@ def test_load_history_feeds_the_fit(tmp_path):
         store=DataStore(tmp_path),
     )
     assert len(resumed.history) == 3
+
+
+# --- self-describing CSV (spec + history in one file) -------------------------
+
+
+def _history_for(spec):
+    h = History()
+    h.append(Record(candidate=torch.tensor([30.0, 1.0]), observation=None, outputs=torch.tensor([42.0, 5.0])))
+    h.append(Record(candidate=torch.tensor([60.0, 2.0]), observation=None, outputs=torch.tensor([55.0, 3.0])))
+    return h
+
+
+def test_self_describing_round_trip():
+    spec = _spec()  # continuous + enumerated vars, MAX + MIN objectives
+    hist = _history_for(spec)
+    text = spec_history_to_csv(spec, hist)
+
+    # Config lives in `#` rows; the data table is pandas/Excel-readable.
+    assert "# version" in text
+    assert "# continuous,temp" in text
+    assert "# enumerated,catalyst" in text
+
+    spec2, hist2 = spec_history_from_csv(text)
+    assert spec2 == spec                       # spec round-trips exactly
+    assert len(hist2) == 2
+    assert torch.allclose(hist2.records[1].outputs, torch.tensor([55.0, 3.0], dtype=torch.double))
+
+
+def test_self_describing_with_boxes():
+    from abbot.problem import Box
+
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
+        objectives=[ObjectiveSpec(name="a", direction="MAXIMIZE"),
+                    ObjectiveSpec(name="b", direction="MAXIMIZE")],
+        boxes=[Box(lower=[4.0, 0.0], upper=[6.0, 1.0])],
+    )
+    spec2, _ = spec_history_from_csv(spec_history_to_csv(spec))
+    assert spec2.boxes[0].lower == [4.0, 0.0]
+    assert spec2.boxes[0].upper == [6.0, 1.0]
+
+
+def test_self_describing_refuses_constraints():
+    from abbot.problem import InequalitySpec
+
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
+        objectives=[ObjectiveSpec(name="y", direction="MAXIMIZE")],
+        constraints=[InequalitySpec(indices=[0], coeffs=[1.0], rhs=0.5)],
+    )
+    with pytest.raises(ValueError, match="constraints"):
+        spec_history_to_csv(spec)
+
+
+def test_self_describing_ignores_unknown_comment_rows():
+    spec = _spec()
+    text = "# some note,ignored\n# version,1\n" + spec_history_to_csv(spec)
+    spec2, _ = spec_history_from_csv(text)
+    assert spec2.variable_names == ["temp", "catalyst"]
+
+
+def test_pandas_can_read_the_data_table():
+    pd = pytest.importorskip("pandas")
+    import io as _io
+    text = spec_history_to_csv(_spec(), _history_for(_spec()))
+    df = pd.read_csv(_io.StringIO(text), comment="#")
+    assert list(df.columns) == ["step", "temp", "catalyst", "yield", "cost"]
+    assert len(df) == 2

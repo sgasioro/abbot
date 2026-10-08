@@ -78,3 +78,106 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
             raise ValueError(f"CSV row {row_num}: could not parse numbers ({exc})") from exc
         history.append(Record(candidate=x, observation=None, outputs=y))
     return history
+
+
+# --- Self-describing CSV: spec + history in one file --------------------------
+# The ``#``-prefixed header rows encode the full ProblemSpec; the measurement
+# table follows. Config lives in comment rows, so pandas (`read_csv(comment='#')`)
+# and Excel read the data table directly — one portable file carries setup + data.
+# Adopted from the bax-platform student tool; abbot adds a version tag + domain
+# types (continuous/enumerated) + boxes. Row grammar (each ``# key,value...``):
+#   # version,1
+#   # continuous,<name>,<lower>,<upper>
+#   # enumerated,<name>,<v1>,<v2>,...
+#   # objective,<name>,MINIMIZE|MAXIMIZE
+#   # box,<lo1>,<lo2>,...,|,<hi1>,<hi2>,...     (lower vector | upper vector)
+# NOT representable here (raises on write): StructuredDomain, inequality
+# constraints, cached aux. Use the JSON spec / DataStore for those.
+
+CSV_FORMAT_VERSION = 1
+
+
+def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> str:
+    """Write a self-describing CSV: ``#`` config rows + the measurement table.
+
+    Raises ``ValueError`` if the spec has parts CSV can't hold (structured domains,
+    inequality constraints) — be honest rather than silently dropping them; use the
+    JSON spec for those campaigns.
+    """
+    from abbot.problem import ContinuousDomain, EnumeratedDomain
+
+    if spec.constraints:
+        raise ValueError(
+            "self-describing CSV cannot represent inequality constraints; use the "
+            "JSON spec (spec_to_json) for this campaign."
+        )
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["# version", CSV_FORMAT_VERSION])
+    for d in spec.domain:
+        if isinstance(d, ContinuousDomain):
+            w.writerow(["# continuous", d.name, d.lower, d.upper])
+        elif isinstance(d, EnumeratedDomain):
+            w.writerow(["# enumerated", d.name, *d.values])
+        else:
+            raise ValueError(  # noqa: TRY004 - a format-capability limit, not a type error
+                f"self-describing CSV cannot represent {type(d).__name__} "
+                f"({d.name!r}); use the JSON spec for this campaign."
+            )
+    for o in spec.objectives:
+        w.writerow(["# objective", o.name, o.direction])
+    for box in spec.boxes or []:
+        w.writerow(["# box", *box.lower, "|", *box.upper])
+    # Measurement table (reuse the flat writer's columns).
+    if history is not None and len(history):
+        buf.write(history_to_csv(history, spec))
+    else:
+        w.writerow(["step", *spec.variable_names, *[o.name for o in spec.objectives]])
+    return buf.getvalue()
+
+
+def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
+    """Parse a self-describing CSV back into ``(ProblemSpec, History)``.
+
+    Consumes leading ``#`` config rows to rebuild the spec, then parses the
+    measurement table. Unknown ``#`` keys are ignored (treated as comments).
+    """
+    from abbot.problem import (
+        Box,
+        ContinuousDomain,
+        EnumeratedDomain,
+        ObjectiveSpec,
+    )
+
+    config_lines: list[str] = []
+    data_lines: list[str] = []
+    for line in text.splitlines():
+        (config_lines if line.lstrip().startswith("#") else data_lines).append(line)
+
+    domain: list = []
+    objectives: list = []
+    boxes: list = []
+    for raw in config_lines:
+        cells = [c.strip() for c in raw.lstrip().lstrip("#").strip().split(",")]
+        key = cells[0].lower()
+        if key == "continuous":
+            domain.append(ContinuousDomain(name=cells[1], lower=float(cells[2]), upper=float(cells[3])))
+        elif key == "enumerated":
+            domain.append(EnumeratedDomain(name=cells[1], values=[float(v) for v in cells[2:] if v]))
+        elif key == "objective":
+            direction = cells[2].upper() if len(cells) > 2 else "MAXIMIZE"
+            objectives.append(ObjectiveSpec(name=cells[1], direction=direction))
+        elif key == "box":
+            sep = cells.index("|")
+            lower = [float(v) for v in cells[1:sep]]
+            upper = [float(v) for v in cells[sep + 1:] if v]
+            boxes.append(Box(lower=lower, upper=upper))
+        # version / unknown keys: ignored (comments)
+    if not domain or not objectives:
+        raise ValueError(
+            "self-describing CSV missing `# continuous`/`# enumerated` and/or "
+            "`# objective` config rows; cannot rebuild the ProblemSpec."
+        )
+    spec = ProblemSpec(domain=domain, objectives=objectives, boxes=boxes or None)
+    history = history_from_csv("\n".join(data_lines), spec)
+    return spec, history
