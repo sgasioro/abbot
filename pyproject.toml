@@ -25,6 +25,8 @@ sbi = ["sbi>=0.22,<0.23", "pyro-ppl>=1.9"]
 # Web frontend (M3). NiceGUI is FastAPI-based; plotly for live progress plots.
 ui = ["nicegui>=1.4", "plotly>=5"]
 dev = ["pytest>=8", "ruff>=0.8"]
+# Example notebooks (examples/*.ipynb) + headless execution for the smoke test.
+examples = ["jupyter", "nbclient>=0.10", "nbformat>=5", "matplotlib>=3.9"]
 
 [build-system]
 build-backend = "hatchling.build"

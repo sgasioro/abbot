@@ -108,6 +108,12 @@ pip install -e '.[ui,dev]'    # pulls torch/botorch/pydantic/gest-api + nicegui/
 CPU wheel by default (all the UI and toy tests need); for GPU, follow the comment
 in `environment.yml`.
 
+## Examples
+
+Four runnable notebooks in [`examples/`](examples/) (install `pip install -e
+'.[examples]'`), one per capability: lab BO, multi-objective (`ParetoBO`),
+composite-SBI, and goal-driven BAX. See [`examples/README.md`](examples/README.md).
+
 ## Run the frontend
 
 ```bash
