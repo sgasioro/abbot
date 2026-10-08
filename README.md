@@ -41,7 +41,7 @@ src/abbot/
     app.py        # single-dashboard: Define / Run / Progress; `python -m abbot.ui`
   interop/
     sbido.py      # spec_from_sbido + protocol-conformance (lazy; co-dev drift sentinel) [M2]
-    xopt.py       # gest-api VOCS <-> spec + CorePolicyGenerator [stub — F3]
+    xopt.py       # gest VOCS <-> spec + CorePolicyGenerator (runs under Xopt) [F3]
 ```
 
 ### Composite-SBI (M2)
@@ -149,6 +149,12 @@ ruff check src/ tests/
   fantasy conditioning). Validated behaviorally on sbido's analytic benchmark
   *(done)*. Follow-on: continuous BAX (pathwise / seeded-ascent); the sbido-side
   cutover PR.
+- **F3** — Xopt / gest-api interop: `spec_to_vocs`/`vocs_to_spec` field map
+  (`xopt.VOCS is gest_api.VOCS`, so one adapter) + `CorePolicyGenerator`, a gest
+  `Generator` wrapping an abbot `Campaign` so a problem runs under
+  `Xopt(generator=...)` on Xopt's parallel evaluator — the "never the spine" proof
+  (`abbot[xopt]`) *(done)*. This is also the path for expensive-parallel/DFT
+  campaigns: abbot defines the problem, Xopt orchestrates evaluation.
 - **F-tier** — BAXstics goal-BAX port, full nn-bax productionization + upstreaming
   to Xopt, Xopt/Badger interop via gest-api, and agent integration (setup-copilot,
   then an MCP server).
