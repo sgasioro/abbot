@@ -26,12 +26,15 @@ from abbot.problem import (
     ProblemSpec,
     StructuredDomain,
 )
+from abbot.reduce import BoxMembershipReducer, ObjectiveReducer
+from abbot.sbi import sbi_evaluate
 from abbot.session import Campaign, CampaignResult, CampaignState
 
 __version__ = "0.1.0"
 
 __all__ = [
     "Box",
+    "BoxMembershipReducer",
     "Campaign",
     "CampaignResult",
     "CampaignState",
@@ -43,6 +46,7 @@ __all__ = [
     "ManualExperiment",
     "ModelConstructor",
     "ModelListConstructor",
+    "ObjectiveReducer",
     "ObjectiveSpec",
     "ParetoBO",
     "Policy",
@@ -56,4 +60,5 @@ __all__ = [
     "__version__",
     "default_constructor",
     "run_campaign",
+    "sbi_evaluate",
 ]

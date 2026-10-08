@@ -33,14 +33,26 @@ src/abbot/
   experiment.py   # Experiment / PosteriorSampler / Supervisor protocols, Verdict, ManualExperiment
   config.py       # name -> class registries
   goal.py         # Goal protocol (BAX goal-as-algorithm)   [stub — F1]
-  reduce.py       # ObjectiveReducer protocol (composite SBI) [stub — M2]
+  reduce.py       # ObjectiveReducer + BoxMembershipReducer (composite SBI, M2)
+  sbi.py          # sbi_evaluate: PosteriorSampler + reducer -> (F, theta) evaluate seam; rescore
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
     builder.py    # form rows -> ProblemSpec; optimizer selection (surfaces mixed-space limit)
-    app.py        # Define -> Run -> Progress screens; `python -m abbot.ui`
+    app.py        # single-dashboard: Define / Run / Progress; `python -m abbot.ui`
   interop/
+    sbido.py      # spec_from_sbido + protocol-conformance (lazy; co-dev drift sentinel) [M2]
     xopt.py       # gest-api VOCS <-> spec + CorePolicyGenerator [stub — F3]
 ```
+
+### Composite-SBI (M2)
+Each observation → posterior samples over θ → a scalar objective F via an
+`ObjectiveReducer` (`BoxMembershipReducer` ports sbido's `selection_score`); the
+GP sees `(xi, F)` and the θ samples are cached on `Record.aux` so an annealed
+reducer can `rescore` without re-sampling. `sbi_evaluate(sampler, reducer, spec)`
+builds the loop's `evaluate` callback. sbido co-develops via structural protocols
++ a lazy `interop/sbido.py` adapter — validated against sbido's analytic
+`AnalyticalGaussianPosterior` (no `sbi` install); the mat_finder benchmark
+reproduction is a follow-on.
 
 ### Session API & frontend
 The optimization engine is exposed as a headless, step-based `Campaign`
@@ -116,7 +128,8 @@ with no typed measurements — the quickest way to see the loop and plots workin
 
 ```bash
 pytest        # engine (optimum recovery, MO, direction), session API, analysis,
-              # controller, UI builder/import  (~3 min; many GP fits)
+              # controller, UI builder/import, composite-SBI  (~4 min; many GP fits)
+PYTHONPATH=~/sbido/src pytest tests/test_interop_sbido.py   # real sbido integration
 ruff check src/ tests/
 ```
 
@@ -126,9 +139,10 @@ ruff check src/ tests/
 - **M3** — non-expert lab BO tool: NiceGUI web frontend on the shared `Campaign`
   session API, with a type-polymorphic variable editor *(done; FastAPI+React
   split and `optimize_acqf_mixed` are follow-ons)*.
-- **M2** — SBI design-optimization app (the lead build): composite objective +
-  `SBIPosteriorSampler` + real experiments. Acceptance = reproduce sbido's
-  benchmark entirely on the `abbot` core.
+- **M2** — composite-SBI app: `BoxMembershipReducer` + `sbi_evaluate` + aux
+  caching + the lazy `interop/sbido.py` adapter, validated on sbido's analytic
+  posterior *(done)*. Follow-on: install `sbi` + reproduce sbido's mat_finder
+  benchmark (regret-parity) on the abbot core.
 - **F-tier** — BAXstics goal-BAX port, full nn-bax productionization + upstreaming
   to Xopt, Xopt/Badger interop via gest-api, and agent integration (setup-copilot,
   then an MCP server).
