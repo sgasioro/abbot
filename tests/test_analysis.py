@@ -107,6 +107,7 @@ def _fitted_1d_minimize():
     return h, spec, model
 
 
+@pytest.mark.slow
 def test_parity_reports_raw_units():
     from abbot.analysis import parity
 
@@ -122,6 +123,7 @@ def test_parity_reports_raw_units():
     assert all(pr > 0 for pr in pred)
 
 
+@pytest.mark.slow
 def test_slice_1d_shape_and_raw_minimum():
     from abbot.analysis import slice_1d
 
@@ -134,6 +136,7 @@ def test_slice_1d_shape_and_raw_minimum():
     assert 0.1 < s["x"][lo_idx] < 0.5
 
 
+@pytest.mark.slow
 def test_slice_2d_shape():
     from abbot.analysis import canonical_Y, slice_2d
     from abbot.model import ModelListConstructor

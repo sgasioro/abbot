@@ -5,6 +5,7 @@ one. The mechanism — observation -> posterior samples -> reduce -> (F, theta),
 theta cached on aux, loop fits GP over (xi, F) — is identical to the real case.
 """
 
+import pytest
 import torch
 
 from abbot.experiment import PosteriorSampler
@@ -13,6 +14,8 @@ from abbot.policy import SimpleBO
 from abbot.problem import Box, ContinuousDomain, ObjectiveSpec, ProblemSpec
 from abbot.reduce import BoxMembershipReducer
 from abbot.sbi import rescore, sbi_evaluate
+
+pytestmark = pytest.mark.slow  # Campaign GP fits
 from abbot.session import Campaign
 
 

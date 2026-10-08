@@ -15,6 +15,8 @@ from abbot.policy import ParetoBO, SimpleBO
 from abbot.problem import ContinuousDomain, ObjectiveSpec, ProblemSpec
 from abbot.session import Campaign
 
+pytestmark = pytest.mark.slow  # GP fits via Campaign suggest/ingest
+
 
 def _scalar_spec():
     return ProblemSpec(

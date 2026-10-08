@@ -17,6 +17,8 @@ from abbot.model import (
 from abbot.policy import ParetoBO, SimpleBO
 from abbot.problem import ContinuousDomain, ObjectiveSpec, ProblemSpec
 
+pytestmark = pytest.mark.slow  # run_campaign / ParetoBO GP fits
+
 # --- objective_signs ----------------------------------------------------------
 
 

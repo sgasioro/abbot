@@ -10,6 +10,8 @@ from abbot.problem import ContinuousDomain, ObjectiveSpec, ProblemSpec
 from abbot.session import Campaign
 from abbot.ui.controller import RunController, RunStatus
 
+pytestmark = pytest.mark.slow  # drives Campaign (GP fits)
+
 
 def _campaign():
     spec = ProblemSpec(

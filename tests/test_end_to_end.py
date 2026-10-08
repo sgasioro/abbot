@@ -8,6 +8,7 @@ shippable lab tool exercises:
   - the composite-SBI (outputs, aux) evaluate seam: aux persisted and resumed
 """
 
+import pytest
 import torch
 
 from abbot.acq_opt import DiscreteArgmax
@@ -17,6 +18,8 @@ from abbot.loop import run_campaign
 from abbot.model import SingleTaskGPConstructor
 from abbot.policy import SimpleBO
 from abbot.problem import ContinuousDomain, EnumeratedDomain, ObjectiveSpec, ProblemSpec
+
+pytestmark = pytest.mark.slow  # run_campaign GP fits
 
 # --- M3: continuous lab-BO through a human-in-the-loop Experiment -------------
 
@@ -144,8 +147,6 @@ def test_mixed_domain_continuous_optimizer_fails_loudly():
     This is the documented deferred case (optimize_acqf_mixed). We want a clear
     error now, not a wrong answer.
     """
-    import pytest
-
     from abbot.acq_opt import Continuous
 
     spec = ProblemSpec(

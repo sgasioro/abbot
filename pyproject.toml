@@ -38,3 +38,10 @@ line-length = 88
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Test tiers: the default suite runs everything; `pytest -m "not slow"` runs only
+# the fast unit layer (canned tensors, no GP fits) in a few seconds. The `slow`
+# tier is the GP-fitting / policy / end-to-end integration tests — run before
+# commits or on a compute node, not on every interactive change.
+markers = [
+    "slow: GP-fitting / integration test (deselect with -m 'not slow')",
+]

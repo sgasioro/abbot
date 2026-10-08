@@ -10,6 +10,8 @@ from abbot.model import SingleTaskGPConstructor
 from abbot.policy import BAXPolicy
 from abbot.problem import Box, ContinuousDomain, ObjectiveSpec, ProblemSpec
 
+pytestmark = pytest.mark.slow  # GP fits + fantasy conditioning
+
 
 def _spec():
     return ProblemSpec(

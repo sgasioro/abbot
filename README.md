@@ -127,11 +127,17 @@ with no typed measurements — the quickest way to see the loop and plots workin
 ## Develop
 
 ```bash
-pytest        # engine (optimum recovery, MO, direction), session API, analysis,
-              # controller, UI builder/import, composite-SBI  (~4 min; many GP fits)
+pytest -m "not slow"   # fast unit tier (~15s, no GP fits) — run on every change
+pytest                 # full suite incl. GP-fitting integration tests (minutes;
+                       # run before commits / on a compute node, not a login node)
 PYTHONPATH=~/sbido/src pytest tests/test_interop_sbido.py   # real sbido integration
 ruff check src/ tests/
 ```
+
+Tests are tiered with a `slow` marker: the fast layer uses canned tensors (goal
+logic, reducer scoring, io round-trips, spec/VOCS maps, UI builders); the `slow`
+layer fits GPs / runs policies / drives end-to-end loops (botorch `optimize_acqf`,
+ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 
 ## Roadmap
 

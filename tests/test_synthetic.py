@@ -1,5 +1,6 @@
 """SyntheticExperiment: deterministic, spec-adaptive, drives an auto-run campaign."""
 
+import pytest
 import torch
 
 from abbot.experiment import SyntheticExperiment
@@ -8,6 +9,8 @@ from abbot.policy import ParetoBO, SimpleBO
 from abbot.problem import ContinuousDomain, ObjectiveSpec, ProblemSpec
 from abbot.session import Campaign
 from abbot.ui.controller import RunController, RunStatus
+
+pytestmark = pytest.mark.slow  # auto-run campaigns + GP fits
 
 
 def _spec(m=1, d=2):

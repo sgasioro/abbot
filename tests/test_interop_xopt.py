@@ -51,6 +51,7 @@ def test_vocs_round_trips_direction():
     assert back.variable_names == ["x"]
 
 
+@pytest.mark.slow
 def test_core_policy_generator_is_a_gest_generator():
     import gest_api
 
@@ -67,6 +68,7 @@ def test_core_policy_generator_is_a_gest_generator():
 # --- end-to-end under real Xopt (needs xopt) ----------------------------------
 
 
+@pytest.mark.slow
 def test_abbot_policy_drives_an_xopt_run():
     pytest.importorskip("xopt")
     import warnings

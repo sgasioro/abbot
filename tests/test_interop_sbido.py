@@ -23,6 +23,8 @@ from abbot.reduce import BoxMembershipReducer
 from abbot.sbi import sbi_evaluate
 from abbot.session import Campaign
 
+pytestmark = pytest.mark.slow  # real-sbido integration + GP fits
+
 
 def test_sbido_classes_conform_to_abbot_protocols():
     exp = sbido_lg.LinearGaussianExperiment(sigma_obs=0.1)

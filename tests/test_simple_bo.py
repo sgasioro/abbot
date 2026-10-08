@@ -2,6 +2,7 @@
 loop driver and the uq-pairing guardrail.
 """
 
+import pytest
 import torch
 
 from abbot.experiment import Experiment
@@ -10,6 +11,8 @@ from abbot.loop import check_uq_pairing, run_campaign
 from abbot.model import SingleTaskGPConstructor
 from abbot.policy import SimpleBO, UncertaintySampling
 from abbot.problem import ContinuousDomain, ObjectiveSpec, ProblemSpec
+
+pytestmark = pytest.mark.slow  # GP fits + optimize_acqf
 
 # A smooth 1-D objective maximized at x=0.3, in [0, 1].
 _OPT = 0.3
