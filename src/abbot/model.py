@@ -112,11 +112,13 @@ class ModelListConstructor:
 
 
 def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstructor:
-    """Pick a sensible builtin: single-output GP for one objective, else ModelList.
+    """Pick a sensible builtin: single-output GP for one OUTPUT, else ModelList.
 
-    A convenience so call sites don't branch on objective count; callers may still
-    pass their own ``ModelConstructor`` (e.g. a correlated MultiTaskGP for SBI).
+    Keyed on ``n_outputs`` (every output is modeled, incl. OBSERVE), not objective
+    count — a single-objective spec with an extra OBSERVE output needs a ModelList.
+    Callers may still pass their own ``ModelConstructor`` (e.g. a correlated
+    MultiTaskGP for SBI).
     """
-    if spec.n_objectives == 1:
+    if spec.n_outputs == 1:
         return SingleTaskGPConstructor(bounds=bounds)
     return ModelListConstructor(bounds=bounds)

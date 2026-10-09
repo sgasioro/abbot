@@ -85,11 +85,27 @@ Domain = Annotated[
 # --- Objectives / constraints ------------------------------------------------
 
 
-class ObjectiveSpec(BaseModel):
-    """A named objective with a direction (Xopt VOCS parity)."""
+Direction = Literal["MINIMIZE", "MAXIMIZE", "OBSERVE"]
+
+
+class OutputSpec(BaseModel):
+    """A named MODELED output of an experiment (one surrogate column).
+
+    ``direction``:
+      - ``MAXIMIZE`` / ``MINIMIZE`` — an optimized *objective* (BO/MO).
+      - ``OBSERVE``  — modeled but NOT optimized: a feature a BAX ``Goal``
+        consumes, or (future) a constraint output. OBSERVE outputs are fit by the
+        surrogate like any other column; they are simply excluded from the
+        optimized-objective subset (``ProblemSpec.objectives``).
+    """
 
     name: str
-    direction: Literal["MINIMIZE", "MAXIMIZE"] = "MAXIMIZE"
+    direction: Direction = "MAXIMIZE"
+
+
+# Back-compat: an "objective" is just a non-OBSERVE output. Existing
+# ``ObjectiveSpec(name=..., direction="MAXIMIZE"|"MINIMIZE")`` call sites keep working.
+ObjectiveSpec = OutputSpec
 
 
 class Box(BaseModel):
@@ -138,41 +154,90 @@ class ProblemSpec(BaseModel):
     """
 
     domain: list[Domain]
-    objectives: list[ObjectiveSpec]
+    outputs: list[OutputSpec]
     boxes: list[Box] | None = None
     constraints: list[InequalitySpec] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_objectives_alias(cls, data):
+        """Accept a legacy ``objectives=[...]`` kwarg as an alias for ``outputs``.
+
+        Keeps every existing BO call site (and old JSON written with
+        ``"objectives"``) working: a legacy objectives list is all-directional and
+        becomes the ``outputs`` list verbatim.
+        """
+        if isinstance(data, dict) and "objectives" in data:
+            if data.get("outputs") is not None:
+                raise ValueError("pass either `outputs=` or `objectives=`, not both")
+            data = {**data, "outputs": data["objectives"]}
+            data.pop("objectives", None)
+        return data
 
     @model_validator(mode="after")
     def _check(self) -> ProblemSpec:
         if not self.domain:
             raise ValueError("ProblemSpec needs at least one design variable")
-        if not self.objectives:
-            raise ValueError("ProblemSpec needs at least one objective")
+        if not self.outputs:
+            raise ValueError("ProblemSpec needs at least one output")
         names = [d.name for d in self.domain]
         if len(names) != len(set(names)):
             raise ValueError(f"Duplicate variable names in domain: {names}")
+        onames = [o.name for o in self.outputs]
+        if len(onames) != len(set(onames)):
+            raise ValueError(f"Duplicate output names: {onames}")
         return self
+
+    # --- outputs vs objectives -------------------------------------------------
+    # The surrogate models every OUTPUT (one column each, in ``outputs`` order) —
+    # that is the evaluate()/History column contract. The OBJECTIVES are the subset
+    # with a non-OBSERVE direction (the ones BO/MO optimize); they may be a
+    # non-contiguous view, selected by ``objective_indices()``.
 
     @property
     def variable_names(self) -> list[str]:
         return [d.name for d in self.domain]
 
     @property
+    def output_names(self) -> list[str]:
+        return [o.name for o in self.outputs]
+
+    @property
+    def n_outputs(self) -> int:
+        return len(self.outputs)
+
+    @property
+    def objectives(self) -> list[OutputSpec]:
+        """The optimized subset of outputs (direction != OBSERVE)."""
+        return [o for o in self.outputs if o.direction != "OBSERVE"]
+
+    @property
     def n_objectives(self) -> int:
         return len(self.objectives)
 
-    def objective_signs(self, dtype=None, device=None):
-        """Per-objective sign vector: +1 for MAXIMIZE, -1 for MINIMIZE.
+    def objective_indices(self) -> list[int]:
+        """Column positions (in ``outputs`` order) of the optimized objectives."""
+        return [i for i, o in enumerate(self.outputs) if o.direction != "OBSERVE"]
+
+    def output_signs(self, dtype=None, device=None):
+        """Per-OUTPUT sign vector for maximize-canonical fitting: +1 for MAXIMIZE
+        and OBSERVE, -1 for MINIMIZE. Column order matches ``self.outputs``.
 
         The engine is maximize-canonical: multiplying raw physical outputs by this
-        vector gives the "bigger is better" targets the surrogate/acquisition see,
-        so an ``evaluate`` callback returns raw measurements and never pre-negates.
-        The column order matches ``self.objectives``; an ``evaluate`` return must
-        have one column per objective in that same order.
+        vector gives the "bigger is better" targets the surrogate sees, so an
+        ``evaluate`` callback returns raw measurements and never pre-negates.
+        OBSERVE columns pass through unflipped (the goal reads them raw).
         """
         import torch
 
-        signs = [1.0 if o.direction == "MAXIMIZE" else -1.0 for o in self.objectives]
+        signs = [-1.0 if o.direction == "MINIMIZE" else 1.0 for o in self.outputs]
+        return torch.tensor(signs, dtype=dtype or torch.double, device=device)
+
+    def objective_signs(self, dtype=None, device=None):
+        """Signs over the OBJECTIVE subset only (compat / BO-best helpers)."""
+        import torch
+
+        signs = [-1.0 if o.direction == "MINIMIZE" else 1.0 for o in self.objectives]
         return torch.tensor(signs, dtype=dtype or torch.double, device=device)
 
     def bounds_tensor(self, dtype=None, device=None):

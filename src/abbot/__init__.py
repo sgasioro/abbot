@@ -33,6 +33,7 @@ from abbot.problem import (
     EnumeratedDomain,
     InequalitySpec,
     ObjectiveSpec,
+    OutputSpec,
     ProblemSpec,
     StructuredDomain,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "ModelListConstructor",
     "ObjectiveReducer",
     "ObjectiveSpec",
+    "OutputSpec",
     "ParetoBO",
     "PercentileSet",
     "Policy",

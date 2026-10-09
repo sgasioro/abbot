@@ -97,8 +97,9 @@ class SyntheticExperiment:
     """A spec-adaptive virtual experiment for mock / offline runs.
 
     Produces smooth, deterministic (seeded) RAW-physical outputs for WHATEVER
-    ``ProblemSpec`` you built — any number of variables, any number of objectives,
-    optional observation noise. This is what makes the UI self-demonstrating: with
+    ``ProblemSpec`` you built — any number of variables, any number of outputs
+    (one column per ``spec.outputs``), optional observation noise. This is what
+    makes the UI self-demonstrating: with
     a programmatic ``Experiment`` attached, auto-run (run/pause/step/stop) becomes
     available and a whole campaign drives itself without typed measurements.
 
@@ -122,7 +123,7 @@ class SyntheticExperiment:
         self._lo = bounds[0]
         self._hi = bounds[1]
         d = bounds.shape[-1]
-        m = spec.n_objectives
+        m = spec.n_outputs
         # Per-objective optima and widths, fixed by the seed.
         g = torch.Generator().manual_seed(seed)
         self._centers = torch.rand(m, d, generator=g, dtype=torch.double)

@@ -41,6 +41,25 @@ def test_spec_to_vocs_variable_and_objective_types():
     assert isinstance(vocs.objectives["yield"], MaximizeObjective)
 
 
+def test_observe_outputs_map_to_vocs_observables():
+    from abbot import OutputSpec
+
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
+        outputs=[
+            OutputSpec(name="yield", direction="MAXIMIZE"),
+            OutputSpec(name="feat", direction="OBSERVE"),
+        ],
+    )
+    vocs = spec_to_vocs(spec)
+    assert "yield" in vocs.objectives
+    assert "feat" in vocs.observables and "feat" not in vocs.objectives
+    # round-trip: observables come back as OBSERVE outputs
+    back = vocs_to_spec(vocs)
+    assert back.n_outputs == 2 and back.n_objectives == 1
+    assert any(o.name == "feat" and o.direction == "OBSERVE" for o in back.outputs)
+
+
 def test_vocs_round_trips_direction():
     spec = ProblemSpec(
         domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],

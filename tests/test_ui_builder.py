@@ -13,7 +13,7 @@ def test_build_spec_mixed_variable_types():
             {"kind": "continuous", "name": "temp", "lower": 20, "upper": 80},
             {"kind": "enumerated", "name": "catalyst", "values": "0, 1, 2"},
         ],
-        objective_rows=[{"name": "yield", "direction": "MAXIMIZE"}],
+        output_rows=[{"name": "yield", "direction": "MAXIMIZE"}],
     )
     assert spec.variable_names == ["temp", "catalyst"]
     assert isinstance(spec.domain[0], ContinuousDomain)
@@ -25,7 +25,7 @@ def test_build_spec_surfaces_validation_errors():
     with pytest.raises(ValueError):
         build_spec(
             variable_rows=[{"kind": "continuous", "name": "x", "lower": 5, "upper": 1}],
-            objective_rows=[{"name": "f", "direction": "MAXIMIZE"}],
+            output_rows=[{"name": "f", "direction": "MAXIMIZE"}],
         )
 
 

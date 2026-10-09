@@ -69,7 +69,7 @@ def split_eval(result: object, spec: ProblemSpec) -> tuple[torch.Tensor, object 
     """Normalize an ``evaluate`` return into ``(raw_outputs, aux)``.
 
     Accepts a bare tensor (aux=None) or an ``(outputs, aux)`` tuple. Validates the
-    number of objective columns against the spec so a wrong-width return fails here
+    number of OUTPUT columns against the spec so a wrong-width return fails here
     with a clear message instead of crashing downstream.
     """
     if isinstance(result, tuple):
@@ -77,29 +77,37 @@ def split_eval(result: object, spec: ProblemSpec) -> tuple[torch.Tensor, object 
     else:
         outputs, aux = result, None
     outputs = torch.as_tensor(outputs).reshape(-1).double()
-    if outputs.shape[0] != spec.n_objectives:
+    if outputs.shape[0] != spec.n_outputs:
         raise ValueError(
             f"evaluate() returned {outputs.shape[0]} value(s) but the spec declares "
-            f"{spec.n_objectives} objective(s); return one column per objective in "
-            "spec.objectives order."
+            f"{spec.n_outputs} output(s); return one column per output in "
+            "spec.outputs order."
         )
     return outputs, aux
 
 
 def canonical_Y(history: History, spec: ProblemSpec) -> torch.Tensor:
-    """Clean raw outputs mapped to maximize-canonical space via objective signs."""
-    return history.clean.outputs.double() * spec.objective_signs()
+    """Clean raw outputs (ALL outputs) mapped to maximize-canonical space.
+
+    The surrogate models every output column; OBSERVE columns pass through
+    unflipped (output_signs = +1 for them).
+    """
+    return history.clean.outputs.double() * spec.output_signs()
 
 
 def observed_front(history: History, spec: ProblemSpec) -> list[int]:
-    """Fallback handover: non-dominated set of the OBSERVED (noisy) canonical
-    outputs. Scalar case collapses to the single argmax.
+    """Fallback handover: non-dominated set of the OBSERVED (noisy) OBJECTIVE
+    columns, in canonical space. Scalar case collapses to the single argmax.
+    Returns ``[]`` for a pure-BAX spec (no objectives — handover is the goal's job).
     """
+    idx = spec.objective_indices()
+    if not idx:
+        return []
     keep = [i for i, r in enumerate(history.records) if not r.fault]
     if not keep:
         return []
     Y = torch.stack([history.records[i].outputs.reshape(-1) for i in keep]).double()
-    Y = Y * spec.objective_signs()
+    Y = Y[:, idx] * spec.objective_signs()
     if Y.shape[-1] == 1:
         return [keep[int(Y.reshape(-1).argmax())]]
     nd = is_non_dominated(Y)

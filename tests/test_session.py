@@ -57,7 +57,7 @@ def test_ingest_validates_width():
     spec = _scalar_spec()
     c = _make_campaign(spec)
     c.suggest(1)
-    with pytest.raises(ValueError, match="objective"):
+    with pytest.raises(ValueError, match="output"):
         c.ingest(torch.tensor([1.0, 2.0]))  # 2 cols, spec declares 1
 
 

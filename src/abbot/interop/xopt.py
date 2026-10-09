@@ -34,7 +34,7 @@ from abbot.policy import ParetoBO, SimpleBO
 from abbot.problem import (
     ContinuousDomain,
     EnumeratedDomain,
-    ObjectiveSpec,
+    OutputSpec,
     ProblemSpec,
 )
 from abbot.session import Campaign
@@ -62,17 +62,23 @@ def spec_to_vocs(spec: ProblemSpec):
             raise NotImplementedError(
                 f"spec_to_vocs does not support {type(d).__name__} ({d.name!r})."
             )
+    # Directional outputs -> gest objectives; OBSERVE outputs -> gest observables.
     objectives = {
         o.name: (MinimizeObjective() if o.direction == "MINIMIZE" else MaximizeObjective())
-        for o in spec.objectives
+        for o in spec.outputs
+        if o.direction != "OBSERVE"
     }
-    return VOCS(variables=variables, objectives=objectives)
+    observables = [o.name for o in spec.outputs if o.direction == "OBSERVE"]
+    return VOCS(variables=variables, objectives=objectives, observables=observables)
 
 
 def vocs_to_spec(vocs, boxes=None) -> ProblemSpec:
     """gest ``VOCS`` -> abbot ``ProblemSpec`` (continuous + discrete variables).
 
     ``boxes`` (optional) carries abbot target bands, which VOCS has no field for.
+    Note: VOCS stores objectives and observables separately, so the merged
+    ``outputs`` are canonicalized objectives-first then observables — a VOCS
+    round-trip may reorder columns relative to an interleaved original.
     """
     from gest_api.vocs import ContinuousVariable, DiscreteVariable, MinimizeObjective
 
@@ -87,14 +93,15 @@ def vocs_to_spec(vocs, boxes=None) -> ProblemSpec:
             raise NotImplementedError(
                 f"vocs_to_spec does not support variable type {type(var).__name__} ({name!r})."
             )
-    objectives = [
-        ObjectiveSpec(
+    outputs = [
+        OutputSpec(
             name=name,
             direction="MINIMIZE" if isinstance(obj, MinimizeObjective) else "MAXIMIZE",
         )
         for name, obj in vocs.objectives.items()
     ]
-    return ProblemSpec(domain=domain, objectives=objectives, boxes=boxes)
+    outputs += [OutputSpec(name=name, direction="OBSERVE") for name in (vocs.observables or {})]
+    return ProblemSpec(domain=domain, outputs=outputs, boxes=boxes)
 
 
 # --- CorePolicyGenerator: run an abbot Policy under Xopt ----------------------
@@ -163,10 +170,10 @@ class CorePolicyGenerator:
         if not results:
             return
         var_names = self.spec.variable_names
-        obj_names = [o.name for o in self.spec.objectives]
+        out_names = self.spec.output_names  # ALL outputs (incl. OBSERVE), spec order
         for row in results:
             x = torch.tensor([float(row[v]) for v in var_names], dtype=torch.double)
-            y = torch.tensor([float(row[o]) for o in obj_names], dtype=torch.double)
+            y = torch.tensor([float(row[o]) for o in out_names], dtype=torch.double)
             # Align the Campaign's pending slot with this candidate, then ingest.
             self._campaign._pending = [(x, None, 0)]
             self._campaign.ingest([y])

@@ -33,15 +33,16 @@ def spec_from_json(text: str) -> ProblemSpec:
 
 
 def history_to_csv(history: History, spec: ProblemSpec) -> str:
-    """Flat CSV: ``step, <variable names...>, <objective names...>``.
+    """Flat CSV: ``step, <variable names...>, <output names...>``.
 
-    Only records with outputs are written. Raw (physical) output units.
+    One column per modeled output (the full set, incl. OBSERVE), in spec.outputs
+    order. Only records with outputs are written. Raw (physical) output units.
     """
     var_names = spec.variable_names
-    obj_names = [o.name for o in spec.objectives]
+    out_names = spec.output_names
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["step", *var_names, *obj_names])
+    writer.writerow(["step", *var_names, *out_names])
     for i, r in enumerate(history.records):
         if r.outputs is None:
             continue
@@ -52,28 +53,28 @@ def history_to_csv(history: History, spec: ProblemSpec) -> str:
 
 
 def history_from_csv(text: str, spec: ProblemSpec) -> History:
-    """Parse a CSV with columns for each variable + objective into a History.
+    """Parse a CSV with columns for each variable + output into a History.
 
     Column matching is by name against the spec (a ``step`` column, if present, is
-    ignored). Raises a clear error if a required variable/objective column is
-    missing. Imported records carry no observation/aux (they are prior data).
+    ignored). Raises a clear error if a required variable/output column is missing.
+    Imported records carry no observation/aux (they are prior data).
     """
     var_names = spec.variable_names
-    obj_names = [o.name for o in spec.objectives]
+    out_names = spec.output_names
     reader = csv.DictReader(io.StringIO(text))
     if reader.fieldnames is None:
         raise ValueError("empty CSV: no header row")
-    missing = [c for c in (*var_names, *obj_names) if c not in reader.fieldnames]
+    missing = [c for c in (*var_names, *out_names) if c not in reader.fieldnames]
     if missing:
         raise ValueError(
             f"CSV is missing required column(s) {missing}; expected one per variable "
-            f"{var_names} and objective {obj_names}."
+            f"{var_names} and output {out_names}."
         )
     history = History()
     for row_num, row in enumerate(reader, start=2):  # row 1 is the header
         try:
             x = torch.tensor([float(row[n]) for n in var_names], dtype=torch.double)
-            y = torch.tensor([float(row[n]) for n in obj_names], dtype=torch.double)
+            y = torch.tensor([float(row[n]) for n in out_names], dtype=torch.double)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"CSV row {row_num}: could not parse numbers ({exc})") from exc
         history.append(Record(candidate=x, observation=None, outputs=y))
@@ -89,8 +90,9 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 #   # version,1
 #   # continuous,<name>,<lower>,<upper>
 #   # enumerated,<name>,<v1>,<v2>,...
-#   # objective,<name>,MINIMIZE|MAXIMIZE
+#   # output,<name>,MINIMIZE|MAXIMIZE|OBSERVE   (OBSERVE = modeled, not optimized)
 #   # box,<lo1>,<lo2>,...,|,<hi1>,<hi2>,...     (lower vector | upper vector)
+# Legacy ``# objective,<name>,<DIR>`` rows are still READ (mapped to an output).
 # NOT representable here (raises on write): StructuredDomain, inequality
 # constraints, cached aux. Use the JSON spec / DataStore for those.
 
@@ -124,15 +126,15 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
                 f"self-describing CSV cannot represent {type(d).__name__} "
                 f"({d.name!r}); use the JSON spec for this campaign."
             )
-    for o in spec.objectives:
-        w.writerow(["# objective", o.name, o.direction])
+    for o in spec.outputs:
+        w.writerow(["# output", o.name, o.direction])
     for box in spec.boxes or []:
         w.writerow(["# box", *box.lower, "|", *box.upper])
-    # Measurement table (reuse the flat writer's columns).
+    # Measurement table (reuse the flat writer's columns = all outputs).
     if history is not None and len(history):
         buf.write(history_to_csv(history, spec))
     else:
-        w.writerow(["step", *spec.variable_names, *[o.name for o in spec.objectives]])
+        w.writerow(["step", *spec.variable_names, *spec.output_names])
     return buf.getvalue()
 
 
@@ -146,7 +148,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
         Box,
         ContinuousDomain,
         EnumeratedDomain,
-        ObjectiveSpec,
+        OutputSpec,
     )
 
     config_lines: list[str] = []
@@ -155,7 +157,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
         (config_lines if line.lstrip().startswith("#") else data_lines).append(line)
 
     domain: list = []
-    objectives: list = []
+    outputs: list = []
     boxes: list = []
     for raw in config_lines:
         cells = [c.strip() for c in raw.lstrip().lstrip("#").strip().split(",")]
@@ -164,20 +166,20 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
             domain.append(ContinuousDomain(name=cells[1], lower=float(cells[2]), upper=float(cells[3])))
         elif key == "enumerated":
             domain.append(EnumeratedDomain(name=cells[1], values=[float(v) for v in cells[2:] if v]))
-        elif key == "objective":
+        elif key in ("output", "objective"):  # "objective" = legacy read-compat
             direction = cells[2].upper() if len(cells) > 2 else "MAXIMIZE"
-            objectives.append(ObjectiveSpec(name=cells[1], direction=direction))
+            outputs.append(OutputSpec(name=cells[1], direction=direction))
         elif key == "box":
             sep = cells.index("|")
             lower = [float(v) for v in cells[1:sep]]
             upper = [float(v) for v in cells[sep + 1:] if v]
             boxes.append(Box(lower=lower, upper=upper))
         # version / unknown keys: ignored (comments)
-    if not domain or not objectives:
+    if not domain or not outputs:
         raise ValueError(
             "self-describing CSV missing `# continuous`/`# enumerated` and/or "
-            "`# objective` config rows; cannot rebuild the ProblemSpec."
+            "`# output` config rows; cannot rebuild the ProblemSpec."
         )
-    spec = ProblemSpec(domain=domain, objectives=objectives, boxes=boxes or None)
+    spec = ProblemSpec(domain=domain, outputs=outputs, boxes=boxes or None)
     history = history_from_csv("\n".join(data_lines), spec)
     return spec, history

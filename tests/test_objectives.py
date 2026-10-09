@@ -168,7 +168,7 @@ def test_wrong_output_width_fails_clearly():
         objectives=[ObjectiveSpec(name="f", direction="MAXIMIZE")],
     )
     # evaluate returns 2 columns but spec declares 1.
-    with pytest.raises(ValueError, match="objective"):
+    with pytest.raises(ValueError, match="output"):
         run_campaign(
             experiment=ManualExperiment(responder=lambda c: torch.tensor([1.0, 2.0])),
             spec=spec,
@@ -178,6 +178,64 @@ def test_wrong_output_width_fails_clearly():
             initial_designs=torch.tensor([[0.5]], dtype=torch.double),
             n_shots=0,
         )
+
+
+def test_objectives_alias_still_constructs():
+    """Legacy `objectives=[...]` kwarg maps to `outputs` (back-compat)."""
+    from abbot import OutputSpec
+
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
+        objectives=[ObjectiveSpec(name="y", direction="MAXIMIZE")],
+    )
+    assert spec.n_outputs == 1 and spec.n_objectives == 1
+    assert isinstance(spec.outputs[0], OutputSpec)
+    # Passing both is rejected.
+    with pytest.raises(ValueError, match="not both"):
+        ProblemSpec(
+            domain=spec.domain,
+            outputs=[OutputSpec(name="y")],
+            objectives=[OutputSpec(name="z")],
+        )
+
+
+def test_mixed_objective_and_observe_output():
+    """A single objective + an OBSERVE output: GP models both; SimpleBO optimizes
+    only the objective column (via ScalarizedPosteriorTransform on a ModelListGP).
+    """
+    from abbot import OutputSpec
+
+    torch.manual_seed(0)
+    opt = 0.3
+
+    def responder(candidate):
+        x = candidate.reshape(-1)
+        # col0 = objective (peak at 0.3); col1 = an observed-only feature
+        return torch.cat([-((x - opt) ** 2), x * 2.0])
+
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="temp", lower=0.0, upper=1.0)],
+        outputs=[
+            OutputSpec(name="yield", direction="MAXIMIZE"),
+            OutputSpec(name="cost", direction="OBSERVE"),
+        ],
+    )
+    assert spec.n_outputs == 2 and spec.n_objectives == 1
+    assert spec.objective_indices() == [0]
+
+    result = run_campaign(
+        experiment=ManualExperiment(responder=responder),
+        spec=spec,
+        policy=SimpleBO(),
+        model_constructor=default_constructor(spec, bounds=spec.bounds_tensor()),
+        evaluate=lambda obs: obs,
+        initial_designs=torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double),
+        n_shots=12,
+    )
+    # Best objective design near 0.3 despite the extra modeled OBSERVE column.
+    assert abs(float(result.best.candidate) - opt) < 0.15
+    # The recommended record carries BOTH output columns.
+    assert result.best.outputs.reshape(-1).shape[0] == 2
 
 
 def test_pareto_bo_cold_start_falls_back_without_nehvi(caplog):

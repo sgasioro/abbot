@@ -25,12 +25,13 @@ def convergence(history: History, spec: ProblemSpec) -> list[float]:
     """
     if spec.n_objectives != 1:
         raise ValueError("convergence is single-objective; use hypervolume for MO.")
+    col = spec.objective_indices()[0]  # objective may not be column 0 (OBSERVE outputs)
     maximize = spec.objectives[0].direction == "MAXIMIZE"
     best = None
     out: list[float] = []
     for r in history.records:
         if not r.fault and r.outputs is not None:
-            v = float(r.outputs.reshape(-1)[0])
+            v = float(r.outputs.reshape(-1)[col])
             if best is None:
                 best = v
             else:
@@ -54,11 +55,12 @@ def hypervolume(history: History, spec: ProblemSpec) -> list[float]:
     )
     from botorch.utils.multi_objective.pareto import is_non_dominated
 
+    idx = spec.objective_indices()  # objective columns within the full output set
     signs = spec.objective_signs()
     clean = [r for r in history.records if not r.fault and r.outputs is not None]
     if not clean:
         return [0.0] * len(history.records)
-    all_Y = torch.stack([r.outputs.reshape(-1) for r in clean]).double() * signs
+    all_Y = torch.stack([r.outputs.reshape(-1)[idx] for r in clean]).double() * signs
     ref = infer_reference_point(all_Y[is_non_dominated(all_Y)])
     hv = Hypervolume(ref_point=ref)
 
@@ -66,7 +68,7 @@ def hypervolume(history: History, spec: ProblemSpec) -> list[float]:
     acc: list[torch.Tensor] = []
     for r in history.records:
         if not r.fault and r.outputs is not None:
-            acc.append(r.outputs.reshape(-1).double() * signs)
+            acc.append(r.outputs.reshape(-1)[idx].double() * signs)
         if acc:
             Y = torch.stack(acc)
             front = Y[is_non_dominated(Y)]
@@ -95,12 +97,12 @@ def recommended_set(history: History, spec: ProblemSpec, model=None) -> list[int
 
 
 def _posterior_raw(model, X: torch.Tensor, spec: ProblemSpec):
-    """Posterior (mean, std) at X, converted back to RAW objective units.
+    """Posterior (mean, std) at X over ALL outputs, converted back to RAW units.
 
-    Returns tensors shaped (n, m). The sign flip maps canonical -> raw for the
-    mean; std is sign-invariant.
+    Returns tensors shaped (n, n_outputs). The sign flip maps canonical -> raw for
+    the mean (OBSERVE columns pass through); std is sign-invariant.
     """
-    signs = spec.objective_signs()
+    signs = spec.output_signs()
     with torch.no_grad():
         post = model.posterior(X.double())
         mean = post.mean.reshape(X.shape[0], -1) * signs
@@ -109,20 +111,21 @@ def _posterior_raw(model, X: torch.Tensor, spec: ProblemSpec):
 
 
 def parity(history: History, spec: ProblemSpec, model) -> dict:
-    """Predicted (posterior mean ± std) vs. observed, per objective — dimension-agnostic.
+    """Predicted (posterior mean ± std) vs. observed, per OUTPUT — dimension-agnostic.
 
-    Returns ``{objective_name: {"observed": [...], "predicted": [...], "std": [...]}}``.
-    The go-to "is the model any good?" view when the design space is too high-D to plot.
+    Returns ``{output_name: {"observed": [...], "predicted": [...], "std": [...]}}``
+    for every modeled output (incl. OBSERVE). The go-to "is the model any good?"
+    view when the design space is too high-D to plot.
     """
     clean = history.clean
     if not len(clean):
         return {}
     X = clean.designs.double()
-    Y = clean.outputs.double()  # raw observed
+    Y = clean.outputs.double()  # raw observed, full width
     mean, std = _posterior_raw(model, X, spec)
     out = {}
-    for j, obj in enumerate(spec.objectives):
-        out[obj.name] = {
+    for j, o in enumerate(spec.outputs):
+        out[o.name] = {
             "observed": Y[:, j].tolist(),
             "predicted": mean[:, j].tolist(),
             "std": std[:, j].tolist(),
@@ -142,11 +145,12 @@ def slice_1d(
     spec: ProblemSpec,
     model,
     var: int = 0,
-    objective: int = 0,
+    output: int = 0,
     n: int = 80,
 ) -> dict:
     """1-D posterior slice: vary one variable over its range, others fixed at the
-    recommended point. Returns grid ``x``, raw ``mean``, and ``std`` for a band.
+    recommended point. ``output`` indexes ``spec.outputs``. Returns grid ``x``, raw
+    ``mean``, and ``std`` for a band.
     """
     bounds = spec.bounds_tensor()
     lo, hi = float(bounds[0, var]), float(bounds[1, var])
@@ -157,10 +161,10 @@ def slice_1d(
     mean, std = _posterior_raw(model, grid, spec)
     return {
         "x": xs.tolist(),
-        "mean": mean[:, objective].tolist(),
-        "std": std[:, objective].tolist(),
+        "mean": mean[:, output].tolist(),
+        "std": std[:, output].tolist(),
         "var_name": spec.variable_names[var],
-        "objective_name": spec.objectives[objective].name,
+        "objective_name": spec.outputs[output].name,
     }
 
 
@@ -170,11 +174,12 @@ def slice_2d(
     model,
     var_x: int = 0,
     var_y: int = 1,
-    objective: int = 0,
+    output: int = 0,
     n: int = 40,
 ) -> dict:
     """2-D posterior-mean slice: vary two variables over a grid, others fixed at the
-    recommended point. Returns ``x``, ``y`` axes and a ``z`` matrix (raw mean).
+    recommended point. ``output`` indexes ``spec.outputs``. Returns ``x``, ``y``
+    axes and a ``z`` matrix (raw mean).
     """
     bounds = spec.bounds_tensor()
     xs = torch.linspace(float(bounds[0, var_x]), float(bounds[1, var_x]), n, dtype=torch.double)
@@ -185,14 +190,14 @@ def slice_2d(
     grid[:, var_x] = gx.reshape(-1)
     grid[:, var_y] = gy.reshape(-1)
     mean, _ = _posterior_raw(model, grid, spec)
-    z = mean[:, objective].reshape(n, n)
+    z = mean[:, output].reshape(n, n)
     return {
         "x": xs.tolist(),
         "y": ys.tolist(),
         "z": z.tolist(),
         "var_x_name": spec.variable_names[var_x],
         "var_y_name": spec.variable_names[var_y],
-        "objective_name": spec.objectives[objective].name,
+        "objective_name": spec.outputs[output].name,
     }
 
 

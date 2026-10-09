@@ -19,7 +19,8 @@ It unifies the method that is currently reimplemented across several SLAC repos
 
 ```
 src/abbot/
-  problem.py      # ProblemSpec (pydantic, type-polymorphic domains) + bounds/constraints
+  problem.py      # ProblemSpec (type-polymorphic domains + OutputSpec: objectives
+                  #   MAX/MIN vs OBSERVE-only) + bounds/constraints
   model.py        # ModelConstructor seam: (X,Y,Yvar) -> botorch.Model  [the SBI seam]
   models/
     ensemble.py   # ToyEnsembleModel — the non-GP smoke test for the ModelConstructor seam
@@ -85,13 +86,20 @@ rebuilt only on create/reset/selector-change, so auto-run stays smooth.
   cases CSV can't express. *(A run-level JSON serializer incl. the SBI `aux`
   payload is a planned follow-on.)*
 
-The engine is **natively multi-objective** and **maximize-canonical**: an
-`evaluate` callback returns raw physical measurements (one column per objective,
-in `spec.objectives` order), `ObjectiveSpec.direction` (`MINIMIZE`/`MAXIMIZE`)
-declares intent, and the loop applies the signs internally — no caller-side
-negation. `run_campaign` returns a `CampaignResult` whose `.recommended` is a
-single index (scalar) or the Pareto set (multi-objective); `.best` is the
-single-objective convenience.
+A `ProblemSpec` declares **outputs** (`OutputSpec(name, direction)`): the surrogate
+models every output (one column per output, in `spec.outputs` order — the
+`evaluate`/history contract). `direction` is `MAXIMIZE`/`MINIMIZE` for an *optimized
+objective*, or `OBSERVE` for a **modeled-but-not-optimized** output (a feature a BAX
+`Goal` consumes, or a future constraint). `spec.objectives` is the non-OBSERVE
+subset; BO/MO optimize it (selecting its columns from the possibly-wider model),
+BAX reads all outputs. (`objectives=[...]` is still accepted as a constructor
+alias; `ObjectiveSpec` aliases `OutputSpec`.)
+
+The engine is **natively multi-objective** and **maximize-canonical**: the loop
+applies per-output signs internally (`output_signs`) — `evaluate` returns raw
+physical measurements, no caller-side negation. `run_campaign` returns a
+`CampaignResult` whose `.recommended` is a single index (scalar) or the Pareto set
+(multi-objective); `.best` is the single-objective convenience.
 
 Three design properties are preserved from day one so agent integration is later
 a ~day of wrapper work (not an architecture change): **headless-first**,

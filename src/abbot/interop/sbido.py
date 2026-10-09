@@ -30,7 +30,7 @@ from abbot.problem import (
     Box,
     ContinuousDomain,
     InequalitySpec,
-    ObjectiveSpec,
+    OutputSpec,
     ProblemSpec,
 )
 
@@ -65,7 +65,7 @@ def spec_from_sbido(sbido_spec: Any, objective_name: str = "F") -> ProblemSpec:
         ]
     return ProblemSpec(
         domain=domain,
-        objectives=[ObjectiveSpec(name=objective_name, direction="MAXIMIZE")],
+        outputs=[OutputSpec(name=objective_name, direction="MAXIMIZE")],
         boxes=boxes,
         constraints=constraints,
     )

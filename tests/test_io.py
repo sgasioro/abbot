@@ -14,7 +14,13 @@ from abbot.io import (
 )
 from abbot.model import default_constructor
 from abbot.policy import SimpleBO
-from abbot.problem import ContinuousDomain, EnumeratedDomain, ObjectiveSpec, ProblemSpec
+from abbot.problem import (
+    Box,
+    ContinuousDomain,
+    EnumeratedDomain,
+    ObjectiveSpec,
+    ProblemSpec,
+)
 from abbot.session import Campaign
 
 
@@ -122,9 +128,39 @@ def test_self_describing_round_trip():
     assert torch.allclose(hist2.records[1].outputs, torch.tensor([55.0, 3.0], dtype=torch.double))
 
 
-def test_self_describing_with_boxes():
-    from abbot.problem import Box
+def test_self_describing_observe_round_trip():
+    from abbot import OutputSpec
 
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
+        outputs=[
+            OutputSpec(name="a", direction="OBSERVE"),
+            OutputSpec(name="b", direction="OBSERVE"),
+        ],
+        boxes=[Box(lower=[0.4, 0.4], upper=[0.6, 0.6])],
+    )
+    text = spec_history_to_csv(spec)
+    assert "# output,a,OBSERVE" in text  # OBSERVE direction emitted
+    spec2, _ = spec_history_from_csv(text)
+    assert spec2.n_objectives == 0 and spec2.n_outputs == 2
+    assert all(o.direction == "OBSERVE" for o in spec2.outputs)
+
+
+def test_self_describing_reads_legacy_objective_rows():
+    # A file written by the old format (# objective rows) still loads.
+    legacy = (
+        "# version,1\n"
+        "# continuous,x,0.0,1.0\n"
+        "# objective,y,MAXIMIZE\n"
+        "step,x,y\n0,0.5,1.0\n"
+    )
+    spec, hist = spec_history_from_csv(legacy)
+    assert spec.output_names == ["y"]
+    assert spec.n_objectives == 1
+    assert len(hist) == 1
+
+
+def test_self_describing_with_boxes():
     spec = ProblemSpec(
         domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
         objectives=[ObjectiveSpec(name="a", direction="MAXIMIZE"),

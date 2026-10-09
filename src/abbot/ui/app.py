@@ -165,7 +165,7 @@ def _objective_editor(state: UIState) -> None:
                         "dense outlined"
                     ).classes("w-32")
                     ui.select(
-                        {"MAXIMIZE": "Maximize", "MINIMIZE": "Minimize"},
+                        {"MAXIMIZE": "Maximize", "MINIMIZE": "Minimize", "OBSERVE": "Observe (BAX)"},
                         value=row["direction"],
                     ).bind_value(row, "direction").props("dense outlined").classes("w-36")
                     ui.button(
@@ -221,7 +221,7 @@ def _model_fig(state: UIState, model):
     d = len(spec.domain)
     obj = state.viz_obj
     if d == 1:
-        s = analysis.slice_1d(hist, spec, model, var=0, objective=obj)
+        s = analysis.slice_1d(hist, spec, model, var=0, output=obj)
         upper = [m + sd for m, sd in zip(s["mean"], s["std"])]
         lower = [m - sd for m, sd in zip(s["mean"], s["std"])]
         px = [r.candidate.reshape(-1)[0].item() for r in hist.clean.records]
@@ -241,7 +241,7 @@ def _model_fig(state: UIState, model):
         }
     # 2-D (or a 2-var slice of higher-D) contour.
     vx, vy = state.viz_vx, state.viz_vy
-    s = analysis.slice_2d(hist, spec, model, var_x=vx, var_y=vy, objective=obj)
+    s = analysis.slice_2d(hist, spec, model, var_x=vx, var_y=vy, output=obj)
     px = [r.candidate.reshape(-1)[vx].item() for r in hist.clean.records]
     py = [r.candidate.reshape(-1)[vy].item() for r in hist.clean.records]
     title = f"Posterior mean of {s['objective_name']}"
@@ -262,7 +262,7 @@ def _model_fig(state: UIState, model):
 def _parity_fig(state: UIState, model):
     spec = state.spec
     p = analysis.parity(state.controller.campaign.history, spec, model)
-    name = spec.objectives[state.viz_obj].name
+    name = spec.outputs[state.viz_obj].name
     d = p.get(name)
     if not d:
         return None
@@ -450,7 +450,7 @@ def _import_spec_control(state: UIState) -> None:
                 rows.append({"kind": "enumerated", "name": d.name,
                              "values": ", ".join(str(v) for v in d.values)})
         state.variable_rows = rows or state.variable_rows
-        state.objective_rows = [{"name": o.name, "direction": o.direction} for o in spec.objectives]
+        state.objective_rows = [{"name": o.name, "direction": o.direction} for o in spec.outputs]
         ui.notify("Spec loaded into the editor.", type="positive")
         state._left.refresh()
 
@@ -495,11 +495,11 @@ def _manual_controls(state: UIState) -> None:
                         ui.label(f"{val:.4g}").classes("font-mono")
             inputs = {}
             with ui.row().classes("gap-2 flex-wrap"):
-                for obj in state.spec.objectives:
-                    inputs[obj.name] = ui.number(f"{obj.name}").props("outlined dense").classes("w-28")
+                for o in state.spec.outputs:  # every modeled output, incl. OBSERVE
+                    inputs[o.name] = ui.number(f"{o.name}").props("outlined dense").classes("w-28")
 
             def do_submit() -> None:
-                vals = [inputs[o.name].value for o in state.spec.objectives]
+                vals = [inputs[o.name].value for o in state.spec.outputs]
                 if any(v is None for v in vals):
                     ui.notify("Enter all measured values first.", type="warning")
                     return
@@ -580,12 +580,12 @@ def _viz_panel(state: UIState) -> None:
     spec = state.spec
     model = state.fitted_model()
 
-    if model is not None and (spec.n_objectives > 1 or len(spec.domain) > 2):
+    if model is not None and (spec.n_outputs > 1 or len(spec.domain) > 2):
         with ui.row().classes("items-center gap-2"), ui.card().classes("w-full"):
-            if spec.n_objectives > 1:
+            if spec.n_outputs > 1:
                 ui.select(
-                    {j: o.name for j, o in enumerate(spec.objectives)},
-                    value=state.viz_obj, label="objective",
+                    {j: o.name for j, o in enumerate(spec.outputs)},
+                    value=state.viz_obj, label="output",
                     on_change=lambda e: _reviz(state, "viz_obj", e.value),
                 ).props("dense outlined")
             if len(spec.domain) > 2:
@@ -682,7 +682,7 @@ def _update_recommendation(state: UIState) -> None:
                 f"{n} = {v:.4g}" for n, v in zip(spec.variable_names, r.candidate.reshape(-1).tolist())
             )
             outs = ", ".join(
-                f"{o.name} = {float(r.outputs[j]):.4g}" for j, o in enumerate(spec.objectives)
+                f"{o.name} = {float(r.outputs[j]):.4g}" for j, o in enumerate(spec.outputs)
             )
             ui.label(f"{setting}  →  {outs}").classes("font-mono text-sm")
 
@@ -690,7 +690,7 @@ def _update_recommendation(state: UIState) -> None:
 def _history_columns(spec) -> list[dict]:
     cols = [{"name": "step", "label": "step", "field": "step", "align": "left"}]
     cols += [{"name": n, "label": n, "field": n} for n in spec.variable_names]
-    cols += [{"name": o.name, "label": o.name, "field": o.name} for o in spec.objectives]
+    cols += [{"name": o.name, "label": o.name, "field": o.name} for o in spec.outputs]
     return cols
 
 
@@ -701,7 +701,7 @@ def _history_rows(state: UIState) -> list[dict]:
         {
             "step": i,
             **{n: round(float(v), 4) for n, v in zip(spec.variable_names, r.candidate.reshape(-1).tolist())},
-            **{o.name: round(float(r.outputs[j]), 4) for j, o in enumerate(spec.objectives)},
+            **{o.name: round(float(r.outputs[j]), 4) for j, o in enumerate(spec.outputs)},
         }
         for i, r in enumerate(hist.records)
         if r.outputs is not None

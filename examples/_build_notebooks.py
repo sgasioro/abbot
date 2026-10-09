@@ -342,17 +342,22 @@ the target. Here we look for designs whose two outputs land inside a target box.
 import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
-    ProblemSpec, ContinuousDomain, ObjectiveSpec, Box,
+    ProblemSpec, ContinuousDomain, OutputSpec, Box,
     BAXPolicy, goals_from_spec, ModelListConstructor, Campaign,
 )
 torch.manual_seed(0)
 """),
+    md("""
+In BAX the outputs `a` and `b` are **modeled features a Goal consumes**, not things
+to maximize — so we declare them `OBSERVE` (modeled, not optimized). The *target
+region* on `(a, b)` is what encodes the intent.
+"""),
     code("""
 spec = ProblemSpec(
     domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
-    objectives=[
-        ObjectiveSpec(name="a", direction="MAXIMIZE"),
-        ObjectiveSpec(name="b", direction="MAXIMIZE"),
+    outputs=[
+        OutputSpec(name="a", direction="OBSERVE"),
+        OutputSpec(name="b", direction="OBSERVE"),
     ],
     boxes=[Box(lower=[0.4, 0.4], upper=[0.6, 0.6])],  # target region on (a, b)
 )

@@ -128,7 +128,7 @@ def test_slice_1d_shape_and_raw_minimum():
     from abbot.analysis import slice_1d
 
     h, spec, model = _fitted_1d_minimize()
-    s = slice_1d(h, spec, model, var=0, objective=0, n=50)
+    s = slice_1d(h, spec, model, var=0, output=0, n=50)
     assert len(s["x"]) == len(s["mean"]) == len(s["std"]) == 50
     assert s["var_name"] == "x" and s["objective_name"] == "cost"
     # Raw mean should be lowest near the true minimizer (~0.3), not highest.

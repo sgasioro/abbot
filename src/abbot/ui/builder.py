@@ -10,17 +10,17 @@ from abbot.acq_opt import Continuous, DiscreteArgmax
 from abbot.problem import (
     ContinuousDomain,
     EnumeratedDomain,
-    ObjectiveSpec,
+    OutputSpec,
     ProblemSpec,
 )
 
 
-def build_spec(variable_rows: list[dict], objective_rows: list[dict]) -> ProblemSpec:
+def build_spec(variable_rows: list[dict], output_rows: list[dict]) -> ProblemSpec:
     """Build a ``ProblemSpec`` from UI rows.
 
     ``variable_rows``: each ``{"kind": "continuous", "name", "lower", "upper"}`` or
     ``{"kind": "enumerated", "name", "values": [...]}``.
-    ``objective_rows``: each ``{"name", "direction": "MINIMIZE"|"MAXIMIZE"}``.
+    ``output_rows``: each ``{"name", "direction": "MINIMIZE"|"MAXIMIZE"|"OBSERVE"}``.
     Pydantic validation raises with field-level messages the UI surfaces inline.
     """
     domain = []
@@ -39,11 +39,11 @@ def build_spec(variable_rows: list[dict], objective_rows: list[dict]) -> Problem
             domain.append(EnumeratedDomain(name=row["name"], values=[float(v) for v in values]))
         else:
             raise ValueError(f"unknown variable kind {kind!r}")
-    objectives = [
-        ObjectiveSpec(name=o["name"], direction=o.get("direction", "MAXIMIZE"))
-        for o in objective_rows
+    outputs = [
+        OutputSpec(name=o["name"], direction=o.get("direction", "MAXIMIZE"))
+        for o in output_rows
     ]
-    return ProblemSpec(domain=domain, objectives=objectives)
+    return ProblemSpec(domain=domain, outputs=outputs)
 
 
 def choose_optimizer(spec: ProblemSpec):

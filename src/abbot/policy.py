@@ -66,6 +66,20 @@ class Policy(Protocol):
         ...
 
 
+def _objective_transform(spec: ProblemSpec):
+    """A ``ScalarizedPosteriorTransform`` selecting the single objective column
+    from a (possibly wider) model, or ``None`` when the model is already exactly
+    the one objective (no OBSERVE columns) — the common case, avoids overhead.
+    """
+    if spec.n_outputs == 1:
+        return None
+    from botorch.acquisition.objective import ScalarizedPosteriorTransform
+
+    weights = torch.zeros(spec.n_outputs, dtype=torch.double)
+    weights[spec.objective_indices()[0]] = 1.0
+    return ScalarizedPosteriorTransform(weights=weights)
+
+
 def _denoised_recommendation(
     history: History, spec: ProblemSpec, model: Model
 ) -> list[int]:
@@ -77,12 +91,16 @@ def _denoised_recommendation(
       - m  > 1: non-dominated set of the posterior-mean vectors -> index list.
     Indices are mapped back to full-history coordinates (faulted shots excluded).
     """
+    idx = spec.objective_indices()
+    if not idx:
+        return []  # pure-BAX: no single "best"; handover is the goal's job
     keep = [i for i, r in enumerate(history.records) if not r.fault]
     if not keep:
         return []
     X = torch.stack([history.records[i].candidate for i in keep]).double()
     with torch.no_grad():
-        mean = model.posterior(X).mean  # (len(keep), m) in canonical space
+        # Model is full-width over all outputs; select the objective columns.
+        mean = model.posterior(X).mean.reshape(len(keep), -1)[:, idx]
     if mean.shape[-1] == 1:
         best_local = int(mean.reshape(-1).argmax())
         return [keep[best_local]]
@@ -95,8 +113,10 @@ class SimpleBO:
 
     Mirrors ``SBIdODesigner.step`` acquisition (qLogNoisyEI, X_baseline=history).
     Always maximizes: the loop fits the model in maximize-canonical space (it
-    applies ``spec.objective_signs``), so a MINIMIZE objective is handled upstream
-    and the caller never pre-negates. Refuses a multi-objective spec (use ParetoBO).
+    applies ``spec.output_signs``), so a MINIMIZE objective is handled upstream and
+    the caller never pre-negates. When the model has extra OBSERVE outputs, a
+    ``ScalarizedPosteriorTransform`` selects the single objective column. Refuses a
+    multi-objective spec (use ParetoBO).
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
@@ -110,10 +130,12 @@ class SimpleBO:
         if spec.n_objectives != 1:
             raise ValueError(
                 f"SimpleBO is single-objective but the spec has {spec.n_objectives} "
-                "objectives; use ParetoBO for multi-objective optimization."
+                "objective(s); use ParetoBO for multi-objective optimization."
             )
         X = history.clean.designs.double()
-        acq = qLogNoisyExpectedImprovement(model, X_baseline=X)
+        acq = qLogNoisyExpectedImprovement(
+            model, X_baseline=X, posterior_transform=_objective_transform(spec)
+        )
         return self.optimizer.optimize(acq, spec, n)
 
     def ingest(self, results) -> None:  # stateless: history carries the state
@@ -155,7 +177,9 @@ class ParetoBO:
         self.min_clean = min_clean  # None -> max(2, 2*m) resolved at suggest time
 
     def _canonical_Y(self, history: History, spec: ProblemSpec) -> torch.Tensor:
-        return history.clean.outputs.double() * spec.objective_signs()
+        """Objective columns only, in canonical space: (n_clean, n_objectives)."""
+        Y = history.clean.outputs.double()[:, spec.objective_indices()]
+        return Y * spec.objective_signs()
 
     def suggest(
         self, history: History, spec: ProblemSpec, model: Model, n: int = 1
@@ -205,8 +229,17 @@ class ParetoBO:
         )
 
         X = history.clean.designs.double()
+        # Model is full-width over all outputs; select the objective columns so
+        # NEHVI's hypervolume is over objectives only (OBSERVE columns ignored).
+        objective = None
+        if spec.n_outputs != spec.n_objectives:
+            from botorch.acquisition.multi_objective.objective import (
+                IdentityMCMultiOutputObjective,
+            )
+
+            objective = IdentityMCMultiOutputObjective(outcomes=spec.objective_indices())
         acq = qLogNoisyExpectedHypervolumeImprovement(
-            model=model, ref_point=ref_point, X_baseline=X
+            model=model, ref_point=ref_point, X_baseline=X, objective=objective
         )
         return self.optimizer.optimize(acq, spec, n)
 
@@ -237,7 +270,9 @@ class UncertaintySampling:
     ) -> torch.Tensor:
         from botorch.acquisition import PosteriorStandardDeviation
 
-        if spec.n_objectives == 1:
+        # Pure exploration over ALL modeled outputs (direction-agnostic, incl.
+        # OBSERVE columns) — keyed on n_outputs, not objective count.
+        if spec.n_outputs == 1:
             acq = PosteriorStandardDeviation(model)
         else:
             acq = _SumPosteriorStd(model)
@@ -297,7 +332,7 @@ class BAXPolicy:
     (pathwise / seeded-ascent) is a deferred extension point.
 
     Outputs are read in RAW units before the goal runs (the model is canonical;
-    ``objective_signs`` is un-applied), matching multibax's unnormalize step.
+    ``output_signs`` is un-applied), matching multibax's unnormalize step.
     """
 
     def __init__(
@@ -349,7 +384,7 @@ class BAXPolicy:
 
     def _raw_mean_std(self, model, X, spec):
         """Posterior (mean, std) at X in RAW units: (N, d_y)."""
-        signs = spec.objective_signs()
+        signs = spec.output_signs()  # BAX reads ALL outputs raw (goal consumes them)
         with torch.no_grad():
             post = model.posterior(X.double())
             mean = post.mean.reshape(X.shape[0], -1) * signs
@@ -412,7 +447,7 @@ class BAXPolicy:
         each sample's goal-target points; recompute summed latent entropy.
         """
         term1 = _entropy(std)  # (N, d_y) current predictive entropy
-        signs = spec.objective_signs()
+        signs = spec.output_signs()  # BAX reads ALL outputs raw (goal consumes them)
         with torch.no_grad():
             post = model.posterior(grid.double())
             # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
