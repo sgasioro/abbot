@@ -44,6 +44,38 @@ def test_uistate_mock_mode_enables_auto_run():
     assert len(state.controller.campaign.recommend()) == 1
 
 
+@pytest.mark.slow
+def test_uistate_bax_mode_runs_a_campaign():
+    """BAX is reachable from the UI: a target-region campaign builds a BAXPolicy
+    with the chosen goal and drives steps in mock/auto mode (the gap the user hit)."""
+    import torch
+
+    from abbot.policy import BAXPolicy
+    from abbot.ui.app import UIState
+
+    torch.manual_seed(0)
+    state = UIState()
+    state.method = "bax"
+    state.variable_rows = [{"kind": "continuous", "name": "x", "lower": 0.0, "upper": 1.0}]
+    state.objective_rows = [{"name": "y", "direction": "MAXIMIZE"}]  # arrow ignored in BAX
+    state.goal_row = {"kind": "band", "bands": {"y": {"lo": 0.4, "hi": 0.6}}}
+    state.bax_strategy = "MeanBAX"
+    state.mock = True
+    state.start_campaign()
+
+    spec = state.spec
+    assert spec.n_objectives == 0 and spec.n_outputs == 1  # all OBSERVE
+    assert isinstance(state.controller.campaign.policy, BAXPolicy)
+    assert state.controller.campaign.policy.strategy == "MeanBAX"
+    assert state.controller.can_auto is True
+
+    for _ in range(4):
+        state.controller.step_once()
+    assert len(state.controller.campaign.history) == 4
+    # Pure-BAX has no single "best"; recommend() returns [] (handover is the goal's).
+    assert state.controller.campaign.recommend() == []
+
+
 def test_uistate_surfaces_mixed_space_error():
     from abbot.ui.app import UIState
 

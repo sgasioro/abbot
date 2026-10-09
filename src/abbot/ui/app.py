@@ -22,9 +22,14 @@ from nicegui import ui
 from abbot import analysis
 from abbot.experiment import SyntheticExperiment
 from abbot.model import default_constructor
-from abbot.policy import ParetoBO, SimpleBO
+from abbot.policy import BAXPolicy, ParetoBO, SimpleBO
 from abbot.session import Campaign
-from abbot.ui.builder import build_spec, choose_optimizer
+from abbot.ui.builder import (
+    BAX_STRATEGY_LABELS,
+    build_goal,
+    build_spec,
+    choose_optimizer,
+)
 from abbot.ui.controller import RunController, RunStatus
 
 logger = logging.getLogger(__name__)
@@ -48,6 +53,11 @@ class UIState:
             {"kind": "continuous", "name": "x1", "lower": 0.0, "upper": 1.0}
         ]
         self.objective_rows: list[dict] = [{"name": "y", "direction": "MAXIMIZE"}]
+        # Method: "optimize" (BO/MO) or "bax" (find a target region). BAX adds a
+        # goal (type + params) and a strategy; the output directions become OBSERVE.
+        self.method: str = "optimize"
+        self.goal_row: dict = {"kind": "band", "percentile": 80.0}
+        self.bax_strategy: str = "SwitchBAX"
         self.controller: RunController | None = None
         self.spec = None
         self.pending: list[dict] | None = None
@@ -70,11 +80,28 @@ class UIState:
         self._table = None
 
     def start_campaign(self) -> None:
-        spec = build_spec(self.variable_rows, self.objective_rows)  # may raise
-        optimizer = choose_optimizer(spec)  # may raise on mixed spaces
-        policy = SimpleBO(optimizer) if spec.n_objectives == 1 else ParetoBO(optimizer)
+        # In BAX mode the outputs are modeled-but-not-optimized (the goal consumes
+        # them), so present them to the engine as OBSERVE regardless of the UI arrow.
+        rows = self.objective_rows
+        if self.method == "bax":
+            rows = [{**r, "direction": "OBSERVE"} for r in self.objective_rows]
+        spec = build_spec(self.variable_rows, rows)  # may raise
+
+        model_uq = "calibrated_variance"
+        if self.method == "bax":
+            goal = build_goal(self._normalized_goal_row(), spec)  # may raise
+            policy = BAXPolicy(goal, strategy=self.bax_strategy)
+            model_uq = policy.uq_requirement
+        else:
+            optimizer = choose_optimizer(spec)  # may raise on mixed spaces
+            policy = (
+                SimpleBO(optimizer) if spec.n_objectives == 1 else ParetoBO(optimizer)
+            )
         campaign = Campaign(
-            spec, policy, default_constructor(spec, bounds=spec.bounds_tensor())
+            spec,
+            policy,
+            default_constructor(spec, bounds=spec.bounds_tensor()),
+            model_uq=model_uq,
         )
         bounds = spec.bounds_tensor()
         lo, hi = bounds[0], bounds[1]
@@ -93,6 +120,24 @@ class UIState:
             self.controller = RunController(campaign, experiment=exp, evaluate=lambda o: o)
         else:
             self.controller = RunController(campaign)
+
+    def _normalized_goal_row(self) -> dict:
+        """Turn the UI goal row into the dict ``build_goal`` expects.
+
+        For a band goal the editor stores per-output ``{name: {"lo": v, "hi": v}}``
+        under ``bands``; collapse that into ``bounds = {name: (lo, hi)}`` dropping
+        rows where both ends are blank (unconstrained).
+        """
+        row = dict(self.goal_row)
+        if row.get("kind", "band") == "band":
+            bounds: dict[str, tuple] = {}
+            for name, band in (row.get("bands") or {}).items():
+                lo, hi = band.get("lo"), band.get("hi")
+                if lo is None and hi is None:
+                    continue
+                bounds[name] = (lo, hi)
+            row["bounds"] = bounds
+        return row
 
     def fitted_model(self):
         """The current fitted surrogate (canonical space) or None."""
@@ -151,9 +196,17 @@ def _variable_editor(state: UIState) -> None:
 
 
 def _objective_editor(state: UIState) -> None:
+    bax = state.method == "bax"
     with ui.row().classes("items-center gap-2"):
         ui.icon("flag").classes("text-indigo-600")
-        ui.label("Objectives").classes("text-base font-semibold")
+        ui.label("Measured outputs" if bax else "Objectives").classes(
+            "text-base font-semibold"
+        )
+    if bax:
+        ui.label(
+            "In target-region mode every output is modeled; the goal below picks "
+            "which region to find."
+        ).classes("text-xs text-gray-500")
     container = ui.column().classes("gap-2 w-full")
 
     def redraw() -> None:
@@ -164,10 +217,12 @@ def _objective_editor(state: UIState) -> None:
                     ui.input("name", value=row.get("name", "")).bind_value(row, "name").props(
                         "dense outlined"
                     ).classes("w-32")
-                    ui.select(
-                        {"MAXIMIZE": "Maximize", "MINIMIZE": "Minimize", "OBSERVE": "Observe (BAX)"},
-                        value=row["direction"],
-                    ).bind_value(row, "direction").props("dense outlined").classes("w-36")
+                    if not bax:
+                        ui.select(
+                            {"MAXIMIZE": "Maximize", "MINIMIZE": "Minimize",
+                             "OBSERVE": "Observe (BAX)"},
+                            value=row["direction"],
+                        ).bind_value(row, "direction").props("dense outlined").classes("w-36")
                     ui.button(
                         icon="delete",
                         on_click=lambda _, idx=i: (_pop(state.objective_rows, idx), redraw()),
@@ -179,7 +234,123 @@ def _objective_editor(state: UIState) -> None:
         redraw()
 
     redraw()
-    ui.button("Add objective", icon="add", on_click=add).props("flat dense color=indigo")
+    ui.button("Add output" if bax else "Add objective", icon="add", on_click=add).props(
+        "flat dense color=indigo"
+    )
+
+
+def _method_selector(state: UIState, on_change) -> None:
+    """Choose what the campaign does: optimize, or find a target region (BAX)."""
+    with ui.row().classes("items-center gap-2"):
+        ui.icon("alt_route").classes("text-indigo-600")
+        ui.label("What do you want to do?").classes("text-base font-semibold")
+
+    def pick(value: str) -> None:
+        state.method = value
+        on_change()  # refresh the setup panel so dependent editors appear/vanish
+
+    ui.toggle(
+        {"optimize": "Optimize", "bax": "Find a target region (BAX)"},
+        value=state.method,
+        on_change=lambda e: pick(e.value),
+    ).props("no-caps").classes("w-full")
+    if state.method == "optimize":
+        ui.label("Drive the objective(s) up/down (Bayesian optimization).").classes(
+            "text-xs text-gray-500"
+        )
+    else:
+        ui.label(
+            "Map where the outputs land in a region you care about "
+            "(Bayesian Algorithm Execution)."
+        ).classes("text-xs text-gray-500")
+
+
+def _goal_editor(state: UIState) -> None:
+    """Define the BAX goal: a goal-type dropdown with params that follow the choice."""
+    with ui.row().classes("items-center gap-2"):
+        ui.icon("my_location").classes("text-indigo-600")
+        ui.label("Target region").classes("text-base font-semibold")
+
+    names = [r.get("name", "") for r in state.objective_rows]
+    goal = state.goal_row
+    params = ui.column().classes("gap-2 w-full")
+
+    def redraw_params() -> None:
+        params.clear()
+        kind = goal.get("kind", "band")
+        with params:
+            if kind == "band":
+                ui.label("Keep each output within a [low, high] band (blank = any):").classes(
+                    "text-xs text-gray-500"
+                )
+                bands = goal.setdefault("bands", {})
+                for name in names:
+                    band = bands.setdefault(name, {"lo": None, "hi": None})
+                    with ui.row().classes("items-center gap-1 w-full"):
+                        ui.label(name).classes("w-24 text-sm font-mono")
+                        ui.number("low", value=band.get("lo")).bind_value(
+                            band, "lo"
+                        ).props("dense outlined").classes("w-24")
+                        ui.number("high", value=band.get("hi")).bind_value(
+                            band, "hi"
+                        ).props("dense outlined").classes("w-24")
+            elif kind == "percentile":
+                ui.label("Find the top (100 − p)% of a single output.").classes(
+                    "text-xs text-gray-500"
+                )
+                ui.number("percentile p", value=goal.get("percentile", 80.0)).bind_value(
+                    goal, "percentile"
+                ).props("dense outlined").classes("w-40")
+            elif kind == "level":
+                ui.label("Find where an output crosses a threshold (a level set).").classes(
+                    "text-xs text-gray-500"
+                )
+                with ui.row().classes("items-center gap-1 w-full"):
+                    ui.select(
+                        {n: n for n in names}, value=goal.get("output", names[0]), label="output"
+                    ).bind_value(goal, "output").props("dense outlined").classes("w-32")
+                    ui.number("threshold", value=goal.get("threshold", 0.0)).bind_value(
+                        goal, "threshold"
+                    ).props("dense outlined").classes("w-28")
+                ui.select(
+                    {False: "above threshold (≥)", True: "below threshold (≤)"},
+                    value=goal.get("upper", False),
+                ).bind_value(goal, "upper").props("dense outlined").classes("w-48")
+            elif kind == "topk":
+                ui.label("Find the k best candidates on one output.").classes(
+                    "text-xs text-gray-500"
+                )
+                with ui.row().classes("items-center gap-1 w-full"):
+                    ui.number("k", value=goal.get("k", 1)).bind_value(goal, "k").props(
+                        "dense outlined"
+                    ).classes("w-20")
+                    ui.select(
+                        {n: n for n in names}, value=goal.get("output", names[0]), label="output"
+                    ).bind_value(goal, "output").props("dense outlined").classes("w-32")
+                ui.select(
+                    {True: "largest", False: "smallest"}, value=goal.get("largest", True),
+                ).bind_value(goal, "largest").props("dense outlined").classes("w-36")
+
+    def pick_kind(value: str) -> None:
+        goal["kind"] = value
+        redraw_params()
+
+    ui.select(
+        {
+            "band": "Target band",
+            "percentile": "Top-percentile",
+            "level": "Level set",
+            "topk": "Top-K",
+        },
+        value=goal.get("kind", "band"),
+        label="Goal",
+        on_change=lambda e: pick_kind(e.value),
+    ).props("dense outlined").classes("w-full")
+    redraw_params()
+
+    ui.select(
+        BAX_STRATEGY_LABELS, value=state.bax_strategy, label="Strategy"
+    ).bind_value(state, "bax_strategy").props("dense outlined").classes("w-full")
 
 
 def _set(row: dict, key: str, value) -> None:
@@ -199,6 +370,11 @@ def _pop(rows: list, idx: int) -> None:
 def _convergence_fig(state: UIState):
     hist = state.controller.campaign.history
     spec = state.spec
+    if spec.n_objectives == 0:
+        # Pure-BAX: no single objective to converge. Show how many target
+        # candidates the goal currently identifies on the posterior mean — the
+        # size of the discovered region, which should grow then stabilize.
+        return _bax_progress_fig(state)
     if spec.n_objectives == 1:
         y = analysis.convergence(hist, spec)
         title, ylab = f"Best {spec.objectives[0].name} so far", spec.objectives[0].name
@@ -211,6 +387,33 @@ def _convergence_fig(state: UIState):
             "line": {"color": _ACCENT, "width": 2}, "marker": {"color": _ACCENT, "size": 6},
         }],
         "layout": {**_PLOT_LAYOUT, "title": title, "xaxis": {"title": "step"}, "yaxis": {"title": ylab}},
+    }
+
+
+def _bax_progress_fig(state: UIState):
+    """BAX progress: the number of grid candidates the goal currently identifies on
+    the posterior mean, plus how many experiments have been collected. Not a
+    per-step history (we don't re-fit the past); a single current-state snapshot.
+    """
+    pol = state.controller.campaign.policy
+    model = state.fitted_model()
+    identified = 0
+    if model is not None and isinstance(pol, BAXPolicy):
+        try:
+            grid = pol._ensure_grid(state.spec)
+            mean, _ = pol._raw_mean_std(model, grid, state.spec)
+            identified = len(pol.goal.identify_subspace(mean, grid))
+        except Exception:
+            logger.exception("BAX progress figure failed")
+    collected = len(state.controller.campaign.history.clean)
+    return {
+        "data": [{
+            "x": ["target candidates", "experiments run"],
+            "y": [identified, collected],
+            "type": "bar", "marker": {"color": [_ACCENT, "#9ca3af"]},
+        }],
+        "layout": {**_PLOT_LAYOUT, "title": "Target region discovered",
+                   "yaxis": {"title": "count"}},
     }
 
 
@@ -313,9 +516,14 @@ def _build_page() -> None:
             def left() -> None:
                 if state.controller is None:
                     with ui.card().classes("w-full"):
+                        _method_selector(state, on_change=lambda: state._left.refresh())
+                    with ui.card().classes("w-full"):
                         _variable_editor(state)
                     with ui.card().classes("w-full"):
                         _objective_editor(state)
+                    if state.method == "bax":
+                        with ui.card().classes("w-full"):
+                            _goal_editor(state)
                     with ui.card().classes("w-full"):
                         ui.switch(
                             "Mock mode (synthetic experiment → auto-run)"
@@ -384,9 +592,12 @@ def _control_panel(state: UIState) -> None:
             ).tooltip("New campaign")
 
         spec = state.spec
-        ui.label(
-            f"{len(spec.domain)} variable(s), {spec.n_objectives} objective(s)"
-        ).classes("text-xs text-gray-500")
+        if isinstance(ctrl.campaign.policy, BAXPolicy):
+            summary = f"{len(spec.domain)} variable(s), target-region (BAX) over " \
+                      f"{spec.n_outputs} output(s)"
+        else:
+            summary = f"{len(spec.domain)} variable(s), {spec.n_objectives} objective(s)"
+        ui.label(summary).classes("text-xs text-gray-500")
 
         if ctrl.can_auto:
             _auto_controls(state)
