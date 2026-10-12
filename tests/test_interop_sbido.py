@@ -113,7 +113,7 @@ def test_bax_on_sbido_analytic_benchmark_concentrates_on_target():
     policy = bax_policy_for(spec, strategy="MeanBAX", scalar=False, n_candidates=400)
     c = Campaign(spec, policy, ModelListConstructor(bounds=spec.bounds_tensor()))
     # Seed from the policy's own grid so fits and proposals share the candidate set.
-    grid = policy._ensure_grid(spec)
+    grid = policy.candidate_grid(spec)
     c.seed(grid[torch.randperm(grid.shape[0])[:6]])
     exp = _AnalyticExperiment()
     for _ in range(20):

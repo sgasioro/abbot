@@ -148,3 +148,66 @@ def test_on_step_hook_fires():
     c.step(ManualExperiment(responder=lambda cand: -(cand.reshape(-1) ** 2)), lambda obs: obs)
     c.step(ManualExperiment(responder=lambda cand: -(cand.reshape(-1) ** 2)), lambda obs: obs)
     assert seen == [1, 2]
+
+
+# --- API-freeze additions: current_model cache, record(), pending_count --------
+
+
+def test_current_model_caches_until_history_mutates():
+    torch.manual_seed(0)
+    spec = _scalar_spec()
+    c = _make_campaign(spec)
+    c.seed(torch.tensor([[0.2], [0.5], [0.8]], dtype=torch.double))
+    for _ in range(3):  # drain seeds into history
+        x = c.suggest(1)[0]["x"]
+        c.ingest(torch.tensor([-((x - 0.3) ** 2)]))
+    m1 = c.current_model()
+    assert m1 is not None
+    assert c.current_model() is m1  # cached: same object, no refit
+    # A new measurement invalidates the cache -> a fresh fit.
+    x = c.suggest(1)[0]["x"]
+    c.ingest(torch.tensor([-((x - 0.3) ** 2)]))
+    assert c.current_model() is not m1
+
+
+def test_record_matches_ingest_and_persists(tmp_path):
+    torch.manual_seed(0)
+    spec = _scalar_spec()
+    c = _make_campaign(spec, store=DataStore(tmp_path))
+    # record() folds an externally-chosen (x, y) in with no prior suggest().
+    c.record(torch.tensor([0.3]), torch.tensor([0.9]))
+    c.record(torch.tensor([0.7]), torch.tensor([0.1]))
+    assert len(c.history) == 2
+    assert abs(float(c.history.records[0].candidate) - 0.3) < 1e-6
+    assert abs(float(c.history.records[0].outputs) - 0.9) < 1e-6
+    # Persisted: a fresh campaign on the same store resumes both.
+    c2 = _make_campaign(spec, store=DataStore(tmp_path))
+    assert len(c2.history) == 2
+
+
+def test_pending_count_tracks_seed_queue():
+    spec = _scalar_spec()
+    c = _make_campaign(spec)
+    assert c.pending_count() == 0
+    c.seed(torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double))
+    assert c.pending_count() == 3
+    c.suggest(1)
+    c.ingest(torch.tensor([0.5]))
+    assert c.pending_count() == 2  # one seed consumed
+
+
+def test_misconfig_raises_not_silent_random():
+    """A policy that can't serve the spec must fail loud on suggest, not silently
+    fall back to random draws (the hybrid fail-mode guarantee)."""
+    from abbot.policy import ParetoBO
+
+    spec = _scalar_spec()  # single objective
+    c = Campaign(
+        spec, ParetoBO(), default_constructor(spec, bounds=spec.bounds_tensor())
+    )
+    c.seed(torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double))
+    for _ in range(3):  # drain seeds so the next suggest asks the policy
+        x = c.suggest(1)[0]["x"]
+        c.ingest(torch.tensor([x]))
+    with pytest.raises(ValueError, match="ParetoBO"):
+        c.suggest(1)  # ParetoBO on a 1-objective spec -> loud, not random

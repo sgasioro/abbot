@@ -79,7 +79,7 @@ def run_campaign(
     # Total steps = queued seeds (0 if resumed) + the requested shots. Retries add
     # themselves to the queue and are consumed by subsequent suggest() calls, so we
     # drive until the shot budget and all pending retries are exhausted.
-    n_seeds = len(campaign._seed_queue)
+    n_seeds = campaign.pending_count()  # just-seeded, no retries yet
     n_total = n_seeds + n_shots
     for _ in range(n_total):
         if campaign.halted:
@@ -94,7 +94,7 @@ def run_campaign(
         campaign.step(experiment, evaluate)
 
     # Drain any outstanding retries queued by the supervisor on the final steps.
-    while campaign._retry_queue and not campaign.halted:
+    while campaign.pending_count() and not campaign.halted:
         campaign.step(experiment, evaluate)
 
     if campaign.halted and on_persistent_fault == "halt":

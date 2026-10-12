@@ -358,7 +358,13 @@ class BAXPolicy:
 
     # -- grid --
 
-    def _ensure_grid(self, spec: ProblemSpec) -> torch.Tensor:
+    def candidate_grid(self, spec: ProblemSpec) -> torch.Tensor:
+        """The Sobol candidate grid ``(N, d)`` this policy proposes over.
+
+        Built once from the spec and cached; honors sparse inequality constraints.
+        Exposed because callers legitimately seed a campaign from the same grid the
+        policy searches, so fits and proposals share one candidate set.
+        """
         if self._grid is None:
             from torch.quasirandom import SobolEngine
 
@@ -376,6 +382,10 @@ class BAXPolicy:
                 grid = grid[keep]
             self._grid = grid
         return self._grid
+
+    def _ensure_grid(self, spec: ProblemSpec) -> torch.Tensor:
+        """Deprecated alias for :meth:`candidate_grid` (kept for one release)."""
+        return self.candidate_grid(spec)
 
     @property
     def collected_count(self) -> int:
@@ -396,7 +406,7 @@ class BAXPolicy:
     def suggest(
         self, history: History, spec: ProblemSpec, model: Model, n: int = 1
     ) -> torch.Tensor:
-        grid = self._ensure_grid(spec)
+        grid = self.candidate_grid(spec)
         acq = self._acquisition(spec, model, grid)
         acq = acq.clone()
         acq[self._collected] = float("-inf")

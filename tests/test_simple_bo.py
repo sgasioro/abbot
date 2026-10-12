@@ -79,7 +79,7 @@ def test_uq_pairing_guardrail():
     # A point-only model paired with a variance-hungry policy is refused.
     import pytest
 
-    with pytest.raises(ValueError, match="requires uq_requirement"):
+    with pytest.raises(ValueError, match="calibrated uncertainty"):
         check_uq_pairing(UncertaintySampling(), model_uq="point")
     # And allowed when the model provides enough.
     check_uq_pairing(UncertaintySampling(), model_uq="calibrated_variance")

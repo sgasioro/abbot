@@ -1,6 +1,7 @@
 # abbot
 
-**From A to B — a Bayesian guide for lab experiments.**
+**A goal-driven (a to b) Bayesian guidance (BO) framework (bot) targeting lab experiments.**
+
 
 `abbot` is an active-learning-for-labs layer on top of [BoTorch](https://botorch.org).
 It is **not** a competing optimization framework: BoTorch already provides the
@@ -14,6 +15,48 @@ genuinely ours on top of that substrate:
 It unifies the method that is currently reimplemented across several SLAC repos
 (sbido, BAXstics, nn-bax) — surrogate + acquisition/BAX + propose→evaluate→retrain
 — behind one serializable `ProblemSpec` and an ask/tell loop.
+
+## Quickstart
+
+```python
+import torch
+from abbot import (
+    ProblemSpec, OutputSpec, ContinuousDomain,
+    Campaign, SimpleBO, default_constructor,
+)
+
+# 1. Define the problem: design knobs + what you measure.
+spec = ProblemSpec(
+    domain=[ContinuousDomain(name="temp", lower=20.0, upper=80.0)],
+    outputs=[OutputSpec(name="yield", direction="MAXIMIZE")],
+)
+
+# 2. Open a session and seed it with a few starting points.
+campaign = Campaign(spec, SimpleBO(), default_constructor(spec, bounds=spec.bounds_tensor()))
+campaign.seed(torch.tensor([[30.0], [50.0], [70.0]], dtype=torch.double))
+
+# 3. Ask → run in the lab → tell. Repeat.
+for _ in range(8):
+    x = campaign.suggest(1)[0]                 # e.g. {"temp": 54.2}
+    measured_yield = run_in_lab(x["temp"])     # your measurement here
+    campaign.ingest(torch.tensor([measured_yield]))
+
+# 4. Hand over the recommended design.
+best = campaign.result().best                  # a Record; best.candidate is the setting
+```
+
+You report **raw physical values** (`direction` handles maximize vs. minimize for
+you — never pre-negate). A few variations:
+
+- **Multi-objective** — give the spec two+ directional outputs and use `ParetoBO()`;
+  `result().recommended` is the Pareto set.
+- **Find a region, not an optimum (BAX)** — mark outputs `direction="OBSERVE"`, pick
+  a `Goal` (e.g. `BandIntersection`, `LevelSet`), and use `BAXPolicy(goal)`.
+- **No code** — `python -m abbot.ui` launches the lab web frontend over the same
+  `Campaign`.
+
+See [`docs/API.md`](docs/API.md) for the stability contract (what's safe to build
+on) and [`examples/`](examples/) for a runnable notebook per capability.
 
 ## Status: M1 core + M3 lab frontend
 

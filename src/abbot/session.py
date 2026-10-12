@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from botorch.utils.multi_objective.pareto import is_non_dominated
@@ -30,6 +30,9 @@ from abbot.history import DataStore, History, Record
 from abbot.model import ModelConstructor
 from abbot.policy import Policy
 from abbot.problem import ProblemSpec
+
+if TYPE_CHECKING:
+    from botorch.models.model import Model
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +58,16 @@ def check_uq_pairing(policy: Policy, model_uq: ModelUQ) -> None:
     """
     required = policy.uq_requirement
     if model_uq not in _SATISFIES[required]:
+        _NEEDS = {
+            "point": "a point prediction",
+            "samples": "coherent posterior samples",
+            "calibrated_variance": "calibrated uncertainty estimates",
+        }
         raise ValueError(
-            f"{type(policy).__name__} requires uq_requirement={required!r}, but the "
-            f"model only provides {model_uq!r}. Pair it with a model that provides "
-            f"at least {required!r} UQ, or choose a lower-UQ policy."
+            f"{type(policy).__name__} needs {_NEEDS[required]} from the model, but "
+            f"this model only provides {_NEEDS[model_uq]}. Use a model that provides "
+            f"{_NEEDS[required]} (a Gaussian-process surrogate does), or pick a method "
+            "that needs less (e.g. a greedy/MeanBAX policy only needs a point prediction)."
         )
 
 
@@ -226,6 +235,12 @@ class Campaign:
         self._pending: list[tuple[torch.Tensor, int | None, int]] | None = None
         self._recommended: list[int] = []
         self.halted: str | None = None
+        # The last non-fatal warning surfaced to a caller (e.g. a transient
+        # proposal fallback). A UI reads this after suggest/step and shows a toast.
+        self.last_warning: str | None = None
+        # Cached fit of the current clean history, invalidated on history mutation.
+        self._model = None
+        self._model_valid = False
 
     # -- setup --
 
@@ -249,6 +264,7 @@ class Campaign:
         unmeasured seed queue is cleared — imported data supersedes it.
         """
         self._seed_queue.clear()
+        self._model_valid = False  # history mutates -> cached fit is stale
         for record in history.records:
             step = len(self.history)
             self.history.append(record)
@@ -319,6 +335,7 @@ class Campaign:
                 )
 
         self._pending = None
+        self._model_valid = False  # history grew -> cached fit is stale
         self._after_ingest()
         return self.state()
 
@@ -335,18 +352,69 @@ class Campaign:
         out = evaluate(observation)
         return self.ingest([out], observations=[observation])
 
+    def record(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        *,
+        observation: object | None = None,
+        aux: object | None = None,
+    ) -> CampaignState:
+        """Fold an already-evaluated ``(candidate, outputs)`` pair in directly.
+
+        For external evaluators (an Xopt/gest generator, a live batch the caller
+        measured itself) that chose the point rather than taking it from
+        ``suggest``. ``x`` is one design ``(d,)``, ``y`` the RAW outputs ``(m,)`` in
+        ``spec.outputs`` order; ``aux`` is the optional cached payload (SBI theta
+        samples). Runs the supervisor, persists, queues a retry if flagged, and
+        fires ``on_step`` hooks — identical to ``ingest``, only the candidate is
+        supplied by the caller instead of being pending.
+
+        Distinct from ``load_history`` (which bulk-imports prior data WITHOUT the
+        supervisor/hooks). Returns the resulting :class:`CampaignState`.
+        """
+        xt = torch.as_tensor(x, dtype=torch.double).reshape(-1)
+        self._pending = [(xt, None, 0)]
+        result = (y, aux) if aux is not None else y
+        return self.ingest([result], observations=[observation])
+
     # -- queries --
 
     def recommend(self) -> list[int]:
         """Current denoised handover index/indices (fits a final model)."""
         if not len(self.history.clean):
             return []
-        model = self._safe_fit()
+        model = self.current_model()
         return self._safe_recommend(model)
 
     def result(self) -> CampaignResult:
         """A ``CampaignResult`` with the end-of-run recommendation."""
         return CampaignResult(history=self.history, recommended=self.recommend())
+
+    def current_model(self) -> Model | None:
+        """The surrogate fitted on the current clean history, or ``None``.
+
+        ``None`` when there are too few clean points to fit, or the fit raised.
+        The model lives in maximize-canonical space (objective signs applied); a
+        caller that wants RAW posterior values must un-apply ``spec.output_signs``
+        (see :func:`abbot.analysis.slice_1d`, which does this).
+
+        The fit is cached and reused until the next ``ingest`` / ``record`` /
+        ``load_history`` mutates the history, so repeated reads within one UI
+        render (model + parity + BAX-progress panels) cost a single fit.
+        """
+        if self._model_valid:
+            return self._model
+        self._model = self._fit_now()
+        self._model_valid = True
+        return self._model
+
+    def pending_count(self) -> int:
+        """Queued units of work owed before the policy must propose again:
+        unmeasured seeds plus supervisor-queued retries. A headless driver
+        (``run_campaign``, an agent) uses this to size its budget and drain retries.
+        """
+        return len(self._seed_queue) + len(self._retry_queue)
 
     def state(self) -> CampaignState:
         return CampaignState(
@@ -368,19 +436,39 @@ class Campaign:
 
     # -- internals --
 
-    def _propose(self, n: int) -> torch.Tensor:
-        try:
-            model = self._safe_fit()
-            if model is None:
-                raise RuntimeError("no model (too few clean points)")
-            return self.policy.suggest(self.history, self.spec, model, n=n)
-        except Exception:
-            logger.exception("proposal failed; falling back to uniform random draws.")
-            bounds = self.spec.bounds_tensor()
-            lo, hi = bounds[0], bounds[1]
-            return lo + (hi - lo) * torch.rand(n, bounds.shape[-1], dtype=torch.double)
+    # Deterministic misconfiguration (wrong policy for the spec, mixed design
+    # space, a non-enumerable discrete axis) fires on the first suggest(). These
+    # propagate so the caller/UI sees them immediately — never a silent random run.
+    _MISCONFIG_ERRORS = (ValueError, NotImplementedError, TypeError)
 
-    def _safe_fit(self):
+    def _propose(self, n: int) -> torch.Tensor:
+        model = self.current_model()
+        if model is None:
+            # Cold start: too few clean points to fit yet. A uniform probe is the
+            # correct behavior here (not an error) — stay quiet.
+            logger.debug("no model yet (too few clean points); drawing a random probe.")
+            return self._random_draw(n)
+        try:
+            return self.policy.suggest(self.history, self.spec, model, n=n)
+        except self._MISCONFIG_ERRORS:
+            # Setup is wrong (e.g. ParetoBO on a 1-objective spec). Fail loud.
+            raise
+        except Exception as exc:  # transient numerical hiccup: survive it
+            msg = (
+                f"Proposal hit a transient numerical error ({type(exc).__name__}); "
+                "took a random probe this step and will retry next step."
+            )
+            logger.warning("%s", msg, exc_info=True)
+            self.last_warning = msg
+            return self._random_draw(n)
+
+    def _random_draw(self, n: int) -> torch.Tensor:
+        bounds = self.spec.bounds_tensor()
+        lo, hi = bounds[0], bounds[1]
+        return lo + (hi - lo) * torch.rand(n, bounds.shape[-1], dtype=torch.double)
+
+    def _fit_now(self):
+        """Fit the surrogate on the current clean history (uncached), or None."""
         if not len(self.history.clean):
             return None
         try:
@@ -388,6 +476,10 @@ class Campaign:
         except Exception:
             logger.exception("model fit failed.")
             return None
+
+    def _safe_fit(self):
+        """Deprecated alias for :meth:`current_model` (kept for one release)."""
+        return self.current_model()
 
     def _safe_recommend(self, model) -> list[int]:
         rec: list[int] = []
@@ -407,7 +499,7 @@ class Campaign:
         if not self._hooks:
             self._recommended = []
             return
-        model = self._safe_fit()
+        model = self.current_model()
         self._recommended = self._safe_recommend(model)
         state = self.state()
         for hook in self._hooks:

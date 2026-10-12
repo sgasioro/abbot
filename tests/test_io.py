@@ -184,6 +184,18 @@ def test_self_describing_refuses_constraints():
         spec_history_to_csv(spec)
 
 
+def test_self_describing_malformed_box_row_is_clear():
+    text = "# continuous,x,0,1\n# output,y,MAXIMIZE\n# box,4.0,6.0\nstep,x,y\n"
+    with pytest.raises(ValueError, match="box"):
+        spec_history_from_csv(text)
+
+
+def test_self_describing_short_continuous_row_is_clear():
+    text = "# continuous,x,0\n# output,y,MAXIMIZE\nstep,x,y\n"
+    with pytest.raises(ValueError, match="continuous"):
+        spec_history_from_csv(text)
+
+
 def test_self_describing_ignores_unknown_comment_rows():
     spec = _spec()
     text = "# some note,ignored\n# version,1\n" + spec_history_to_csv(spec)

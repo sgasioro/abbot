@@ -88,7 +88,7 @@ def test_infobax_eig_finite_and_prefers_boundary():
     model = _fit(spec, xs, ys)[0]
     pol = BAXPolicy(BandIntersection([(0.5, 1.2)]), strategy="InfoBAX",
                     n_candidates=120, n_posterior_samples=8)
-    grid = pol._ensure_grid(spec)
+    grid = pol.candidate_grid(spec)
     eig = pol._acquisition(spec, model, grid)
     assert torch.isfinite(eig).all()
     # EIG should be larger near the target boundary than at the far edge x~0.
@@ -129,7 +129,7 @@ def test_function_goal_drives_bax():
 
 def test_uq_pairing_refuses_point_model_with_infobax():
     pol = BAXPolicy(PercentileSet(80.0), strategy="InfoBAX")
-    with pytest.raises(ValueError, match="requires uq_requirement"):
+    with pytest.raises(ValueError, match="coherent posterior samples"):
         check_uq_pairing(pol, model_uq="point")
     # MeanBAX only needs a point prediction -> fine on a point model.
     check_uq_pairing(BAXPolicy(PercentileSet(80.0), strategy="MeanBAX"), model_uq="point")

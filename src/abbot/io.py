@@ -163,13 +163,29 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
         cells = [c.strip() for c in raw.lstrip().lstrip("#").strip().split(",")]
         key = cells[0].lower()
         if key == "continuous":
+            if len(cells) < 4:
+                raise ValueError(
+                    f"self-describing CSV: malformed `# continuous` row {raw!r}; "
+                    "expected `# continuous,<name>,<lower>,<upper>`."
+                )
             domain.append(ContinuousDomain(name=cells[1], lower=float(cells[2]), upper=float(cells[3])))
         elif key == "enumerated":
+            if len(cells) < 3:
+                raise ValueError(
+                    f"self-describing CSV: malformed `# enumerated` row {raw!r}; "
+                    "expected `# enumerated,<name>,<v1>,<v2>,...`."
+                )
             domain.append(EnumeratedDomain(name=cells[1], values=[float(v) for v in cells[2:] if v]))
         elif key in ("output", "objective"):  # "objective" = legacy read-compat
             direction = cells[2].upper() if len(cells) > 2 else "MAXIMIZE"
             outputs.append(OutputSpec(name=cells[1], direction=direction))
         elif key == "box":
+            if "|" not in cells:
+                raise ValueError(
+                    f"self-describing CSV: malformed `# box` row {raw!r}; expected a "
+                    "`|` separating the lower and upper vectors "
+                    "(`# box,<lo1>,...,|,<hi1>,...`)."
+                )
             sep = cells.index("|")
             lower = [float(v) for v in cells[1:sep]]
             upper = [float(v) for v in cells[sep + 1:] if v]

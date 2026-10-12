@@ -137,6 +137,36 @@ def test_slice_1d_shape_and_raw_minimum():
 
 
 @pytest.mark.slow
+def test_bax_target_region_counts_identified():
+    from abbot.analysis import bax_target_region, canonical_Y
+    from abbot.goal import LevelSet
+    from abbot.model import SingleTaskGPConstructor
+    from abbot.policy import BAXPolicy
+
+    # A single OBSERVE output with a bump peaking ~0.5; LevelSet(>=50) picks the top.
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
+        outputs=[ObjectiveSpec(name="y", direction="OBSERVE")],
+    )
+    h = History()
+    for x in [0.0, 0.25, 0.5, 0.75, 1.0]:
+        h.append(
+            Record(
+                candidate=torch.tensor([x], dtype=torch.double),
+                observation=None,
+                outputs=torch.tensor([100.0 * (1.0 - (x - 0.5) ** 2)], dtype=torch.double),
+            )
+        )
+    model = SingleTaskGPConstructor(bounds=spec.bounds_tensor()).build(
+        h.designs.double(), canonical_Y(h, spec)
+    )
+    pol = BAXPolicy(LevelSet(threshold=90.0), strategy="MeanBAX", n_candidates=200)
+    out = bax_target_region(pol, model, spec)
+    assert out["grid_size"] == 200
+    assert 0 < out["identified"] < 200  # some, but not all, of the grid
+
+
+@pytest.mark.slow
 def test_slice_2d_shape():
     from abbot.analysis import canonical_Y, slice_2d
     from abbot.model import ModelListConstructor

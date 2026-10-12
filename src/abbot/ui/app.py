@@ -143,7 +143,7 @@ class UIState:
         """The current fitted surrogate (canonical space) or None."""
         if self.controller is None:
             return None
-        return self.controller.campaign._safe_fit()
+        return self.controller.campaign.current_model()
 
 
 # --------------------------------------------------------------------------- #
@@ -400,9 +400,7 @@ def _bax_progress_fig(state: UIState):
     identified = 0
     if model is not None and isinstance(pol, BAXPolicy):
         try:
-            grid = pol._ensure_grid(state.spec)
-            mean, _ = pol._raw_mean_std(model, grid, state.spec)
-            identified = len(pol.goal.identify_subspace(mean, grid))
+            identified = analysis.bax_target_region(pol, model, state.spec)["identified"]
         except Exception:
             logger.exception("BAX progress figure failed")
     collected = len(state.controller.campaign.history.clean)
@@ -563,10 +561,13 @@ def _build_page() -> None:
         first = len(ctrl.campaign.history) == 0 or state._plot_conv is None
         try:
             ctrl.step_once()
-        except Exception:
+        except Exception as exc:  # misconfig now raises here — show it, don't hide it
             logger.exception("auto step failed")
             state.auto_running = False
+            ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
+            state._left.refresh()
             return
+        _surface_warning(state)
         if first:
             # The campaign started with queued-but-unrun seeds, so the viz panel was
             # built in its empty state (no plot widgets). The first step produces
@@ -689,8 +690,9 @@ def _manual_controls(state: UIState) -> None:
         try:
             state.pending = ctrl.suggest(1)
         except Exception as exc:  # noqa: BLE001
-            ui.notify(str(exc), type="negative")
+            ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
             return
+        _surface_warning(state)
         state._left.refresh()
 
     ui.button("Suggest next experiment", icon="lightbulb", on_click=do_suggest).props("color=indigo")
@@ -748,8 +750,9 @@ def _auto_controls(state: UIState) -> None:
         try:
             ctrl.step_once()
         except Exception as exc:  # noqa: BLE001
-            ui.notify(str(exc), type="negative")
+            ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
             return
+        _surface_warning(state)
         state._left.refresh()
         if n_before == 0 or state._plot_conv is None:
             state._right.refresh()  # build structure on the first point
@@ -827,6 +830,17 @@ def _viz_panel(state: UIState) -> None:
         ).classes("w-full")
 
     _update_recommendation(state)
+
+
+def _surface_warning(state: UIState) -> None:
+    """Show (and clear) a transient-fallback warning the campaign recorded, if any."""
+    ctrl = state.controller
+    if ctrl is None:
+        return
+    msg = getattr(ctrl.campaign, "last_warning", None)
+    if msg:
+        ui.notify(msg, type="warning", multi_line=True, close_button=True)
+        ctrl.campaign.last_warning = None
 
 
 def _update_viz(state: UIState) -> None:

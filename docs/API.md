@@ -1,0 +1,122 @@
+# abbot API — stability contract
+
+This document is the **public API contract** for `abbot` 0.1.x. It states what you
+can build on with confidence, what may still change, and what is internal. If a
+name is importable from the top-level `abbot` package (see `abbot.__all__`), it is
+part of the public surface described here.
+
+Audience: people integrating abbot into a lab workflow, a notebook, or another
+tool. For the *why* behind the architecture, see the top-level `README.md`.
+
+## Stability tiers
+
+### Stable — safe to build on
+Breaking changes to these only on a minor-version bump before 1.0, and never
+without a deprecation period.
+
+| Area | Public surface |
+| --- | --- |
+| Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec` |
+| Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `pending_count`, `add_hook`), `CampaignResult`, `CampaignState` |
+| Blocking driver | `run_campaign` |
+| Policies | `Policy` (protocol), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` |
+| BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
+| Surrogate seam | `ModelConstructor` (protocol), `SingleTaskGPConstructor`, `ModelListConstructor`, `default_constructor` |
+| Experiment seams | `Experiment`, `PosteriorSampler`, `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment` |
+| Run data | `History`, `Record`, `DataStore` |
+| Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
+| Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
+
+### Provisional — may change
+Useful and tested, but the surface is still settling; pin a version if you depend
+on them.
+
+- **`abbot.interop.*`** — the gest-api / Xopt field map (`spec_to_vocs`,
+  `vocs_to_spec`, `CorePolicyGenerator`) and the sbido adapter (`spec_from_sbido`,
+  `conforms`, `bax_policy_for`). These track external packages, which move.
+- **`abbot.reduce.*`** + **`abbot.sbi.sbi_evaluate`** — composite-SBI is validated
+  against an analytic posterior only; the reducer-mount and `rescore` API may grow
+  when the full `sbi`-backed benchmark lands.
+- **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
+  the engine through `Campaign`, not by importing UI internals.
+- **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`) — the
+  seam is stable; the mixed-space story (`optimize_acqf_mixed`) is not yet wired, so
+  signatures here may extend.
+
+### Private — do not touch
+Anything with a leading underscore is internal and may change without notice,
+including names that happen to be reachable (`Campaign._propose`,
+`BAXPolicy._acquisition`, `BAXPolicy._collected`, `*._pending`, …). A few are
+exercised by white-box tests; that is not a promise to external callers. Use the
+public method with the same intent instead:
+
+| If you reached for… | Use instead |
+| --- | --- |
+| `Campaign._safe_fit()` | `Campaign.current_model()` |
+| `BAXPolicy._ensure_grid(spec)` | `BAXPolicy.candidate_grid(spec)` |
+| `BAXPolicy._raw_mean_std(...)` / `._collected` / `._acquisition(...)` | `abbot.analysis.bax_target_region(policy, model, spec)` / `BAXPolicy.collected_count` |
+| writing `Campaign._pending` to inject a result | `Campaign.record(x, y)` |
+
+(`_safe_fit` and `_ensure_grid` currently remain as thin deprecated aliases; they
+will be removed in a future minor version.)
+
+## Naming: `OutputSpec` / `outputs=` is canonical
+
+A `ProblemSpec` is defined by its **outputs** — every measured quantity the
+surrogate models (one GP column each, in `spec.outputs` order). Use:
+
+```python
+ProblemSpec(domain=[...], outputs=[OutputSpec(name="yield", direction="MAXIMIZE")])
+```
+
+`direction` is `"MAXIMIZE"` / `"MINIMIZE"` for an **optimized objective**, or
+`"OBSERVE"` for a **modeled-but-not-optimized** output (a feature a BAX `Goal`
+consumes, or a future constraint).
+
+- `ObjectiveSpec` and the `objectives=` constructor keyword are **soft-deprecated
+  aliases**, kept for backward compatibility. They still work and will not be
+  removed in 0.1.x, but new code and docs should use `OutputSpec` / `outputs=`.
+- **Outputs vs. objectives are distinct, not aliases.** The *objectives* are the
+  subset of outputs with a non-`OBSERVE` direction — the ones BO/MO optimize. So
+  `spec.n_outputs` ≥ `spec.n_objectives`, and the derived members come in matching
+  pairs: `output_names` / `objective_indices()`, `n_outputs` / `n_objectives`,
+  `output_signs()` (all columns) / `objective_signs()` (the optimized subset). A
+  pure-BAX spec is all-`OBSERVE`: `n_objectives == 0`, and `recommend()` returns
+  `[]` (handover is the goal's job, not a single best point).
+
+## Column contract
+
+`evaluate` / `Experiment.run` / `Campaign.record` all speak **raw physical units**,
+one value per output in `spec.outputs` order. The engine is *maximize-canonical*: it
+applies `spec.output_signs()` internally so the surrogate always sees a
+"bigger-is-better" space — you never pre-negate a `MINIMIZE` output. `History.outputs`
+is `(n, n_outputs)` in the same order.
+
+## Failure behavior
+
+- **Misconfiguration fails loud.** A policy that can't serve the spec (e.g.
+  `ParetoBO` on a single-objective spec, a mixed continuous+enumerated space,
+  a model whose uncertainty is too weak for the policy) raises immediately — it
+  will not silently do something else.
+- **Transient numerical hiccups self-heal.** A one-off GP/acquisition failure mid-run
+  falls back to a single random probe and records a message on
+  `Campaign.last_warning` (surfaced as a toast in the UI); the next step retries
+  normally. Unattended runs survive blips without going silently wrong.
+
+## Deprecation policy (pre-1.0)
+
+- `abbot` is `0.1.0` — pre-release. The **Stable** tier above is the compatibility
+  promise; **Provisional** may change on any release; **Private** has no promise.
+- Soft-deprecated aliases (`ObjectiveSpec`, `objectives=`, `_safe_fit`,
+  `_ensure_grid`) are kept at least one minor version after a replacement ships.
+- Breaking changes to Stable names happen only on a minor-version bump and are
+  called out in the changelog.
+
+## Planned, not yet built
+
+Named here so you don't design around their absence as if permanent:
+output-constraint enforcement for BO (feasibility-weighted acquisition over an
+`OBSERVE` column), a run-level JSON serializer including the SBI `aux` payload, a
+`TARGET` objective direction, mixed-space proposal (`optimize_acqf_mixed`),
+continuous BAX (pathwise / seeded-ascent), the full `sbi`-backed benchmark, and
+Bluesky interop.

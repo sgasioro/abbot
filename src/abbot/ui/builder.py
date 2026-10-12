@@ -36,17 +36,33 @@ def build_spec(variable_rows: list[dict], output_rows: list[dict]) -> ProblemSpe
     domain = []
     for row in variable_rows:
         kind = row.get("kind", "continuous")
+        name = row.get("name") or "(unnamed)"
         if kind == "continuous":
-            domain.append(
-                ContinuousDomain(
-                    name=row["name"], lower=float(row["lower"]), upper=float(row["upper"])
+            lower, upper = row.get("lower"), row.get("upper")
+            if lower is None or upper is None:
+                raise ValueError(
+                    f"Variable {name!r}: enter both a low and a high bound "
+                    "(the lo/hi fields can't be blank)."
                 )
-            )
+            domain.append(ContinuousDomain(name=row["name"], lower=float(lower), upper=float(upper)))
         elif kind == "enumerated":
-            values = row["values"]
+            values = row.get("values")
             if isinstance(values, str):
-                values = [float(v) for v in values.replace(",", " ").split()]
-            domain.append(EnumeratedDomain(name=row["name"], values=[float(v) for v in values]))
+                tokens = values.replace(",", " ").split()
+            else:
+                tokens = list(values or [])
+            if not tokens:
+                raise ValueError(f"Variable {name!r}: list at least one allowed value.")
+            parsed = []
+            for tok in tokens:
+                try:
+                    parsed.append(float(tok))
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"Variable {name!r}: {tok!r} is not a number. Enter numeric "
+                        "values separated by commas (e.g. 0, 1, 2)."
+                    ) from None
+            domain.append(EnumeratedDomain(name=row["name"], values=parsed))
         else:
             raise ValueError(f"unknown variable kind {kind!r}")
     outputs = [
@@ -87,8 +103,11 @@ def build_goal(goal_row: dict, spec: ProblemSpec) -> Goal:
         return PercentileSet(float(goal_row.get("percentile", 80.0)))
 
     if kind == "level":
+        threshold = goal_row.get("threshold")
+        if threshold is None:
+            raise ValueError("Level-set goal: enter a threshold value.")
         return LevelSet(
-            threshold=float(goal_row["threshold"]),
+            threshold=float(threshold),
             output=_col(goal_row.get("output", names[0])),
             upper=bool(goal_row.get("upper", False)),
         )

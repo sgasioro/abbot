@@ -35,6 +35,39 @@ def test_build_spec_surfaces_validation_errors():
         )
 
 
+# --- lab-friendly error messages (cryptic native errors -> named ValueError) --
+
+
+def test_build_spec_blank_continuous_bound_names_the_variable():
+    with pytest.raises(ValueError, match="temp"):
+        build_spec(
+            [{"kind": "continuous", "name": "temp", "lower": None, "upper": 80}],
+            [{"name": "f", "direction": "MAXIMIZE"}],
+        )
+
+
+def test_build_spec_non_numeric_enumerated_value_shows_token():
+    with pytest.raises(ValueError, match="foo"):
+        build_spec(
+            [{"kind": "enumerated", "name": "catalyst", "values": "0, 1, foo"}],
+            [{"name": "f", "direction": "MAXIMIZE"}],
+        )
+
+
+def test_build_spec_empty_enumerated_values_errors():
+    with pytest.raises(ValueError, match="at least one"):
+        build_spec(
+            [{"kind": "enumerated", "name": "c", "values": ""}],
+            [{"name": "f", "direction": "MAXIMIZE"}],
+        )
+
+
+def test_build_goal_level_missing_threshold_is_clear():
+    spec = _bax_spec(["a"])
+    with pytest.raises(ValueError, match="threshold"):
+        build_goal({"kind": "level", "output": "a"}, spec)
+
+
 def test_choose_optimizer_by_space():
     cont = build_spec(
         [{"kind": "continuous", "name": "x", "lower": 0, "upper": 1}],

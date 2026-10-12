@@ -51,7 +51,7 @@ BO tool" case — a non-expert describes the knobs and the goal, nothing more.
     code("""
 import torch
 from abbot import (
-    ProblemSpec, ContinuousDomain, ObjectiveSpec,
+    ProblemSpec, ContinuousDomain, OutputSpec,
     SimpleBO, SingleTaskGPConstructor, run_campaign, SyntheticExperiment,
 )
 torch.manual_seed(0)
@@ -59,7 +59,8 @@ torch.manual_seed(0)
     md("""
 ### Define the problem
 Two continuous reaction knobs (`temp`, `conc`) and a single objective to
-**maximize** (`yield`).
+**maximize** (`yield`). An output's `direction` makes it an objective
+(`MAXIMIZE`/`MINIMIZE`); `OBSERVE` would model it without optimizing it.
 """),
     code("""
 spec = ProblemSpec(
@@ -67,7 +68,7 @@ spec = ProblemSpec(
         ContinuousDomain(name="temp", lower=20.0, upper=80.0),
         ContinuousDomain(name="conc", lower=0.0, upper=1.0),
     ],
-    objectives=[ObjectiveSpec(name="yield", direction="MAXIMIZE")],
+    outputs=[OutputSpec(name="yield", direction="MAXIMIZE")],
 )
 spec.variable_names
 """),
@@ -137,7 +138,7 @@ from abbot.acq_opt import DiscreteArgmax
 
 spec = ProblemSpec(
     domain=[EnumeratedDomain(name="catalyst", values=[0.0, 1.0, 2.0, 3.0])],
-    objectives=[ObjectiveSpec(name="yield", direction="MAXIMIZE")],
+    outputs=[OutputSpec(name="yield", direction="MAXIMIZE")],
 )
 policy = SimpleBO(optimizer=DiscreteArgmax())
 ```
@@ -170,7 +171,7 @@ everything to one number.
 import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
-    ProblemSpec, ContinuousDomain, ObjectiveSpec,
+    ProblemSpec, ContinuousDomain, OutputSpec,
     ParetoBO, ModelListConstructor, run_campaign, SyntheticExperiment,
 )
 torch.manual_seed(0)
@@ -178,7 +179,7 @@ torch.manual_seed(0)
     md("""
 ### A two-objective problem
 `f1` to maximize and `f2` to maximize, over a 2-D design space. (Directions are
-declared per objective; abbot handles the signs internally — you always report
+declared per output; abbot handles the signs internally — you always report
 raw physical values.)
 """),
     code("""
@@ -187,9 +188,9 @@ spec = ProblemSpec(
         ContinuousDomain(name="x1", lower=0.0, upper=1.0),
         ContinuousDomain(name="x2", lower=0.0, upper=1.0),
     ],
-    objectives=[
-        ObjectiveSpec(name="f1", direction="MAXIMIZE"),
-        ObjectiveSpec(name="f2", direction="MAXIMIZE"),
+    outputs=[
+        OutputSpec(name="f1", direction="MAXIMIZE"),
+        OutputSpec(name="f2", direction="MAXIMIZE"),
     ],
 )
 experiment = SyntheticExperiment(spec, seed=5)  # two bumps peaking in different places
@@ -256,7 +257,7 @@ re-sampling.
 import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
-    ProblemSpec, ContinuousDomain, ObjectiveSpec, Box,
+    ProblemSpec, ContinuousDomain, OutputSpec, Box,
     SimpleBO, SingleTaskGPConstructor, Campaign, BoxMembershipReducer, sbi_evaluate,
 )
 from abbot.experiment import PosteriorSampler
@@ -281,7 +282,7 @@ class ToyPosterior(PosteriorSampler):
 
 spec = ProblemSpec(
     domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
-    objectives=[ObjectiveSpec(name="F", direction="MAXIMIZE")],
+    outputs=[OutputSpec(name="F", direction="MAXIMIZE")],
     boxes=[Box(lower=[4.0], upper=[6.0])],   # target band on theta
 )
 """),
@@ -374,7 +375,7 @@ policy = BAXPolicy(goal, strategy="MeanBAX", n_candidates=200)
     md("### Run the goal-driven campaign\nBAXPolicy proposes points from a candidate grid, concentrating where the model believes the target region is."),
     code("""
 campaign = Campaign(spec, policy, ModelListConstructor(bounds=spec.bounds_tensor()))
-campaign.seed(policy._ensure_grid(spec)[torch.randperm(200)[:6]])
+campaign.seed(policy.candidate_grid(spec)[torch.randperm(200)[:6]])
 for _ in range(10):
     campaign.step(TargetExperiment(), lambda obs: obs)
 """),

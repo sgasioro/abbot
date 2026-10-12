@@ -9,11 +9,16 @@ analysis" surface is the hook itself; these are just the common basics.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 
 from abbot.history import History
 from abbot.problem import ProblemSpec
 from abbot.session import canonical_Y, observed_front
+
+if TYPE_CHECKING:
+    from abbot.policy import BAXPolicy
 
 
 def convergence(history: History, spec: ProblemSpec) -> list[float]:
@@ -201,7 +206,25 @@ def slice_2d(
     }
 
 
+def bax_target_region(
+    policy: BAXPolicy, model, spec: ProblemSpec
+) -> dict[str, int]:
+    """Snapshot of the BAX discovered-target region on the current posterior mean.
+
+    Returns ``{"identified": int, "grid_size": int}``: how many candidate-grid
+    points the policy's goal selects from the posterior-MEAN prediction (the size
+    of the region found so far — should grow then stabilize), and the grid size.
+    Pure function of ``(policy, model, spec)``; encapsulates grid + raw-posterior +
+    ``goal.identify_subspace`` so no BAX internals leak to the caller.
+    """
+    grid = policy.candidate_grid(spec)
+    mean, _ = _posterior_raw(model, grid, spec)
+    identified = len(policy.goal.identify_subspace(mean, grid))
+    return {"identified": identified, "grid_size": int(grid.shape[0])}
+
+
 __all__ = [
+    "bax_target_region",
     "canonical_Y",
     "convergence",
     "hypervolume",

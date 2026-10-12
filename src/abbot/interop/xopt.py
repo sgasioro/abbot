@@ -174,9 +174,8 @@ class CorePolicyGenerator:
         for row in results:
             x = torch.tensor([float(row[v]) for v in var_names], dtype=torch.double)
             y = torch.tensor([float(row[o]) for o in out_names], dtype=torch.double)
-            # Align the Campaign's pending slot with this candidate, then ingest.
-            self._campaign._pending = [(x, None, 0)]
-            self._campaign.ingest([y])
+            # Xopt chose this candidate itself (no abbot suggest()), so record it.
+            self._campaign.record(x, y)
 
     def add_data(self, new_data) -> None:
         """Xopt's result-feedback path: a pandas DataFrame of evaluated points.
