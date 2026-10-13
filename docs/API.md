@@ -19,9 +19,9 @@ without a deprecation period.
 | Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec` |
 | Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `pending_count`, `add_hook`), `CampaignResult`, `CampaignState` |
 | Blocking driver | `run_campaign` |
-| Policies | `Policy` (protocol), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` |
+| Policies | `Policy` (protocol: `suggest` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidate_grid`, `collected_count`) |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
-| Surrogate seam | `ModelConstructor` (protocol), `SingleTaskGPConstructor`, `ModelListConstructor`, `default_constructor` |
+| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `default_constructor` |
 | Experiment seams | `Experiment`, `PosteriorSampler`, `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment` |
 | Run data | `History`, `Record`, `DataStore` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
@@ -92,12 +92,20 @@ applies `spec.output_signs()` internally so the surrogate always sees a
 "bigger-is-better" space — you never pre-negate a `MINIMIZE` output. `History.outputs`
 is `(n, n_outputs)` in the same order.
 
+The two load-bearing conversions live on the spec so callers never re-assemble the
+index/sign rule: `spec.objective_view(Y_raw)` selects the objective columns and
+flips them to canonical; `spec.to_raw(canonical)` flips a canonical quantity back to
+physical units (per output). Prefer these over hand-writing
+`Y[:, objective_indices()] * objective_signs()`.
+
 ## Failure behavior
 
 - **Misconfiguration fails loud.** A policy that can't serve the spec (e.g.
   `ParetoBO` on a single-objective spec, a mixed continuous+enumerated space,
   a model whose uncertainty is too weak for the policy) raises immediately — it
-  will not silently do something else.
+  will not silently do something else. The UQ guardrail reads the capability off
+  the actual `ModelConstructor` (`provides_uq`), so it can't be bypassed by a
+  mismatched argument — `Campaign` has no `model_uq` parameter.
 - **Transient numerical hiccups self-heal.** A one-off GP/acquisition failure mid-run
   falls back to a single random probe and records a message on
   `Campaign.last_warning` (surfaced as a toast in the UI); the next step retries

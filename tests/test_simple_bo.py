@@ -76,11 +76,18 @@ def test_resume_from_store(tmp_path):
 
 
 def test_uq_pairing_guardrail():
-    # A point-only model paired with a variance-hungry policy is refused.
+    # The guardrail reads provides_uq off the CONSTRUCTOR (the real model), so a
+    # point-only constructor paired with a variance-hungry policy is refused.
     import pytest
 
+    class _PointConstructor:
+        provides_uq = "point"
+
+    class _GPConstructor:
+        provides_uq = "calibrated_variance"
+
     with pytest.raises(ValueError, match="calibrated uncertainty"):
-        check_uq_pairing(UncertaintySampling(), model_uq="point")
-    # And allowed when the model provides enough.
-    check_uq_pairing(UncertaintySampling(), model_uq="calibrated_variance")
-    check_uq_pairing(SimpleBO(), model_uq="calibrated_variance")
+        check_uq_pairing(UncertaintySampling(), _PointConstructor())
+    # And allowed when the constructor provides enough.
+    check_uq_pairing(UncertaintySampling(), _GPConstructor())
+    check_uq_pairing(SimpleBO(), _GPConstructor())

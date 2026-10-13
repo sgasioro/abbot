@@ -36,7 +36,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# A model's capability: what UQ quality its posterior actually provides.
+# A model's capability: what UQ quality its posterior actually provides. Kept as a
+# backward-compatible alias of model.UQCapability.
 ModelUQ = str  # "point" | "samples" | "calibrated_variance"
 
 _SATISFIES: dict[str, set[str]] = {
@@ -50,14 +51,18 @@ class PersistentFaultError(RuntimeError):
     """The apparatus needs a human. Every completed step is already on disk."""
 
 
-def check_uq_pairing(policy: Policy, model_uq: ModelUQ) -> None:
-    """Refuse a model<->policy pairing the surrogate can't support.
+def check_uq_pairing(policy: Policy, model_constructor: ModelConstructor) -> None:
+    """Refuse a policy<->model pairing the surrogate can't support.
 
-    e.g. deterministic-NN ("point") + UncertaintySampling ("calibrated_variance")
-    is refused with a clear error; deterministic-NN + MeanBAX ("point") is fine.
+    Reads the UQ capability off the actual ``model_constructor`` (``provides_uq``) —
+    the object that determines it — so the guardrail can't be defeated by a caller
+    passing a string that disagrees with their model. E.g. a point-estimate NN
+    constructor + ``UncertaintySampling`` (needs calibrated variance) is refused; the
+    same NN + ``MeanBAX`` (needs only a point prediction) is fine.
     """
     required = policy.uq_requirement
-    if model_uq not in _SATISFIES[required]:
+    provided = getattr(model_constructor, "provides_uq", "calibrated_variance")
+    if provided not in _SATISFIES[required]:
         _NEEDS = {
             "point": "a point prediction",
             "samples": "coherent posterior samples",
@@ -65,7 +70,7 @@ def check_uq_pairing(policy: Policy, model_uq: ModelUQ) -> None:
         }
         raise ValueError(
             f"{type(policy).__name__} needs {_NEEDS[required]} from the model, but "
-            f"this model only provides {_NEEDS[model_uq]}. Use a model that provides "
+            f"this model only provides {_NEEDS[provided]}. Use a model that provides "
             f"{_NEEDS[required]} (a Gaussian-process surrogate does), or pick a method "
             "that needs less (e.g. a greedy/MeanBAX policy only needs a point prediction)."
         )
@@ -104,10 +109,35 @@ def canonical_Y(history: History, spec: ProblemSpec) -> torch.Tensor:
     return history.clean.outputs.double() * spec.output_signs()
 
 
-def observed_front(history: History, spec: ProblemSpec) -> list[int]:
-    """Fallback handover: non-dominated set of the OBSERVED (noisy) OBJECTIVE
-    columns, in canonical space. Scalar case collapses to the single argmax.
-    Returns ``[]`` for a pure-BAX spec (no objectives — handover is the goal's job).
+def _front_indices(Y: torch.Tensor, keep: list[int]) -> list[int]:
+    """Front of a canonical objective matrix ``Y`` (rows aligned to ``keep``).
+
+    Scalar objective (m==1) -> the single argmax; multi-objective -> the
+    non-dominated set. Returns indices into the original history (via ``keep``).
+    """
+    if Y.shape[-1] == 1:
+        return [keep[int(Y.reshape(-1).argmax())]]
+    nd = is_non_dominated(Y)
+    return [keep[i] for i in range(len(keep)) if bool(nd[i])]
+
+
+def recommend(
+    history: History, spec: ProblemSpec, model=None, *, denoise: bool = True
+) -> list[int]:
+    """Handover index/indices: the recommended design(s) at end-of-run.
+
+    One rule for every policy — drop faulted shots, take the objective columns in
+    canonical space, then argmax (scalar) or non-dominated set (multi-objective),
+    mapped back to ``history.records`` coordinates. Two input sources:
+
+    - ``denoise=True`` with a fitted ``model`` scores the clean designs by the
+      posterior MEAN (the sbido denoising idea — avoids chasing a lucky noisy
+      sample). Falls back to observed values when no model is given.
+    - ``denoise=False`` (or no model) ranks the OBSERVED (noisy) values directly;
+      this is also the loop's model-free fallback.
+
+    Returns ``[]`` for a pure-BAX spec (no objectives — handover is the goal's job)
+    or when there are no clean records.
     """
     idx = spec.objective_indices()
     if not idx:
@@ -115,12 +145,25 @@ def observed_front(history: History, spec: ProblemSpec) -> list[int]:
     keep = [i for i, r in enumerate(history.records) if not r.fault]
     if not keep:
         return []
-    Y = torch.stack([history.records[i].outputs.reshape(-1) for i in keep]).double()
-    Y = Y[:, idx] * spec.objective_signs()
-    if Y.shape[-1] == 1:
-        return [keep[int(Y.reshape(-1).argmax())]]
-    nd = is_non_dominated(Y)
-    return [keep[i] for i in range(len(keep)) if bool(nd[i])]
+    if denoise and model is not None:
+        X = torch.stack([history.records[i].candidate for i in keep]).double()
+        with torch.no_grad():
+            # Model is full-width & canonical; select objective columns (already
+            # canonical, so no sign flip — unlike raw observed values).
+            Y = model.posterior(X).mean.reshape(len(keep), -1)[:, idx]
+    else:
+        Y = spec.objective_view(
+            torch.stack([history.records[i].outputs.reshape(-1) for i in keep])
+        )
+    return _front_indices(Y, keep)
+
+
+def observed_front(history: History, spec: ProblemSpec) -> list[int]:
+    """The observed (noisy) front — ``recommend(..., denoise=False)``.
+
+    Kept as a named helper (the model-free fallback) and for backward compatibility.
+    """
+    return recommend(history, spec, model=None, denoise=False)
 
 
 def fit_model(
@@ -210,17 +253,16 @@ class Campaign:
         store: DataStore | None = None,
         supervisor: Supervisor | None = None,
         max_retries: int = 1,
-        model_uq: ModelUQ = "calibrated_variance",
         on_step: StepHook | list[StepHook] | None = None,
     ) -> None:
-        check_uq_pairing(policy, model_uq)
+        # Guardrail reads the UQ capability off the real constructor, not a string.
+        check_uq_pairing(policy, model_constructor)
         self.spec = spec
         self.policy = policy
         self.model_constructor = model_constructor
         self.store = store
         self.supervisor = supervisor
         self.max_retries = max_retries
-        self.model_uq = model_uq
         self._hooks: list[StepHook] = []
         if on_step is not None:
             self._hooks.extend(on_step if isinstance(on_step, list) else [on_step])
@@ -482,13 +524,14 @@ class Campaign:
         return self.current_model()
 
     def _safe_recommend(self, model) -> list[int]:
-        rec: list[int] = []
-        if model is not None:
-            try:
-                rec = self.policy.recommend(self.history, self.spec, model)
-            except Exception:
-                logger.exception("recommend failed; using the observed front.")
-                rec = []
+        """Denoised handover via the shared :func:`recommend` rule, with the
+        observed front as a fallback if the model-based pass yields nothing or errors.
+        """
+        try:
+            rec = recommend(self.history, self.spec, model, denoise=True)
+        except Exception:
+            logger.exception("recommend failed; using the observed front.")
+            rec = []
         if not rec:
             rec = observed_front(self.history, self.spec)
         return rec

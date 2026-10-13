@@ -26,6 +26,14 @@ from botorch.models.model import Model
 from botorch.models.transforms.input import Normalize
 from gpytorch.mlls import ExactMarginalLogLikelihood, SumMarginalLogLikelihood
 
+# The UQ quality a model's posterior actually provides. This is a property of the
+# surrogate, so it lives on the constructor that builds it (NOT a string the caller
+# passes alongside — that could silently disagree with the real model). The loop
+# checks ``policy.uq_requirement`` against this at fit time (see
+# ``session.check_uq_pairing``). Ordering (weakest->strongest): a point estimate, a
+# full set of posterior samples, calibrated variance.
+UQCapability = str  # "point" | "samples" | "calibrated_variance"
+
 
 @runtime_checkable
 class ModelConstructor(Protocol):
@@ -35,7 +43,12 @@ class ModelConstructor(Protocol):
     Y:    (n, m) observed outputs (m=1 for scalar objectives)
     Yvar: (n, m) optional observation-noise variances (-> train_Yvar). When None
           the model infers the noise level (sbido's choice: F is genuinely noisy).
+
+    ``provides_uq`` declares the UQ quality the built model's posterior supplies, so
+    the loop can refuse a policy that needs more than the surrogate can give.
     """
+
+    provides_uq: UQCapability
 
     def build(
         self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None
@@ -46,8 +59,11 @@ class SingleTaskGPConstructor:
     """Scalar / independent-output GP with input normalization and MLL fit.
 
     Mirrors ``SBIdODesigner.step``: let the GP infer the noise level unless Yvar
-    is supplied, normalize inputs to the problem bounds.
+    is supplied, normalize inputs to the problem bounds. A GP posterior is a full
+    Gaussian, so it provides calibrated variance (the strongest UQ tier).
     """
+
+    provides_uq = "calibrated_variance"
 
     def __init__(self, bounds: torch.Tensor | None = None) -> None:
         # bounds: (2, d) for input Normalize; None -> normalize from data.
@@ -79,8 +95,10 @@ class ModelListConstructor:
 
     Each column of Y gets its own ``SingleTaskGP``. This is the rewrite target for
     multibax's independent-sklearn-GP ``MGPR`` and the base for multi-output θ
-    models in the SBI app.
+    models in the SBI app. Each GP posterior is Gaussian -> calibrated variance.
     """
+
+    provides_uq = "calibrated_variance"
 
     def __init__(self, bounds: torch.Tensor | None = None) -> None:
         self.bounds = bounds

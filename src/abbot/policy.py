@@ -53,17 +53,9 @@ class Policy(Protocol):
         """Fold evaluated results back in (stateful policies override)."""
         ...
 
-    def recommend(
-        self, history: History, spec: ProblemSpec, model: Model
-    ) -> list[int]:
-        """Indices of the design(s) to hand over at end-of-run.
 
-        Returns a list into ``history.records``: a single index for a scalar
-        objective, the Pareto set for multi-objective. An empty list means "no
-        opinion" (the loop falls back to the observed non-dominated set). This is
-        the same set-of-indices shape a future BAX ``Goal``-identified subset uses.
-        """
-        ...
+# End-of-run handover ("which design do we recommend?") is NOT a policy concern:
+# every policy wanted the same rule, so it lives once in ``session.recommend``.
 
 
 def _objective_transform(spec: ProblemSpec):
@@ -78,34 +70,6 @@ def _objective_transform(spec: ProblemSpec):
     weights = torch.zeros(spec.n_outputs, dtype=torch.double)
     weights[spec.objective_indices()[0]] = 1.0
     return ScalarizedPosteriorTransform(weights=weights)
-
-
-def _denoised_recommendation(
-    history: History, spec: ProblemSpec, model: Model
-) -> list[int]:
-    """Pick handover index/indices by the canonical posterior MEAN, not the raw
-    (noisy) observed values — the sbido denoising idea, generalized to m objectives.
-
-    Scores the clean designs through ``model`` in maximize-canonical space:
-      - m == 1: argmax of the posterior mean -> single index.
-      - m  > 1: non-dominated set of the posterior-mean vectors -> index list.
-    Indices are mapped back to full-history coordinates (faulted shots excluded).
-    """
-    idx = spec.objective_indices()
-    if not idx:
-        return []  # pure-BAX: no single "best"; handover is the goal's job
-    keep = [i for i, r in enumerate(history.records) if not r.fault]
-    if not keep:
-        return []
-    X = torch.stack([history.records[i].candidate for i in keep]).double()
-    with torch.no_grad():
-        # Model is full-width over all outputs; select the objective columns.
-        mean = model.posterior(X).mean.reshape(len(keep), -1)[:, idx]
-    if mean.shape[-1] == 1:
-        best_local = int(mean.reshape(-1).argmax())
-        return [keep[best_local]]
-    nd = is_non_dominated(mean)  # bool (len(keep),)
-    return [keep[i] for i in range(len(keep)) if bool(nd[i])]
 
 
 class SimpleBO:
@@ -141,11 +105,6 @@ class SimpleBO:
     def ingest(self, results) -> None:  # stateless: history carries the state
         return None
 
-    def recommend(
-        self, history: History, spec: ProblemSpec, model: Model
-    ) -> list[int]:
-        return _denoised_recommendation(history, spec, model)
-
 
 class ParetoBO:
     """Multi-objective BO via noisy expected hypervolume improvement (qLogNEHVI).
@@ -178,8 +137,7 @@ class ParetoBO:
 
     def _canonical_Y(self, history: History, spec: ProblemSpec) -> torch.Tensor:
         """Objective columns only, in canonical space: (n_clean, n_objectives)."""
-        Y = history.clean.outputs.double()[:, spec.objective_indices()]
-        return Y * spec.objective_signs()
+        return spec.objective_view(history.clean.outputs)
 
     def suggest(
         self, history: History, spec: ProblemSpec, model: Model, n: int = 1
@@ -246,11 +204,6 @@ class ParetoBO:
     def ingest(self, results) -> None:
         return None
 
-    def recommend(
-        self, history: History, spec: ProblemSpec, model: Model
-    ) -> list[int]:
-        return _denoised_recommendation(history, spec, model)
-
 
 class UncertaintySampling:
     """Pure exploration: propose where the posterior variance is largest.
@@ -280,11 +233,6 @@ class UncertaintySampling:
 
     def ingest(self, results) -> None:
         return None
-
-    def recommend(
-        self, history: History, spec: ProblemSpec, model: Model
-    ) -> list[int]:
-        return _denoised_recommendation(history, spec, model)
 
 
 class _SumPosteriorStd(torch.nn.Module):
@@ -393,11 +341,14 @@ class BAXPolicy:
         return len(self._collected)
 
     def _raw_mean_std(self, model, X, spec):
-        """Posterior (mean, std) at X in RAW units: (N, d_y)."""
-        signs = spec.output_signs()  # BAX reads ALL outputs raw (goal consumes them)
+        """Posterior (mean, std) at X in RAW units: (N, d_y).
+
+        BAX reads ALL outputs raw (the goal consumes them); ``spec.to_raw`` applies
+        the canonical->raw flip, the same rule the analysis module uses.
+        """
         with torch.no_grad():
             post = model.posterior(X.double())
-            mean = post.mean.reshape(X.shape[0], -1) * signs
+            mean = spec.to_raw(post.mean.reshape(X.shape[0], -1))
             std = post.variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
         return mean, std
 
@@ -416,13 +367,6 @@ class BAXPolicy:
 
     def ingest(self, results) -> None:
         return None
-
-    def recommend(
-        self, history: History, spec: ProblemSpec, model: Model
-    ) -> list[int]:
-        # Hand over the observed non-dominated / best set (BAX's job is subset
-        # discovery, not single-point optimization); defer to the shared helper.
-        return _denoised_recommendation(history, spec, model)
 
     # -- strategy dispatch (mirrors multibax acquisition.py) --
 
@@ -457,7 +401,6 @@ class BAXPolicy:
         each sample's goal-target points; recompute summed latent entropy.
         """
         term1 = _entropy(std)  # (N, d_y) current predictive entropy
-        signs = spec.output_signs()  # BAX reads ALL outputs raw (goal consumes them)
         with torch.no_grad():
             post = model.posterior(grid.double())
             # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
@@ -466,7 +409,7 @@ class BAXPolicy:
         n = self.n_posterior_samples
         for i in range(n):
             f_canon = samples[i].reshape(grid.shape[0], -1)
-            f_raw = f_canon * signs
+            f_raw = spec.to_raw(f_canon)  # BAX reads ALL outputs raw (goal consumes them)
             target = self.goal.identify_subspace(f_raw, grid)
             if not target:
                 term2 += term1  # no execution info -> entropy unchanged

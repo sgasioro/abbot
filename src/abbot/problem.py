@@ -240,6 +240,31 @@ class ProblemSpec(BaseModel):
         signs = [-1.0 if o.direction == "MINIMIZE" else 1.0 for o in self.objectives]
         return torch.tensor(signs, dtype=dtype or torch.double, device=device)
 
+    def objective_view(self, Y):
+        """Select the objective columns of raw outputs and flip to canonical space.
+
+        ``Y`` is ``(n, n_outputs)`` of RAW physical values (``spec.outputs`` order);
+        the result is ``(n, n_objectives)`` in maximize-canonical space — the
+        objective subset, signs applied. This concentrates the load-bearing
+        ``Y[:, objective_indices()] * objective_signs()`` pairing (the index set and
+        the sign set must agree) in one place instead of at every BO/analysis site.
+        """
+        Y = Y.double()
+        return Y[:, self.objective_indices()] * self.objective_signs(
+            dtype=Y.dtype, device=Y.device
+        )
+
+    def to_raw(self, canonical):
+        """Flip a canonical-space quantity back to RAW physical units (per output).
+
+        The inverse of the maximize-canonical fit: multiply by ``output_signs()``
+        (sign is its own inverse). ``canonical`` is ``(..., n_outputs)`` in
+        ``spec.outputs`` order; OBSERVE columns pass through unchanged. Used to
+        report posterior means/observations in physical units for display.
+        """
+        canonical = canonical.double()
+        return canonical * self.output_signs(dtype=canonical.dtype, device=canonical.device)
+
     def bounds_tensor(self, dtype=None, device=None):
         """Return a (2, d) lower/upper bounds tensor for ``optimize_acqf``.
 

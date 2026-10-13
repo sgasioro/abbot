@@ -60,12 +60,12 @@ def hypervolume(history: History, spec: ProblemSpec) -> list[float]:
     )
     from botorch.utils.multi_objective.pareto import is_non_dominated
 
-    idx = spec.objective_indices()  # objective columns within the full output set
-    signs = spec.objective_signs()
     clean = [r for r in history.records if not r.fault and r.outputs is not None]
     if not clean:
         return [0.0] * len(history.records)
-    all_Y = torch.stack([r.outputs.reshape(-1)[idx] for r in clean]).double() * signs
+    # Objective columns in canonical space, one row per clean record (same rule
+    # everywhere via spec.objective_view).
+    all_Y = spec.objective_view(torch.stack([r.outputs.reshape(-1) for r in clean]))
     ref = infer_reference_point(all_Y[is_non_dominated(all_Y)])
     hv = Hypervolume(ref_point=ref)
 
@@ -73,7 +73,7 @@ def hypervolume(history: History, spec: ProblemSpec) -> list[float]:
     acc: list[torch.Tensor] = []
     for r in history.records:
         if not r.fault and r.outputs is not None:
-            acc.append(r.outputs.reshape(-1)[idx].double() * signs)
+            acc.append(spec.objective_view(r.outputs.reshape(1, -1))[0])
         if acc:
             Y = torch.stack(acc)
             front = Y[is_non_dominated(Y)]
@@ -107,10 +107,9 @@ def _posterior_raw(model, X: torch.Tensor, spec: ProblemSpec):
     Returns tensors shaped (n, n_outputs). The sign flip maps canonical -> raw for
     the mean (OBSERVE columns pass through); std is sign-invariant.
     """
-    signs = spec.output_signs()
     with torch.no_grad():
         post = model.posterior(X.double())
-        mean = post.mean.reshape(X.shape[0], -1) * signs
+        mean = spec.to_raw(post.mean.reshape(X.shape[0], -1))  # canonical -> raw
         std = post.variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
     return mean, std
 

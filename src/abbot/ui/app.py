@@ -19,11 +19,11 @@ import logging
 import torch
 from nicegui import ui
 
-from abbot import analysis
 from abbot.experiment import SyntheticExperiment
 from abbot.model import default_constructor
 from abbot.policy import BAXPolicy, ParetoBO, SimpleBO
 from abbot.session import Campaign
+from abbot.ui import figures
 from abbot.ui.builder import (
     BAX_STRATEGY_LABELS,
     build_goal,
@@ -33,16 +33,6 @@ from abbot.ui.builder import (
 from abbot.ui.controller import RunController, RunStatus
 
 logger = logging.getLogger(__name__)
-
-_PLOT_LAYOUT = {
-    "height": 300,
-    "margin": {"l": 56, "r": 16, "t": 44, "b": 44},
-    "template": "plotly_white",
-    "font": {"size": 12},
-    "showlegend": False,
-}
-_ACCENT = "#4f46e5"
-_BAND = "rgba(79,70,229,0.18)"
 
 
 class UIState:
@@ -66,9 +56,8 @@ class UIState:
         self.viz_obj = 0
         self.viz_vx = 0
         self.viz_vy = 1
-        # Auto-run state — created ONCE per page (see _build_page), never inside a
-        # refreshable, so a panel refresh can't orphan the timer or reset the flag.
-        self.auto_running = False
+        # Run-state is owned by the controller (ctrl.is_running / status); the UI no
+        # longer keeps a parallel flag. The timer in _build_page drives ctrl.tick().
         # Panel refreshers + viz widget handles, set during _build_page / _viz_panel.
         # Per-step updates mutate these in place (no teardown -> no jitter).
         self._left = None
@@ -87,21 +76,18 @@ class UIState:
             rows = [{**r, "direction": "OBSERVE"} for r in self.objective_rows]
         spec = build_spec(self.variable_rows, rows)  # may raise
 
-        model_uq = "calibrated_variance"
         if self.method == "bax":
             goal = build_goal(self._normalized_goal_row(), spec)  # may raise
             policy = BAXPolicy(goal, strategy=self.bax_strategy)
-            model_uq = policy.uq_requirement
         else:
             optimizer = choose_optimizer(spec)  # may raise on mixed spaces
             policy = (
                 SimpleBO(optimizer) if spec.n_objectives == 1 else ParetoBO(optimizer)
             )
+        # The GP constructor declares its own UQ capability (calibrated variance),
+        # which satisfies every builtin policy; Campaign checks the pairing.
         campaign = Campaign(
-            spec,
-            policy,
-            default_constructor(spec, bounds=spec.bounds_tensor()),
-            model_uq=model_uq,
+            spec, policy, default_constructor(spec, bounds=spec.bounds_tensor())
         )
         bounds = spec.bounds_tensor()
         lo, hi = bounds[0], bounds[1]
@@ -114,7 +100,6 @@ class UIState:
         self.viz_obj = 0
         self.viz_vx = 0
         self.viz_vy = 1 if len(spec.domain) > 1 else 0
-        self.auto_running = False
         if self.mock:
             exp = SyntheticExperiment(spec, seed=0, noise=0.0)
             self.controller = RunController(campaign, experiment=exp, evaluate=lambda o: o)
@@ -144,6 +129,28 @@ class UIState:
         if self.controller is None:
             return None
         return self.controller.campaign.current_model()
+
+    def selections(self) -> figures.VizSelections:
+        """The current viz selections as the struct the figure builders consume."""
+        return figures.VizSelections(
+            output=self.viz_obj, var_x=self.viz_vx, var_y=self.viz_vy
+        )
+
+    def needs_structure_rebuild(self) -> bool:
+        """Whether the right panel must be rebuilt (vs. updated in place).
+
+        One rule for every step handler (was three divergent thresholds): the viz
+        structure must be (re)built whenever the plot widgets don't exist yet — the
+        panel was last drawn in its empty state. Once built, every later step
+        updates in place. ``_plot_conv`` is the sentinel set in ``_viz_panel``.
+        """
+        return self._plot_conv is None
+
+    def history(self):
+        return self.controller.campaign.history
+
+    def policy(self):
+        return self.controller.campaign.policy
 
 
 # --------------------------------------------------------------------------- #
@@ -363,126 +370,6 @@ def _pop(rows: list, idx: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Plot builders (pure dict -> ui.plotly)
-# --------------------------------------------------------------------------- #
-
-
-def _convergence_fig(state: UIState):
-    hist = state.controller.campaign.history
-    spec = state.spec
-    if spec.n_objectives == 0:
-        # Pure-BAX: no single objective to converge. Show how many target
-        # candidates the goal currently identifies on the posterior mean — the
-        # size of the discovered region, which should grow then stabilize.
-        return _bax_progress_fig(state)
-    if spec.n_objectives == 1:
-        y = analysis.convergence(hist, spec)
-        title, ylab = f"Best {spec.objectives[0].name} so far", spec.objectives[0].name
-    else:
-        y = analysis.hypervolume(hist, spec)
-        title, ylab = "Dominated hypervolume", "hypervolume"
-    return {
-        "data": [{
-            "y": y, "x": list(range(len(y))), "type": "scatter", "mode": "lines+markers",
-            "line": {"color": _ACCENT, "width": 2}, "marker": {"color": _ACCENT, "size": 6},
-        }],
-        "layout": {**_PLOT_LAYOUT, "title": title, "xaxis": {"title": "step"}, "yaxis": {"title": ylab}},
-    }
-
-
-def _bax_progress_fig(state: UIState):
-    """BAX progress: the number of grid candidates the goal currently identifies on
-    the posterior mean, plus how many experiments have been collected. Not a
-    per-step history (we don't re-fit the past); a single current-state snapshot.
-    """
-    pol = state.controller.campaign.policy
-    model = state.fitted_model()
-    identified = 0
-    if model is not None and isinstance(pol, BAXPolicy):
-        try:
-            identified = analysis.bax_target_region(pol, model, state.spec)["identified"]
-        except Exception:
-            logger.exception("BAX progress figure failed")
-    collected = len(state.controller.campaign.history.clean)
-    return {
-        "data": [{
-            "x": ["target candidates", "experiments run"],
-            "y": [identified, collected],
-            "type": "bar", "marker": {"color": [_ACCENT, "#9ca3af"]},
-        }],
-        "layout": {**_PLOT_LAYOUT, "title": "Target region discovered",
-                   "yaxis": {"title": "count"}},
-    }
-
-
-def _model_fig(state: UIState, model):
-    """Adaptive model view: 1-D band, 2-D contour, or 3-D+ slice through best point."""
-    spec = state.spec
-    hist = state.controller.campaign.history
-    d = len(spec.domain)
-    obj = state.viz_obj
-    if d == 1:
-        s = analysis.slice_1d(hist, spec, model, var=0, output=obj)
-        upper = [m + sd for m, sd in zip(s["mean"], s["std"])]
-        lower = [m - sd for m, sd in zip(s["mean"], s["std"])]
-        px = [r.candidate.reshape(-1)[0].item() for r in hist.clean.records]
-        py = [r.outputs.reshape(-1)[obj].item() for r in hist.clean.records]
-        return {
-            "data": [
-                {"x": s["x"] + s["x"][::-1], "y": upper + lower[::-1], "fill": "toself",
-                 "fillcolor": _BAND, "line": {"color": "rgba(0,0,0,0)"}, "type": "scatter",
-                 "hoverinfo": "skip"},
-                {"x": s["x"], "y": s["mean"], "type": "scatter", "mode": "lines",
-                 "line": {"color": _ACCENT, "width": 2}, "name": "posterior mean"},
-                {"x": px, "y": py, "type": "scatter", "mode": "markers",
-                 "marker": {"color": "#111", "size": 7}, "name": "observed"},
-            ],
-            "layout": {**_PLOT_LAYOUT, "title": f"Posterior over {s['var_name']}",
-                       "xaxis": {"title": s["var_name"]}, "yaxis": {"title": s["objective_name"]}},
-        }
-    # 2-D (or a 2-var slice of higher-D) contour.
-    vx, vy = state.viz_vx, state.viz_vy
-    s = analysis.slice_2d(hist, spec, model, var_x=vx, var_y=vy, output=obj)
-    px = [r.candidate.reshape(-1)[vx].item() for r in hist.clean.records]
-    py = [r.candidate.reshape(-1)[vy].item() for r in hist.clean.records]
-    title = f"Posterior mean of {s['objective_name']}"
-    if d > 2:
-        title += " (slice through best point)"
-    return {
-        "data": [
-            {"x": s["x"], "y": s["y"], "z": s["z"], "type": "contour",
-             "colorscale": "Viridis", "colorbar": {"title": s["objective_name"]}},
-            {"x": px, "y": py, "type": "scatter", "mode": "markers",
-             "marker": {"color": "white", "size": 7, "line": {"color": "black", "width": 1}}},
-        ],
-        "layout": {**_PLOT_LAYOUT, "title": title,
-                   "xaxis": {"title": s["var_x_name"]}, "yaxis": {"title": s["var_y_name"]}},
-    }
-
-
-def _parity_fig(state: UIState, model):
-    spec = state.spec
-    p = analysis.parity(state.controller.campaign.history, spec, model)
-    name = spec.outputs[state.viz_obj].name
-    d = p.get(name)
-    if not d:
-        return None
-    obs, pred, std = d["observed"], d["predicted"], d["std"]
-    lo = min(obs + pred)
-    hi = max(obs + pred)
-    return {
-        "data": [
-            {"x": [lo, hi], "y": [lo, hi], "type": "scatter", "mode": "lines",
-             "line": {"color": "#999", "dash": "dash"}, "hoverinfo": "skip"},
-            {"x": obs, "y": pred, "error_y": {"type": "data", "array": std, "visible": True},
-             "type": "scatter", "mode": "markers", "marker": {"color": _ACCENT, "size": 7}},
-        ],
-        "layout": {**_PLOT_LAYOUT, "title": f"Parity — {name}",
-                   "xaxis": {"title": "observed"}, "yaxis": {"title": "predicted"}},
-    }
-
-
-# --------------------------------------------------------------------------- #
 # Page (single dashboard)
 # --------------------------------------------------------------------------- #
 
@@ -550,22 +437,26 @@ def _build_page() -> None:
     # via state._right, so refreshing any panel never orphans it (this was the
     # "Run didn't keep stepping" bug — the timer used to be rebuilt on refresh).
     def _auto_tick() -> None:
-        if not state.auto_running or state.controller is None:
-            return
+        # The controller owns run-state; the timer just asks it to advance and
+        # re-renders. No parallel "are we running" flag lives here.
         ctrl = state.controller
-        if ctrl.status in (RunStatus.HALTED, RunStatus.DONE):
-            state.auto_running = False
-            state._left.refresh()
-            state._right.refresh()
+        if ctrl is None or not ctrl.is_running:
             return
-        first = len(ctrl.campaign.history) == 0 or state._plot_conv is None
+        was_running = ctrl.is_running
+        first = state.needs_structure_rebuild()
         try:
-            ctrl.step_once()
+            stepped = ctrl.tick()
         except Exception as exc:  # misconfig now raises here — show it, don't hide it
             logger.exception("auto step failed")
-            state.auto_running = False
+            ctrl.stop()
             ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
             state._left.refresh()
+            return
+        if not stepped:
+            # tick() stopped us (budget spent / halted) — refresh the controls once.
+            if was_running:
+                state._left.refresh()
+                state._right.refresh()
             return
         _surface_warning(state)
         if first:
@@ -576,7 +467,7 @@ def _build_page() -> None:
         else:
             _update_viz(state)  # in-place update; no teardown -> smooth
 
-    ui.timer(0.5, _auto_tick)  # always active; gated by state.auto_running
+    ui.timer(0.5, _auto_tick)  # always active; gated by ctrl.is_running
 
 
 def _control_panel(state: UIState) -> None:
@@ -672,8 +563,7 @@ def _import_spec_control(state: UIState) -> None:
 
 
 def _reset(state: UIState) -> None:
-    state.auto_running = False
-    state.controller = None
+    state.controller = None  # drops the controller -> ctrl.is_running gate goes False
     state.spec = None
     state.pending = None
     state._left.refresh()
@@ -721,7 +611,7 @@ def _manual_controls(state: UIState) -> None:
                 ui.notify("Recorded.", type="positive")
                 state._left.refresh()
                 # First measurement builds the viz structure; later ones update in place.
-                if len(ctrl.campaign.history) <= 1 or state._plot_conv is None:
+                if state.needs_structure_rebuild():
                     state._right.refresh()
                 else:
                     _update_viz(state)
@@ -736,17 +626,20 @@ def _auto_controls(state: UIState) -> None:
     )
 
     def do_run() -> None:
-        state.auto_running = True
-        ctrl.status = RunStatus.RUNNING
+        # The controller owns run-state; the timer picks it up via ctrl.tick().
+        try:
+            ctrl.start()
+        except Exception as exc:  # noqa: BLE001
+            ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
+            return
         state._left.refresh()
 
     def do_pause() -> None:
-        state.auto_running = False
         ctrl.pause()
         state._left.refresh()
 
     def do_step() -> None:
-        n_before = len(ctrl.campaign.history)
+        rebuild = state.needs_structure_rebuild()
         try:
             ctrl.step_once()
         except Exception as exc:  # noqa: BLE001
@@ -754,13 +647,12 @@ def _auto_controls(state: UIState) -> None:
             return
         _surface_warning(state)
         state._left.refresh()
-        if n_before == 0 or state._plot_conv is None:
+        if rebuild:
             state._right.refresh()  # build structure on the first point
         else:
             _update_viz(state)
 
     def do_stop() -> None:
-        state.auto_running = False
         ctrl.stop()
         state._left.refresh()
         state._right.refresh()
@@ -786,6 +678,7 @@ def _viz_panel(state: UIState) -> None:
     recreated each tick (the stutter/jitter the user saw).
     """
     if state.controller is None or len(state.controller.campaign.history) == 0:
+        state._plot_conv = None  # structure not built -> needs_structure_rebuild()
         with ui.card().classes("w-full"), ui.row().classes("items-center gap-2 text-gray-500"):
             ui.icon("insights").classes("text-gray-400")
             ui.label("Create a campaign and take a few steps to see model + progress.")
@@ -812,16 +705,15 @@ def _viz_panel(state: UIState) -> None:
     with ui.row().classes("w-full no-wrap gap-3"):
         with ui.card().classes("grow"):
             state._plot_model = ui.plotly(
-                _model_fig(state, model) if model is not None else _blank_fig("model")
+                _safe_fig(_model_fig_for, state, model) if model is not None
+                else figures.blank_fig()
             ).classes("w-full")
         with ui.card().classes("grow"):
-            state._plot_conv = ui.plotly(_convergence_fig(state)).classes("w-full")
+            state._plot_conv = ui.plotly(_safe_fig(_progress_fig_for, state)).classes("w-full")
 
     with ui.card().classes("w-full"):
-        state._plot_parity = ui.plotly(
-            _parity_fig(state, model) or _blank_fig("parity") if model is not None
-            else _blank_fig("parity")
-        ).classes("w-full")
+        parity = _safe_fig(_parity_fig_for, state, model) if model is not None else None
+        state._plot_parity = ui.plotly(parity or figures.blank_fig("parity")).classes("w-full")
 
     state._rec_box = ui.column().classes("w-full gap-0")
     with ui.expansion("History", icon="table_rows").classes("w-full"):
@@ -850,10 +742,10 @@ def _update_viz(state: UIState) -> None:
     if len(state.controller.campaign.history) == 0:
         return
     model = state.fitted_model()
-    state._plot_conv.update_figure(_convergence_fig(state))
+    state._plot_conv.update_figure(_safe_fig(_progress_fig_for, state))
     if model is not None:
-        state._plot_model.update_figure(_model_fig(state, model))
-        pf = _parity_fig(state, model)
+        state._plot_model.update_figure(_safe_fig(_model_fig_for, state, model))
+        pf = _safe_fig(_parity_fig_for, state, model)
         if pf is not None:
             state._plot_parity.update_figure(pf)
     if state._table is not None:
@@ -862,8 +754,33 @@ def _update_viz(state: UIState) -> None:
     _update_recommendation(state)
 
 
-def _blank_fig(_name: str) -> dict:
-    return {"data": [], "layout": {**_PLOT_LAYOUT, "title": "building…"}}
+# -- thin state -> figures.* adapters (the pure builders live in figures.py) ----
+
+
+def _progress_fig_for(state: UIState) -> dict:
+    return figures.progress_fig(
+        state.history(), state.spec, state.policy(), state.fitted_model()
+    )
+
+
+def _model_fig_for(state: UIState, model) -> dict:
+    return figures.model_fig(state.history(), state.spec, model, state.selections())
+
+
+def _parity_fig_for(state: UIState, model) -> dict | None:
+    return figures.parity_fig(state.history(), state.spec, model, state.selections())
+
+
+def _safe_fig(builder, *args):
+    """Call a figure builder; on failure show a toast + a placeholder (never a blank
+    crash). Replaces the old silent ``except: identified=0`` that hid BAX bugs.
+    """
+    try:
+        return builder(*args)
+    except Exception as exc:  # a viz error must not kill the dashboard
+        logger.exception("figure build failed")
+        ui.notify(f"Could not draw a plot: {exc}", type="warning", close_button=True)
+        return figures.blank_fig("unavailable")
 
 
 def _reviz(state: UIState, attr: str, value) -> None:

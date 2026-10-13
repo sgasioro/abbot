@@ -128,8 +128,11 @@ def test_function_goal_drives_bax():
 
 
 def test_uq_pairing_refuses_point_model_with_infobax():
+    class _PointConstructor:
+        provides_uq = "point"
+
     pol = BAXPolicy(PercentileSet(80.0), strategy="InfoBAX")
     with pytest.raises(ValueError, match="coherent posterior samples"):
-        check_uq_pairing(pol, model_uq="point")
+        check_uq_pairing(pol, _PointConstructor())
     # MeanBAX only needs a point prediction -> fine on a point model.
-    check_uq_pairing(BAXPolicy(PercentileSet(80.0), strategy="MeanBAX"), model_uq="point")
+    check_uq_pairing(BAXPolicy(PercentileSet(80.0), strategy="MeanBAX"), _PointConstructor())

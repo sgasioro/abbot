@@ -58,6 +58,43 @@ def test_should_continue_gate_pauses():
     assert ctrl.status == RunStatus.PAUSED
 
 
+def test_tick_surface_drives_auto_run():
+    """The timer-driven surface the UI uses: start() + tick() + is_running, with
+    the controller owning status (no parallel 'running' flag)."""
+    exp = ManualExperiment(responder=lambda c: -((c.reshape(-1) - 0.3) ** 2))
+    ctrl = RunController(_campaign(), experiment=exp, evaluate=lambda o: o, max_steps=4)
+    assert ctrl.is_running is False
+    assert ctrl.tick() is False  # not started -> no-op
+
+    ctrl.start()
+    assert ctrl.is_running is True
+    steps = 0
+    while ctrl.tick():  # drive like a timer until the controller stops itself
+        steps += 1
+    assert steps == 4
+    assert ctrl.is_running is False
+    assert ctrl.status == RunStatus.DONE
+    assert len(ctrl.campaign.history) == 4
+
+
+def test_tick_respects_pause():
+    exp = ManualExperiment(responder=lambda c: -((c.reshape(-1) - 0.3) ** 2))
+    ctrl = RunController(_campaign(), experiment=exp, evaluate=lambda o: o, max_steps=100)
+    ctrl.start()
+    ctrl.tick()
+    ctrl.pause()
+    assert ctrl.is_running is False
+    assert ctrl.tick() is False  # paused -> no further steps
+    assert len(ctrl.campaign.history) == 1
+
+
+def test_start_refused_without_experiment():
+    ctrl = RunController(_campaign())
+    with pytest.raises(RuntimeError, match="auto-run requires"):
+        ctrl.start()
+    assert ctrl.tick() is False  # manual mode: tick is always a no-op
+
+
 def test_auto_run_refused_without_experiment():
     ctrl = RunController(_campaign())
     with pytest.raises(RuntimeError, match="auto mode"):

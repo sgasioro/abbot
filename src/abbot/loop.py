@@ -55,7 +55,6 @@ def run_campaign(
     supervisor: Supervisor | None = None,
     max_retries: int = 1,
     on_persistent_fault: str = "halt",
-    model_uq: ModelUQ = "calibrated_variance",
 ) -> CampaignResult:
     """Run the propose -> evaluate -> retrain loop to completion.
 
@@ -72,7 +71,6 @@ def run_campaign(
         store=store,
         supervisor=supervisor,
         max_retries=max_retries,
-        model_uq=model_uq,
     )
     campaign.seed(initial_designs)
 
