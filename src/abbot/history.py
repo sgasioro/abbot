@@ -29,6 +29,7 @@ class Record:
     aux: Any | None = None  # opaque cached payload (e.g. theta samples)
     fault: bool = False  # detector flagged this shot as unusable
     retry_of: int | None = None  # index this shot re-runs, if any
+    error: str | None = None  # experiment.run raised (then fault=True, outputs=None)
 
 
 @dataclass

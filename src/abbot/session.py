@@ -268,6 +268,10 @@ class CampaignResult:
 # A hook is called after each ingest with (state, fitted_model_or_None).
 StepHook = Callable[[CampaignState, Any], None]
 
+# Called by ``step`` with the named candidate before the experiment runs. Return
+# None to proceed, or a reason string to block the run (the campaign halts).
+PreRunCheck = Callable[[dict], "str | None"]
+
 
 class Campaign:
     """A resumable, step-based optimization session over the abbot engine.
@@ -286,6 +290,7 @@ class Campaign:
         supervisor: Supervisor | None = None,
         max_retries: int = 1,
         on_step: StepHook | list[StepHook] | None = None,
+        pre_run: PreRunCheck | None = None,
     ) -> None:
         if policy is None:
             policy = default_policy(spec)
@@ -301,6 +306,7 @@ class Campaign:
         self.store = store
         self.supervisor = supervisor
         self.max_retries = max_retries
+        self.pre_run = pre_run
         self._hooks: list[StepHook] = []
         if on_step is not None:
             self._hooks.extend(on_step if isinstance(on_step, list) else [on_step])
@@ -436,12 +442,55 @@ class Campaign:
         """One full cycle: suggest -> experiment.run -> evaluate -> ingest.
 
         The single primitive both ``run_campaign`` and the UI auto-runner call.
+
+        Before running, ``pre_run`` (if set) sees the named candidate; a returned
+        reason halts the campaign with the candidate left pending and NOT run. If
+        ``experiment.run`` raises, the shot is recorded as a fault (with the error
+        text, no outputs) and retried up to ``max_retries`` times, then the
+        campaign halts. Errors from ``evaluate`` propagate (they are analysis bugs,
+        and re-running the experiment would not fix them).
         """
         self.suggest(1)
-        x = self._pending[0][0]
-        observation = experiment.run(x)
+        x, retry_of, attempt = self._pending[0]
+        if self.pre_run is not None:
+            reason = self.pre_run(self._to_dict(x))
+            if reason:
+                self.halted = f"pre-run check blocked {self._to_dict(x)}: {reason}"
+                logger.warning("%s", self.halted)
+                return self.state()
+        try:
+            observation = experiment.run(x)
+        except Exception as exc:
+            logger.exception("experiment.run failed at %s", self._to_dict(x))
+            return self._record_run_error(x, retry_of, attempt, exc)
         out = evaluate(observation)
         return self.ingest([out], observations=[observation])
+
+    def _record_run_error(
+        self, x: torch.Tensor, retry_of: int | None, attempt: int, exc: Exception
+    ) -> CampaignState:
+        """Persist a failed run as a faulted record, then retry or halt."""
+        error = f"{type(exc).__name__}: {exc}"
+        record = Record(
+            candidate=x, observation=None, fault=True, retry_of=retry_of, error=error
+        )
+        step = len(self.history)
+        self.history.append(record)
+        if self.store is not None:
+            self.store.save_step(step, record)
+        where = self._to_dict(x)
+        if attempt < self.max_retries:
+            self._retry_queue.append(
+                (x, step if retry_of is None else retry_of, attempt + 1)
+            )
+            self.last_warning = f"Experiment failed at {where} ({error}); retrying."
+        else:
+            self.halted = (
+                f"Experiment failed {attempt + 1} time(s) at {where}; last error: {error}"
+            )
+        self._pending = None
+        self._after_ingest()
+        return self.state()
 
     def record(
         self,

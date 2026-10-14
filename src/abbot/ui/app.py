@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 
 import torch
-from nicegui import ui
+from nicegui import run, ui
 
 from abbot.experiment import SyntheticExperiment
 from abbot.policy import BAXPolicy, default_policy
@@ -52,6 +52,9 @@ class UIState:
         self.viz_vy = 1
         # Run-state is owned by the controller (ctrl.is_running / status); the UI no
         # longer keeps a parallel flag. The timer in _build_page drives ctrl.tick().
+        # Steps run on a worker thread (a real experiment may take minutes); this
+        # guard stops the timer or the Step button from starting a second one.
+        self._stepping = False
         # Panel refreshers + viz widget handles, set during _build_page / _viz_panel.
         # Per-step updates mutate these in place (no teardown -> no jitter).
         self._left = None
@@ -420,22 +423,28 @@ def _build_page() -> None:
     # One auto-run timer, created once; the tick reads stable state and refreshes
     # via state._right, so refreshing any panel never orphans it (this was the
     # "Run didn't keep stepping" bug — the timer used to be rebuilt on refresh).
-    def _auto_tick() -> None:
+    async def _auto_tick() -> None:
         # The controller owns run-state; the timer just asks it to advance and
-        # re-renders. No parallel "are we running" flag lives here.
+        # re-renders. The step itself runs off the event loop so a slow experiment
+        # doesn't freeze the page (or its Pause/Stop buttons).
         ctrl = state.controller
-        if ctrl is None or not ctrl.is_running:
+        if ctrl is None or not ctrl.is_running or state._stepping:
             return
         was_running = ctrl.is_running
         first = state.needs_structure_rebuild()
+        state._stepping = True
         try:
-            stepped = ctrl.tick()
+            stepped = await run.io_bound(ctrl.tick)
         except Exception as exc:  # misconfig now raises here — show it, don't hide it
             logger.exception("auto step failed")
             ctrl.stop()
             ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
             state._left.refresh()
             return
+        finally:
+            state._stepping = False
+        if state.controller is not ctrl:
+            return  # the campaign was reset while this step ran
         if not stepped:
             # tick() stopped us (budget spent / halted) — refresh the controls once.
             if was_running:
@@ -622,13 +631,21 @@ def _auto_controls(state: UIState) -> None:
         ctrl.pause()
         state._left.refresh()
 
-    def do_step() -> None:
+    async def do_step() -> None:
+        if state._stepping:
+            ui.notify("A step is already running.", type="info")
+            return
         rebuild = state.needs_structure_rebuild()
+        state._stepping = True
         try:
-            ctrl.step_once()
+            await run.io_bound(ctrl.step_once)
         except Exception as exc:  # noqa: BLE001
             ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
             return
+        finally:
+            state._stepping = False
+        if state.controller is not ctrl:
+            return  # the campaign was reset while this step ran
         _surface_warning(state)
         state._left.refresh()
         if rebuild:

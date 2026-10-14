@@ -32,6 +32,7 @@ from abbot.session import (  # noqa: F401
     CampaignState,
     ModelUQ,
     PersistentFaultError,
+    PreRunCheck,
     canonical_Y,
     check_uq_pairing,
     default_initial_designs,
@@ -60,6 +61,7 @@ def run_campaign(
     supervisor: Supervisor | None = None,
     max_retries: int = 1,
     on_persistent_fault: str = "halt",
+    pre_run: PreRunCheck | None = None,
 ) -> CampaignResult:
     """Run the propose -> evaluate -> retrain loop to completion.
 
@@ -85,6 +87,7 @@ def run_campaign(
         store=store,
         supervisor=supervisor,
         max_retries=max_retries,
+        pre_run=pre_run,
     )
     campaign.seed(initial_designs)
 

@@ -138,6 +138,18 @@ explicitly if you need it pinned.
   will not silently do something else. The UQ guardrail reads the capability off
   the actual `ModelConstructor` (`provides_uq`), so it can't be bypassed by a
   mismatched argument — `Campaign` has no `model_uq` parameter.
+- **Experiment errors retry, then halt.** If `experiment.run` raises inside
+  `Campaign.step` / `run_campaign`, the shot is persisted as a faulted `Record`
+  (`fault=True`, `outputs=None`, `error="<Type>: <message>"`) and the same candidate
+  is retried up to `max_retries` times (default 1); after that the campaign halts
+  and `run_campaign` raises `PersistentFaultError` ("fix the hardware and rerun to
+  resume"). Errors from `evaluate` propagate unchanged — they are analysis bugs,
+  and re-running the experiment would not fix them.
+- **Pre-run check.** `Campaign(..., pre_run=check)` / `run_campaign(..., pre_run=)`
+  calls `check(candidate_dict)` before each `step` runs the experiment. Return
+  `None` to proceed or a reason string to block: the campaign halts with that
+  reason and the candidate is left pending (in `state().pending`), not run. Use it
+  for safety interlocks; soft feasibility rules belong in the spec's constraints.
 - **Transient numerical hiccups self-heal.** A one-off GP/acquisition failure mid-run
   falls back to a single random probe and records a message on
   `Campaign.last_warning` (surfaced as a toast in the UI); the next step retries
