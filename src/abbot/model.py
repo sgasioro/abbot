@@ -129,6 +129,67 @@ class ModelListConstructor:
         return model
 
 
+class EnsembleConstructor:
+    """A deep-ensemble surrogate -> botorch ``EnsembleModel`` (the non-GP proof).
+
+    Builds ``n_members`` small MLPs and trains each (independent init + a short Adam
+    fit) so the spread across members is the uncertainty. This is the generality
+    PROOF that the ``ModelConstructor`` seam is not GP-coupled — NOT nn-bax
+    productionization (MC-dropout, deep kernels, calibration are F-tier).
+
+    ``provides_uq`` is honest and load-bearing (it feeds ``check_uq_pairing``):
+      - ``n_members > 1`` -> ``"samples"`` (coherent member draws; the InfoBAX/
+        SwitchBAX contract), which also exposes a (member-spread) variance.
+      - ``n_members == 1`` -> ``"point"`` (a single deterministic net; only MeanBAX/
+        greedy may pair with it).
+    An ensemble's spread is NOT calibrated variance, so it never claims that tier —
+    pairing one with ``UncertaintySampling`` is correctly refused.
+
+    ``Yvar`` is ignored: an ensemble represents noise through member disagreement,
+    not an explicit per-point variance.
+    """
+
+    def __init__(
+        self,
+        n_members: int = 5,
+        *,
+        width: int = 16,
+        epochs: int = 200,
+        lr: float = 0.05,
+        seed: int = 0,
+    ) -> None:
+        self.n_members = n_members
+        self.width = width
+        self.epochs = epochs
+        self.lr = lr
+        self.seed = seed
+        self.provides_uq = "samples" if n_members > 1 else "point"
+
+    def build(
+        self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None
+    ):
+        from abbot.models.ensemble import ToyEnsembleModel, make_toy_mlp
+
+        X = X.double()
+        Y = Y.double()
+        d, m = X.shape[-1], Y.shape[-1]
+        g = torch.Generator().manual_seed(self.seed)
+        members = []
+        for _ in range(self.n_members):
+            # Independent init per member: reseed torch's global RNG from our
+            # generator (avoids Date/random bans elsewhere; deterministic by seed).
+            torch.manual_seed(int(torch.randint(0, 2**31 - 1, (1,), generator=g)))
+            net = make_toy_mlp(d, m, width=self.width)
+            opt = torch.optim.Adam(net.parameters(), lr=self.lr)
+            for _ in range(self.epochs):
+                opt.zero_grad()
+                loss = torch.nn.functional.mse_loss(net(X), Y)
+                loss.backward()
+                opt.step()
+            members.append(net)
+        return ToyEnsembleModel(members, num_outputs=m)
+
+
 def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstructor:
     """Pick a sensible builtin: single-output GP for one OUTPUT, else ModelList.
 

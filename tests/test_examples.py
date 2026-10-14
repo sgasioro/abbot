@@ -24,3 +24,11 @@ def test_notebook_runs_without_error(nb_path):
     nb = nbformat.read(nb_path, as_version=4)
     client = NotebookClient(nb, timeout=600, kernel_name="python3")
     client.execute()  # raises CellExecutionError if any cell fails
+
+
+def test_custom_models_script_runs():
+    """The model-swap example (Matern / SAAS / ensemble on one Campaign) executes."""
+    import runpy
+
+    script = Path(__file__).parent.parent / "examples" / "custom_models.py"
+    runpy.run_path(str(script), run_name="__main__")  # raises on any error

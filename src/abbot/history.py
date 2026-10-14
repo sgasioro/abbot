@@ -25,6 +25,7 @@ class Record:
     candidate: torch.Tensor  # (d,) design point
     observation: Any  # simulator/experiment-dependent payload
     outputs: torch.Tensor | None = None  # (m,) reduced objective value(s), if any
+    output_var: torch.Tensor | None = None  # (m,) per-output noise VARIANCE, if known
     aux: Any | None = None  # opaque cached payload (e.g. theta samples)
     fault: bool = False  # detector flagged this shot as unusable
     retry_of: int | None = None  # index this shot re-runs, if any
@@ -70,6 +71,24 @@ class History:
                 f"History.outputs: records have inconsistent objective counts {sorted(widths)}; "
                 "every evaluate() return must have the same number of columns."
             )
+        return torch.stack([v.reshape(-1) for v in vals])
+
+    @property
+    def output_vars(self) -> torch.Tensor | None:
+        """Stacked per-output noise variances ``(n, m)``, or ``None`` if ANY record
+        lacks them.
+
+        Per-point noise is all-or-nothing for a fit (botorch wants ``train_Yvar`` for
+        every row or none), so this returns ``None`` the moment one record has no
+        ``output_var`` — the loop then lets the model infer the noise level. These
+        are *variances* in raw physical units²; variance is sign-invariant, so no
+        canonical sign flip is ever applied to them.
+        """
+        if not self.records:
+            return None
+        vals = [r.output_var for r in self.records]
+        if any(v is None for v in vals):
+            return None
         return torch.stack([v.reshape(-1) for v in vals])
 
 

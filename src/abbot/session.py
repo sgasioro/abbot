@@ -109,6 +109,20 @@ def canonical_Y(history: History, spec: ProblemSpec) -> torch.Tensor:
     return history.clean.outputs.double() * spec.output_signs()
 
 
+def canonical_Yvar(history: History, spec: ProblemSpec) -> torch.Tensor | None:
+    """Clean per-output noise VARIANCES ``(n_clean, m)`` for ``train_Yvar``, or None.
+
+    Returns ``None`` unless EVERY clean record carries ``output_var`` (per-point
+    noise is all-or-nothing for a fit; otherwise the model infers the level).
+
+    Crucially, NO ``output_signs`` flip is applied: ``canonical_Y`` negates MINIMIZE
+    columns to reach maximize-canonical space, but a *variance* scales by sign² = 1,
+    so it is sign-invariant. Flipping it would be a silent bug (negative variances).
+    """
+    vars_ = history.clean.output_vars
+    return None if vars_ is None else vars_.double()
+
+
 def _front_indices(Y: torch.Tensor, keep: list[int]) -> list[int]:
     """Front of a canonical objective matrix ``Y`` (rows aligned to ``keep``).
 
@@ -169,10 +183,16 @@ def observed_front(history: History, spec: ProblemSpec) -> list[int]:
 def fit_model(
     model_constructor: ModelConstructor, history: History, spec: ProblemSpec
 ):
-    """Fit the surrogate on the clean history in maximize-canonical space."""
+    """Fit the surrogate on the clean history in maximize-canonical space.
+
+    Threads per-point noise through when every clean record carries it
+    (``canonical_Yvar`` -> ``train_Yvar``); otherwise ``Yvar`` is ``None`` and the
+    model infers the noise level, as before.
+    """
     X = history.clean.designs.double()
     Y = canonical_Y(history, spec)
-    return model_constructor.build(X, Y)
+    Yvar = canonical_Yvar(history, spec)
+    return model_constructor.build(X, Y, Yvar)
 
 
 # --- serializable snapshot ----------------------------------------------------
@@ -336,14 +356,20 @@ class Campaign:
         return [self._to_dict(x) for x, _, _ in pend]
 
     def ingest(
-        self, results: object, observations: list | None = None
+        self,
+        results: object,
+        observations: list | None = None,
+        output_vars: list | None = None,
     ) -> CampaignState:
         """Fold measured results for the pending suggestion back in.
 
         ``results`` is one eval-output per pending candidate (a tensor or an
         ``(outputs, aux)`` tuple each); a bare value is accepted when a single
         candidate is pending. ``observations`` optionally stores the raw
-        observation per record. Runs the supervisor, persists, and fires hooks.
+        observation per record; ``output_vars`` optionally supplies per-output noise
+        VARIANCE ``(m,)`` per candidate (e.g. from replicate measurements) — stored
+        on the record and threaded to the surrogate's ``train_Yvar`` when every clean
+        record has it. Runs the supervisor, persists, and fires hooks.
         """
         if self._pending is None:
             raise RuntimeError("ingest() called before suggest()")
@@ -354,11 +380,16 @@ class Campaign:
                 "candidate(s)."
             )
         obs_list = observations if observations is not None else [None] * len(results)
+        var_list = output_vars if output_vars is not None else [None] * len(results)
 
-        for (x, retry_of, attempt), res, obs in zip(self._pending, results, obs_list):
+        for (x, retry_of, attempt), res, obs, var in zip(
+            self._pending, results, obs_list, var_list
+        ):
             y, aux = split_eval(res, self.spec)
+            ov = None if var is None else torch.as_tensor(var, dtype=torch.double).reshape(-1)
             record = Record(
-                candidate=x, observation=obs, outputs=y, aux=aux, retry_of=retry_of
+                candidate=x, observation=obs, outputs=y, output_var=ov,
+                aux=aux, retry_of=retry_of,
             )
             step = len(self.history)
             self.history.append(record)
@@ -401,6 +432,7 @@ class Campaign:
         *,
         observation: object | None = None,
         aux: object | None = None,
+        output_var: object | None = None,
     ) -> CampaignState:
         """Fold an already-evaluated ``(candidate, outputs)`` pair in directly.
 
@@ -408,9 +440,10 @@ class Campaign:
         measured itself) that chose the point rather than taking it from
         ``suggest``. ``x`` is one design ``(d,)``, ``y`` the RAW outputs ``(m,)`` in
         ``spec.outputs`` order; ``aux`` is the optional cached payload (SBI theta
-        samples). Runs the supervisor, persists, queues a retry if flagged, and
-        fires ``on_step`` hooks — identical to ``ingest``, only the candidate is
-        supplied by the caller instead of being pending.
+        samples); ``output_var`` the optional per-output noise variance ``(m,)``.
+        Runs the supervisor, persists, queues a retry if flagged, and fires
+        ``on_step`` hooks — identical to ``ingest``, only the candidate is supplied
+        by the caller instead of being pending.
 
         Distinct from ``load_history`` (which bulk-imports prior data WITHOUT the
         supervisor/hooks). Returns the resulting :class:`CampaignState`.
@@ -418,7 +451,9 @@ class Campaign:
         xt = torch.as_tensor(x, dtype=torch.double).reshape(-1)
         self._pending = [(xt, None, 0)]
         result = (y, aux) if aux is not None else y
-        return self.ingest([result], observations=[observation])
+        return self.ingest(
+            [result], observations=[observation], output_vars=[output_var]
+        )
 
     # -- queries --
 

@@ -21,7 +21,7 @@ without a deprecation period.
 | Blocking driver | `run_campaign` |
 | Policies | `Policy` (protocol: `suggest` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidate_grid`, `collected_count`) |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
-| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `default_constructor` |
+| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
 | Experiment seams | `Experiment`, `PosteriorSampler`, `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment` |
 | Run data | `History`, `Record`, `DataStore` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
@@ -98,6 +98,20 @@ flips them to canonical; `spec.to_raw(canonical)` flips a canonical quantity bac
 physical units (per output). Prefer these over hand-writing
 `Y[:, objective_indices()] * objective_signs()`.
 
+**Per-point noise (optional).** `ingest(..., output_vars=)` / `record(...,
+output_var=)` accept a per-output noise *variance* `(m,)` per candidate (e.g. from
+replicate measurements), stored on `Record.output_var`. When *every* clean record
+carries it, the loop threads it to the surrogate's `train_Yvar` (a heteroskedastic
+fit); otherwise the model infers the noise level. Variance is sign-invariant, so it
+is never flipped by the canonical convention.
+
+**Swapping the surrogate.** The documented extension point is a custom
+`ModelConstructor`: `build(X, Y, Yvar) -> botorch.Model`, with `provides_uq` set to
+what the posterior actually supplies (`"calibrated_variance"` for a GP, `"samples"`
+for an ensemble, `"point"` for a bare net — the loop enforces the match). A different
+kernel, a fully-Bayesian GP, or a deep ensemble all slot in this way; see
+`examples/custom_models.py`. `EnsembleConstructor` is the builtin non-GP example.
+
 ## Failure behavior
 
 - **Misconfiguration fails loud.** A policy that can't serve the spec (e.g.
@@ -128,3 +142,13 @@ output-constraint enforcement for BO (feasibility-weighted acquisition over an
 `TARGET` objective direction, mixed-space proposal (`optimize_acqf_mixed`),
 continuous BAX (pathwise / seeded-ascent), the full `sbi`-backed benchmark, and
 Bluesky interop.
+
+- **Correlated multi-output `MultiTaskGP` — near-term, needs an ADR first.** The
+  `ModelConstructor` seam is the right home, but it hinges on two decisions: where
+  the `(n, m)`↔task-stacked bridge lives, and what the maximize-canonical sign flip
+  means for a *learned cross-output covariance* (flipping a `MINIMIZE` column flips
+  the sign of the correlation the model learns). Neither Xopt nor abbot ships this
+  today, so it's a genuine capability, not parity work.
+- **PFN / deep-kernel surrogates — F-tier research, same seam.** Both are a custom
+  `ModelConstructor` returning a botorch `Model`; built when a problem needs them,
+  not speculatively.

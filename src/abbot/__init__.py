@@ -21,6 +21,7 @@ from abbot.goal import (
 from abbot.history import DataStore, History, Record
 from abbot.loop import run_campaign
 from abbot.model import (
+    EnsembleConstructor,
     ModelConstructor,
     ModelListConstructor,
     SingleTaskGPConstructor,
@@ -53,6 +54,7 @@ __all__ = [
     "CampaignState",
     "ContinuousDomain",
     "DataStore",
+    "EnsembleConstructor",
     "EnumeratedDomain",
     "FunctionGoal",
     "Goal",
