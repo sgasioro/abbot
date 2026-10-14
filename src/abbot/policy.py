@@ -235,6 +235,27 @@ class UncertaintySampling:
         return None
 
 
+def default_policy(spec: ProblemSpec) -> Policy:
+    """Pick the builtin policy a spec implies: SimpleBO for one objective, ParetoBO
+    for several, each with the optimizer the domain supports (``default_optimizer``).
+
+    A spec with no objectives (all OBSERVE) has nothing to optimize — that is a
+    goal-driven (``BAXPolicy``) or exploration (``UncertaintySampling``) problem,
+    so it is refused rather than guessed.
+    """
+    from abbot.acq_opt import default_optimizer
+
+    m = spec.n_objectives
+    if m == 0:
+        raise ValueError(
+            "The spec has no objectives (every output is OBSERVE), so there is no "
+            "default policy. Pass one explicitly, e.g. BAXPolicy(goal) or "
+            "UncertaintySampling()."
+        )
+    optimizer = default_optimizer(spec)  # may raise on mixed spaces
+    return SimpleBO(optimizer) if m == 1 else ParetoBO(optimizer)
+
+
 class _SumPosteriorStd(torch.nn.Module):
     """Acquisition: sum over outputs of the posterior std at each candidate.
 

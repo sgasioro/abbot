@@ -196,8 +196,10 @@ def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstr
     Keyed on ``n_outputs`` (every output is modeled, incl. OBSERVE), not objective
     count — a single-objective spec with an extra OBSERVE output needs a ModelList.
     Callers may still pass their own ``ModelConstructor`` (e.g. a correlated
-    MultiTaskGP for SBI).
+    MultiTaskGP for SBI). ``bounds`` defaults to the spec's design bounds.
     """
+    if bounds is None:
+        bounds = spec.bounds_tensor()
     if spec.n_outputs == 1:
         return SingleTaskGPConstructor(bounds=bounds)
     return ModelListConstructor(bounds=bounds)

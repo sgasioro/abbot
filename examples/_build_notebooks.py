@@ -51,8 +51,7 @@ BO tool" case — a non-expert describes the knobs and the goal, nothing more.
     code("""
 import torch
 from abbot import (
-    ProblemSpec, ContinuousDomain, OutputSpec,
-    SimpleBO, SingleTaskGPConstructor, run_campaign, SyntheticExperiment,
+    ProblemSpec, ContinuousDomain, OutputSpec, run_campaign, SyntheticExperiment,
 )
 torch.manual_seed(0)
 """),
@@ -85,27 +84,20 @@ experiment = SyntheticExperiment(spec, seed=1)
     md("""
 ### Run the campaign
 `run_campaign` drives the propose → evaluate → retrain loop: fit a GP surrogate on
-what's been measured, propose the next experiment with `SimpleBO` (noisy expected
-improvement), evaluate, repeat. We seed a few space-filling points, then take 8
-informed steps.
+what's been measured, propose the next experiment, evaluate, repeat. Everything
+except the spec and the experiment is inferred from the spec: one objective means
+`SimpleBO` (noisy expected improvement) on a single-output GP, seeded with a few
+space-filling (Sobol) points. Here that's 5 seeds, then 8 informed steps.
+
+Each of those choices is a keyword you can override: `policy=`,
+`model_constructor=`, `initial_designs=`, and `evaluate=` (for when the
+experiment returns raw data, like a spectrum, that needs reducing to outputs).
 """),
     code("""
 import warnings
 warnings.filterwarnings("ignore")  # quiet botorch's tiny-data GP-fit warnings
 
-bounds = spec.bounds_tensor()
-lo, hi = bounds[0], bounds[1]
-seeds = lo + (hi - lo) * torch.rand(5, 2, dtype=torch.double)
-
-result = run_campaign(
-    experiment=experiment,
-    spec=spec,
-    policy=SimpleBO(),                 # continuous optimizer by default
-    model_constructor=SingleTaskGPConstructor(bounds=bounds),
-    evaluate=lambda obs: obs,          # the experiment already returns the objective
-    initial_designs=seeds,
-    n_shots=8,
-)
+result = run_campaign(spec, experiment, n_shots=8)
 """),
     md("### The recommendation\nabbot hands back the denoised best design (posterior-mean argmax, not the luckiest noisy shot)."),
     code("""
@@ -129,23 +121,22 @@ plt.tight_layout(); plt.show()
 ### Categorical / discrete variables
 abbot's design space is **type-polymorphic**: an `EnumeratedDomain` holds a finite
 set of allowed values (a catalyst choice, a discrete grid). For an *all-enumerated*
-space, pair `SimpleBO` with the discrete optimizer, which enumerates the candidate
-set rather than coercing it to a float range:
+space abbot automatically uses the discrete optimizer, which enumerates the
+candidate set rather than coercing it to a float range — the call is unchanged:
 
 ```python
 from abbot import EnumeratedDomain
-from abbot.acq_opt import DiscreteArgmax
 
 spec = ProblemSpec(
     domain=[EnumeratedDomain(name="catalyst", values=[0.0, 1.0, 2.0, 3.0])],
     outputs=[OutputSpec(name="yield", direction="MAXIMIZE")],
 )
-policy = SimpleBO(optimizer=DiscreteArgmax())
+result = run_campaign(spec, experiment, n_shots=8)
 ```
 
 *(Mixed continuous **and** enumerated spaces in one problem need
-`optimize_acqf_mixed`, which is a deferred extension point — the optimizer raises a
-clear error rather than silently relaxing the discrete axis.)*
+`optimize_acqf_mixed`, which is a deferred extension point — abbot raises a clear
+error rather than silently relaxing the discrete axis.)*
 
 **What this showed:** a non-expert described continuous knobs and a single
 objective; abbot fit a surrogate, proposed experiments, and recovered the best
@@ -171,8 +162,7 @@ everything to one number.
 import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
-    ProblemSpec, ContinuousDomain, OutputSpec,
-    ParetoBO, ModelListConstructor, run_campaign, SyntheticExperiment,
+    ProblemSpec, ContinuousDomain, OutputSpec, run_campaign, SyntheticExperiment,
 )
 torch.manual_seed(0)
 """),
@@ -195,21 +185,14 @@ spec = ProblemSpec(
 )
 experiment = SyntheticExperiment(spec, seed=5)  # two bumps peaking in different places
 """),
-    md("_(ParetoBO's hypervolume acquisition is the heaviest policy — a small budget keeps this notebook to a few seconds; raise `n_shots` for a denser front.)_"),
-    code("""
-bounds = spec.bounds_tensor()
-lo, hi = bounds[0], bounds[1]
-seeds = lo + (hi - lo) * torch.rand(5, 2, dtype=torch.double)
+    md("""
+Two objectives, so `run_campaign` picks `ParetoBO` and an independent GP per
+output (`ModelListConstructor`) on its own — the call is the same as notebook 1.
 
-result = run_campaign(
-    experiment=experiment,
-    spec=spec,
-    policy=ParetoBO(),
-    model_constructor=ModelListConstructor(bounds=bounds),
-    evaluate=lambda obs: obs,
-    initial_designs=seeds,
-    n_shots=8,
-)
+_(ParetoBO's hypervolume acquisition is the heaviest policy — a small budget keeps this notebook to a few seconds; raise `n_shots` for a denser front.)_
+"""),
+    code("""
+result = run_campaign(spec, experiment, n_shots=8)
 print("Pareto set size:", len(result.recommended))
 """),
     md("### The recovered Pareto front\nEach recommended design is non-dominated: you can't improve one objective without sacrificing the other."),
@@ -258,7 +241,7 @@ import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
     ProblemSpec, ContinuousDomain, OutputSpec, Box,
-    SimpleBO, SingleTaskGPConstructor, Campaign, BoxMembershipReducer, sbi_evaluate,
+    Campaign, BoxMembershipReducer, sbi_evaluate,
 )
 from abbot.experiment import PosteriorSampler
 torch.manual_seed(0)
@@ -296,7 +279,7 @@ samples inside the target band. `sbi_evaluate` chains sampler → reducer and re
 reducer = BoxMembershipReducer("indicator", beta=5.0)
 evaluate = sbi_evaluate(ToyPosterior(), reducer, spec, n_samples=256)
 
-campaign = Campaign(spec, SimpleBO(), SingleTaskGPConstructor(bounds=spec.bounds_tensor()))
+campaign = Campaign(spec)  # SimpleBO + single-output GP, inferred from the spec
 campaign.seed(torch.tensor([[0.05], [0.5], [0.95]], dtype=torch.double))
 for _ in range(8):
     campaign.step(ToyExperiment(), evaluate)
@@ -344,7 +327,7 @@ import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
     ProblemSpec, ContinuousDomain, OutputSpec, Box,
-    BAXPolicy, goals_from_spec, ModelListConstructor, Campaign,
+    BAXPolicy, goals_from_spec, Campaign,
 )
 torch.manual_seed(0)
 """),
@@ -374,7 +357,7 @@ policy = BAXPolicy(goal, strategy="MeanBAX", n_candidates=200)
 """),
     md("### Run the goal-driven campaign\nBAXPolicy proposes points from a candidate grid, concentrating where the model believes the target region is."),
     code("""
-campaign = Campaign(spec, policy, ModelListConstructor(bounds=spec.bounds_tensor()))
+campaign = Campaign(spec, policy)  # model defaults to a GP per output
 campaign.seed(policy.candidate_grid(spec)[torch.randperm(200)[:6]])
 for _ in range(10):
     campaign.step(TargetExperiment(), lambda obs: obs)

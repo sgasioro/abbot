@@ -2,14 +2,13 @@
 
 import pytest
 
-from abbot.acq_opt import Continuous, DiscreteArgmax
+from abbot.acq_opt import Continuous, DiscreteArgmax, default_optimizer
 from abbot.goal import BandIntersection, LevelSet, PercentileSet, TopK
 from abbot.problem import ContinuousDomain, EnumeratedDomain
 from abbot.ui.builder import (
     BAX_STRATEGY_LABELS,
     build_goal,
     build_spec,
-    choose_optimizer,
 )
 
 
@@ -68,7 +67,7 @@ def test_build_goal_level_missing_threshold_is_clear():
         build_goal({"kind": "level", "output": "a"}, spec)
 
 
-def test_choose_optimizer_by_space():
+def test_default_optimizer_by_space():
     cont = build_spec(
         [{"kind": "continuous", "name": "x", "lower": 0, "upper": 1}],
         [{"name": "f", "direction": "MAXIMIZE"}],
@@ -84,10 +83,10 @@ def test_choose_optimizer_by_space():
         ],
         [{"name": "f", "direction": "MAXIMIZE"}],
     )
-    assert isinstance(choose_optimizer(cont), Continuous)
-    assert isinstance(choose_optimizer(enum), DiscreteArgmax)
+    assert isinstance(default_optimizer(cont), Continuous)
+    assert isinstance(default_optimizer(enum), DiscreteArgmax)
     with pytest.raises(ValueError, match="Mixed"):
-        choose_optimizer(mixed)
+        default_optimizer(mixed)
 
 
 # --- BAX goal construction (goal-type dropdown + params) ---------------------

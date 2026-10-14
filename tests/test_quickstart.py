@@ -12,8 +12,7 @@ from abbot import (
     ContinuousDomain,
     OutputSpec,
     ProblemSpec,
-    SimpleBO,
-    default_constructor,
+    default_initial_designs,
 )
 
 pytestmark = pytest.mark.slow  # GP fits via Campaign suggest/ingest
@@ -25,10 +24,8 @@ def test_readme_quickstart_recovers_optimum():
         domain=[ContinuousDomain(name="temp", lower=20.0, upper=80.0)],
         outputs=[OutputSpec(name="yield", direction="MAXIMIZE")],
     )
-    campaign = Campaign(
-        spec, SimpleBO(), default_constructor(spec, bounds=spec.bounds_tensor())
-    )
-    campaign.seed(torch.tensor([[30.0], [50.0], [70.0]], dtype=torch.double))
+    campaign = Campaign(spec)
+    campaign.seed(default_initial_designs(spec))
 
     def run_in_lab(temp: float) -> float:
         return -((temp - 55.0) ** 2) / 100.0  # smooth, peaks at temp=55

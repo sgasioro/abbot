@@ -34,6 +34,7 @@ from abbot.session import (  # noqa: F401
     PersistentFaultError,
     canonical_Y,
     check_uq_pairing,
+    default_initial_designs,
     fit_model,
     observed_front,
     split_eval,
@@ -42,15 +43,19 @@ from abbot.session import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def _identity(observation: object) -> object:
+    return observation
+
+
 def run_campaign(
-    *,
-    experiment: Experiment,
     spec: ProblemSpec,
-    policy: Policy,
-    model_constructor: ModelConstructor,
-    evaluate: Callable[[object], object],
-    initial_designs: torch.Tensor,
+    experiment: Experiment,
+    *,
     n_shots: int = 40,
+    policy: Policy | None = None,
+    model_constructor: ModelConstructor | None = None,
+    evaluate: Callable[[object], object] | None = None,
+    initial_designs: torch.Tensor | None = None,
     store: DataStore | None = None,
     supervisor: Supervisor | None = None,
     max_retries: int = 1,
@@ -63,7 +68,16 @@ def run_campaign(
     objective value(s) (a tensor, or an ``(outputs, aux)`` tuple for the SBI seam);
     objective direction is applied internally (no caller pre-negation). Returns a
     ``CampaignResult`` whose ``recommended`` holds the handover index/indices.
+
+    Only ``spec`` and ``experiment`` are required. ``policy`` and
+    ``model_constructor`` default to what the spec implies, ``evaluate`` to the
+    identity (the experiment returns the outputs directly), and ``initial_designs``
+    to ``default_initial_designs(spec)``.
     """
+    if evaluate is None:
+        evaluate = _identity
+    if initial_designs is None:
+        initial_designs = default_initial_designs(spec)
     campaign = Campaign(
         spec,
         policy,

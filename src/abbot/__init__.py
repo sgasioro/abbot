@@ -27,7 +27,14 @@ from abbot.model import (
     SingleTaskGPConstructor,
     default_constructor,
 )
-from abbot.policy import BAXPolicy, ParetoBO, Policy, SimpleBO, UncertaintySampling
+from abbot.policy import (
+    BAXPolicy,
+    ParetoBO,
+    Policy,
+    SimpleBO,
+    UncertaintySampling,
+    default_policy,
+)
 from abbot.problem import (
     Box,
     ContinuousDomain,
@@ -40,7 +47,12 @@ from abbot.problem import (
 )
 from abbot.reduce import BoxMembershipReducer, ObjectiveReducer
 from abbot.sbi import sbi_evaluate
-from abbot.session import Campaign, CampaignResult, CampaignState
+from abbot.session import (
+    Campaign,
+    CampaignResult,
+    CampaignState,
+    default_initial_designs,
+)
 
 __version__ = "0.1.0"
 
@@ -81,6 +93,8 @@ __all__ = [
     "Wishlist",
     "__version__",
     "default_constructor",
+    "default_initial_designs",
+    "default_policy",
     "goals_from_spec",
     "run_campaign",
     "sbi_evaluate",

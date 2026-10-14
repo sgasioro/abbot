@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from abbot.interop.xopt import CorePolicyGenerator, spec_to_vocs, vocs_to_spec
+from abbot.policy import SimpleBO
 from abbot.problem import (
     ContinuousDomain,
     EnumeratedDomain,
@@ -74,7 +75,9 @@ def test_vocs_round_trips_direction():
 def test_core_policy_generator_is_a_gest_generator():
     import gest_api
 
-    gen = CorePolicyGenerator(_spec())
+    # _spec() is a mixed space, which has no default policy; this test only
+    # exercises the gest contract on seeded points, so any policy will do.
+    gen = CorePolicyGenerator(_spec(), SimpleBO())
     assert isinstance(gen, gest_api.Generator)
     # ask/tell contract works standalone (no Xopt).
     gen.campaign.seed(torch.tensor([[30.0, 1.0], [50.0, 2.0]], dtype=torch.double))

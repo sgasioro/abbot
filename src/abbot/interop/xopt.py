@@ -29,8 +29,6 @@ from typing import Any
 
 import torch
 
-from abbot.model import default_constructor
-from abbot.policy import ParetoBO, SimpleBO
 from abbot.problem import (
     ContinuousDomain,
     EnumeratedDomain,
@@ -107,10 +105,6 @@ def vocs_to_spec(vocs, boxes=None) -> ProblemSpec:
 # --- CorePolicyGenerator: run an abbot Policy under Xopt ----------------------
 
 
-def _default_policy(spec: ProblemSpec):
-    return SimpleBO() if spec.n_objectives == 1 else ParetoBO()
-
-
 class CorePolicyGenerator:
     """A gest-api ``Generator`` backed by an abbot ``Campaign``.
 
@@ -142,10 +136,6 @@ class CorePolicyGenerator:
         vocs=None,
     ) -> None:
         self.spec = spec
-        policy = policy or _default_policy(spec)
-        model_constructor = model_constructor or default_constructor(
-            spec, bounds=spec.bounds_tensor()
-        )
         self._campaign = Campaign(spec, policy, model_constructor)
         # gest Generator.__init__ wants a VOCS.
         self.vocs = vocs if vocs is not None else spec_to_vocs(spec)

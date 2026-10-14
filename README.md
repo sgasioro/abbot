@@ -22,7 +22,7 @@ It unifies the method that is currently reimplemented across several SLAC repos
 import torch
 from abbot import (
     ProblemSpec, OutputSpec, ContinuousDomain,
-    Campaign, SimpleBO, default_constructor,
+    Campaign, default_initial_designs,
 )
 
 # 1. Define the problem: design knobs + what you measure.
@@ -31,9 +31,10 @@ spec = ProblemSpec(
     outputs=[OutputSpec(name="yield", direction="MAXIMIZE")],
 )
 
-# 2. Open a session and seed it with a few starting points.
-campaign = Campaign(spec, SimpleBO(), default_constructor(spec, bounds=spec.bounds_tensor()))
-campaign.seed(torch.tensor([[30.0], [50.0], [70.0]], dtype=torch.double))
+# 2. Open a session (policy + surrogate are picked from the spec) and seed it
+#    with a few space-filling starting points — or your own (n, d) tensor.
+campaign = Campaign(spec)
+campaign.seed(default_initial_designs(spec))
 
 # 3. Ask → run in the lab → tell. Repeat.
 for _ in range(8):
@@ -46,10 +47,15 @@ best = campaign.result().best                  # a Record; best.candidate is the
 ```
 
 You report **raw physical values** (`direction` handles maximize vs. minimize for
-you — never pre-negate). A few variations:
+you — never pre-negate). `Campaign(spec)` picks `SimpleBO` for one objective and
+`ParetoBO` for several, with a GP surrogate; pass `Campaign(spec, policy,
+model_constructor)` to choose your own. A few variations:
 
-- **Multi-objective** — give the spec two+ directional outputs and use `ParetoBO()`;
-  `result().recommended` is the Pareto set.
+- **Programmatic experiment** — if measurements come from code (an instrument
+  driver, a simulator), hand over the whole loop: `run_campaign(spec, experiment,
+  n_shots=8)`, where `experiment` is any object with `run(candidate) -> outputs`.
+- **Multi-objective** — give the spec two+ directional outputs; the same calls
+  pick `ParetoBO`, and `result().recommended` is the Pareto set.
 - **Find a region, not an optimum (BAX)** — mark outputs `direction="OBSERVE"`, pick
   a `Goal` (e.g. `BandIntersection`, `LevelSet`), and use `BAXPolicy(goal)`.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
@@ -103,7 +109,10 @@ reproduction is a follow-on.
 The optimization engine is exposed as a headless, step-based `Campaign`
 (`suggest` / `ingest` / `step` / `state` / `recommend`) — the same ask/tell surface
 a web UI, a notebook, or an agent drives. `run_campaign` is a thin blocking driver
-over it. The **NiceGUI** web client (`abbot[ui]`, `python -m abbot.ui`) is a thin
+over it. Only a spec and an experiment are required — `run_campaign(spec, experiment)`
+or `Campaign(spec)`; the policy, model, and space-filling seed designs default from
+the spec (`default_policy` / `default_constructor` / `default_initial_designs`), and
+each is an overridable keyword. The **NiceGUI** web client (`abbot[ui]`, `python -m abbot.ui`) is a thin
 layer over `Campaign`, laid out as a **single dashboard**: left column = a
 **type-polymorphic variable editor** (Continuous | Enumerated — the Badger
 differentiator) + run controls; right column = live visualization. Two run modes

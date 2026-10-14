@@ -18,7 +18,8 @@ without a deprecation period.
 | --- | --- |
 | Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec` |
 | Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `pending_count`, `add_hook`), `CampaignResult`, `CampaignState` |
-| Blocking driver | `run_campaign` |
+| Blocking driver | `run_campaign(spec, experiment, *, n_shots, ...)` |
+| Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
 | Policies | `Policy` (protocol: `suggest` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidate_grid`, `collected_count`) |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
@@ -39,7 +40,8 @@ on them.
   when the full `sbi`-backed benchmark lands.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
   the engine through `Campaign`, not by importing UI internals.
-- **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`) — the
+- **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`,
+  `default_optimizer`) — the
   seam is stable; the mixed-space story (`optimize_acqf_mixed`) is not yet wired, so
   signatures here may extend.
 
@@ -111,6 +113,22 @@ what the posterior actually supplies (`"calibrated_variance"` for a GP, `"sample
 for an ensemble, `"point"` for a bare net — the loop enforces the match). A different
 kernel, a fully-Bayesian GP, or a deep ensemble all slot in this way; see
 `examples/custom_models.py`. `EnsembleConstructor` is the builtin non-GP example.
+
+## Defaults
+
+Only a spec (and, for `run_campaign`, an experiment) is required. Omitted pieces
+are derived from the spec:
+
+| Omitted | Default |
+| --- | --- |
+| `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the domain supports. No objectives (all `OBSERVE`) or a mixed space raises — pass a policy. |
+| `model_constructor` | `default_constructor(spec)`: `SingleTaskGPConstructor` for 1 output, `ModelListConstructor` otherwise, normalized to the spec bounds. |
+| `initial_designs` (`run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and inequality constraints. Ignored on resume. |
+| `evaluate` (`run_campaign`) | identity — the experiment returns the outputs directly. |
+
+The function names and signatures are Stable; the specific choices they make
+(e.g. the seed count) may improve between minor versions. Pass the argument
+explicitly if you need it pinned.
 
 ## Failure behavior
 

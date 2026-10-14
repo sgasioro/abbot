@@ -304,3 +304,64 @@ class ProblemSpec(BaseModel):
             )
             for c in self.constraints
         ]
+
+    def sample_designs(self, n: int, *, seed: int | None = None):
+        """Draw ``n`` space-filling designs (scrambled Sobol) as an (n, d) tensor.
+
+        Continuous axes span their bounds; enumerated axes land on their allowed
+        values; inequality constraints are met by rejection. ``seed=None`` draws
+        the scramble seed from torch's global RNG, so ``torch.manual_seed``
+        reproduces it.
+        """
+        import torch
+        from torch.quasirandom import SobolEngine
+
+        if seed is None:
+            seed = int(torch.randint(2**31 - 1, (1,)))
+        engine = SobolEngine(dimension=len(self.domain), scramble=True, seed=seed)
+        if not self.constraints:
+            return self._from_unit(engine.draw(n).double())
+
+        kept: list = []
+        n_kept = 0
+        for _ in range(100):
+            x = self._from_unit(engine.draw(max(n, 64)).double())
+            x = x[self._feasible(x)]
+            kept.append(x)
+            n_kept += x.shape[0]
+            if n_kept >= n:
+                return torch.cat(kept)[:n]
+        raise ValueError(
+            f"Could only find {n_kept} of {n} designs satisfying the inequality "
+            "constraints by rejection sampling; the feasible region may be tiny. "
+            "Pass initial designs explicitly."
+        )
+
+    def _from_unit(self, u):
+        """Map (n, d) points in [0, 1]^d onto the design space."""
+        import torch
+
+        cols = []
+        for j, d in enumerate(self.domain):
+            if isinstance(d, ContinuousDomain):
+                cols.append(d.lower + u[:, j] * (d.upper - d.lower))
+            elif isinstance(d, EnumeratedDomain):
+                values = torch.tensor(d.values, dtype=torch.double)
+                idx = (u[:, j] * len(values)).long().clamp(max=len(values) - 1)
+                cols.append(values[idx])
+            else:
+                raise NotImplementedError(
+                    f"sample_designs does not yet support {type(d).__name__} "
+                    f"(variable {d.name!r}); structured spaces are deferred."
+                )
+        return torch.stack(cols, dim=-1)
+
+    def _feasible(self, x):
+        """Boolean mask of rows of ``x`` satisfying every inequality constraint."""
+        import torch
+
+        ok = torch.ones(x.shape[0], dtype=torch.bool)
+        for c in self.constraints or []:
+            coeffs = torch.tensor(c.coeffs, dtype=x.dtype)
+            ok &= (x[:, c.indices] * coeffs).sum(dim=-1) >= c.rhs
+        return ok

@@ -27,8 +27,8 @@ from botorch.utils.multi_objective.pareto import is_non_dominated
 
 from abbot.experiment import Experiment, Supervisor, Verdict
 from abbot.history import DataStore, History, Record
-from abbot.model import ModelConstructor
-from abbot.policy import Policy
+from abbot.model import ModelConstructor, default_constructor
+from abbot.policy import Policy, default_policy
 from abbot.problem import ProblemSpec
 
 if TYPE_CHECKING:
@@ -45,6 +45,14 @@ _SATISFIES: dict[str, set[str]] = {
     "samples": {"samples", "calibrated_variance"},
     "calibrated_variance": {"calibrated_variance"},
 }
+
+
+def default_initial_designs(spec: ProblemSpec, *, seed: int | None = None) -> torch.Tensor:
+    """Space-filling seed designs for a fresh campaign: ``2d + 1`` Sobol points
+    (at least ``2m`` for ``m`` objectives, ParetoBO's cold-start floor).
+    """
+    n = max(2 * len(spec.domain) + 1, 2 * spec.n_objectives)
+    return spec.sample_designs(n, seed=seed)
 
 
 class PersistentFaultError(RuntimeError):
@@ -262,19 +270,29 @@ StepHook = Callable[[CampaignState, Any], None]
 
 
 class Campaign:
-    """A resumable, step-based optimization session over the abbot engine."""
+    """A resumable, step-based optimization session over the abbot engine.
+
+    ``policy`` and ``model_constructor`` default to what the spec implies
+    (``default_policy`` / ``default_constructor``); pass either to override.
+    """
 
     def __init__(
         self,
         spec: ProblemSpec,
-        policy: Policy,
-        model_constructor: ModelConstructor,
+        policy: Policy | None = None,
+        model_constructor: ModelConstructor | None = None,
         *,
         store: DataStore | None = None,
         supervisor: Supervisor | None = None,
         max_retries: int = 1,
         on_step: StepHook | list[StepHook] | None = None,
     ) -> None:
+        if policy is None:
+            policy = default_policy(spec)
+            logger.info("Using default policy %s.", type(policy).__name__)
+        if model_constructor is None:
+            model_constructor = default_constructor(spec)
+            logger.info("Using default model %s.", type(model_constructor).__name__)
         # Guardrail reads the UQ capability off the real constructor, not a string.
         check_uq_pairing(policy, model_constructor)
         self.spec = spec
@@ -540,9 +558,8 @@ class Campaign:
             return self._random_draw(n)
 
     def _random_draw(self, n: int) -> torch.Tensor:
-        bounds = self.spec.bounds_tensor()
-        lo, hi = bounds[0], bounds[1]
-        return lo + (hi - lo) * torch.rand(n, bounds.shape[-1], dtype=torch.double)
+        # Space-filling, and respects enumerated values + inequality constraints.
+        return self.spec.sample_designs(n)
 
     def _fit_now(self):
         """Fit the surrogate on the current clean history (uncached), or None."""

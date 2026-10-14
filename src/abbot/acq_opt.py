@@ -98,3 +98,23 @@ class DiscreteArgmax:
         choices = self.choices if self.choices is not None else self._enumerate(spec)
         candidates, _ = optimize_acqf_discrete(acq, q=n, choices=choices.double())
         return candidates.detach()
+
+
+def default_optimizer(spec: ProblemSpec) -> CandidateOptimizer:
+    """Pick the CandidateOptimizer the spec supports; surface the mixed-space limit.
+
+    - all-continuous  -> ``Continuous`` (``optimize_acqf``)
+    - all-enumerated  -> ``DiscreteArgmax`` (``optimize_acqf_discrete``)
+    - mixed           -> ``ValueError`` (optimize_acqf_mixed is deferred). Raised up
+      front rather than silently relaxing the enumerated axis at proposal time.
+    """
+    kinds = {type(d).__name__ for d in spec.domain}
+    if kinds == {"ContinuousDomain"}:
+        return Continuous()
+    if kinds == {"EnumeratedDomain"}:
+        return DiscreteArgmax()
+    raise ValueError(
+        "Mixed continuous + enumerated design spaces are not yet supported for "
+        "proposal (optimize_acqf_mixed is deferred). Use all-continuous or "
+        "all-enumerated variables for now."
+    )

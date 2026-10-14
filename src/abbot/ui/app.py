@@ -20,16 +20,10 @@ import torch
 from nicegui import ui
 
 from abbot.experiment import SyntheticExperiment
-from abbot.model import default_constructor
-from abbot.policy import BAXPolicy, ParetoBO, SimpleBO
-from abbot.session import Campaign
+from abbot.policy import BAXPolicy, default_policy
+from abbot.session import Campaign, default_initial_designs
 from abbot.ui import figures
-from abbot.ui.builder import (
-    BAX_STRATEGY_LABELS,
-    build_goal,
-    build_spec,
-    choose_optimizer,
-)
+from abbot.ui.builder import BAX_STRATEGY_LABELS, build_goal, build_spec
 from abbot.ui.controller import RunController, RunStatus
 
 logger = logging.getLogger(__name__)
@@ -80,21 +74,11 @@ class UIState:
             goal = build_goal(self._normalized_goal_row(), spec)  # may raise
             policy = BAXPolicy(goal, strategy=self.bax_strategy)
         else:
-            optimizer = choose_optimizer(spec)  # may raise on mixed spaces
-            policy = (
-                SimpleBO(optimizer) if spec.n_objectives == 1 else ParetoBO(optimizer)
-            )
+            policy = default_policy(spec)  # may raise on mixed spaces
         # The GP constructor declares its own UQ capability (calibrated variance),
         # which satisfies every builtin policy; Campaign checks the pairing.
-        campaign = Campaign(
-            spec, policy, default_constructor(spec, bounds=spec.bounds_tensor())
-        )
-        bounds = spec.bounds_tensor()
-        lo, hi = bounds[0], bounds[1]
-        seeds = lo + (hi - lo) * torch.rand(
-            max(3, spec.n_objectives + 1), bounds.shape[-1], dtype=torch.double
-        )
-        campaign.seed(seeds)
+        campaign = Campaign(spec, policy)
+        campaign.seed(default_initial_designs(spec))
         self.spec = spec
         self.pending = None
         self.viz_obj = 0
