@@ -410,6 +410,7 @@ class BAXPolicy:
         n_candidates: int = 1000,
         n_posterior_samples: int = 20,
         candidate_seed: int = 0,
+        candidates: torch.Tensor | None = None,
     ) -> None:
         if strategy not in _BAX_UQ:
             raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
@@ -419,18 +420,24 @@ class BAXPolicy:
         self.n_posterior_samples = n_posterior_samples
         self.candidate_seed = candidate_seed
         self.uq_requirement: UQRequirement = _BAX_UQ[strategy]
-        self._grid: torch.Tensor | None = None
+        # A caller-supplied candidate set (e.g. sbido's own design grid) replaces
+        # the Sobol grid; n_candidates / candidate_seed are then unused.
+        self._grid: torch.Tensor | None = (
+            None if candidates is None else candidates.double().reshape(len(candidates), -1)
+        )
         # Grid indices measured or pending at the last suggest, plus its picks.
         # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
         self.switched: bool = False  # last suggest fell back to the explore strategy
+        self._out_scale = torch.ones(1, dtype=torch.double)  # per-output, set by suggest
 
     # -- grid --
 
     def candidate_grid(self, spec: ProblemSpec) -> torch.Tensor:
-        """The Sobol candidate grid ``(N, d)`` this policy proposes over.
+        """The candidate grid ``(N, d)`` this policy proposes over.
 
-        Built once from the spec and cached; honors sparse inequality constraints.
+        The ``candidates`` passed at construction, else a Sobol grid built once from
+        the spec and cached (honoring sparse inequality constraints).
         Exposed because callers legitimately seed a campaign from the same grid the
         policy searches, so fits and proposals share one candidate set.
         """
@@ -492,6 +499,7 @@ class BAXPolicy:
         if pending is not None:
             taken.append(pending)
         self._collected = _grid_matches(grid, torch.cat(taken)) if taken else []
+        self._out_scale = _output_scale(history)
         acq = self._acquisition(spec, condition_on_pending(model, pending), grid)
         acq = acq.clone()
         acq[self._collected] = float("-inf")
@@ -507,18 +515,21 @@ class BAXPolicy:
     def _acquisition(self, spec, model, grid) -> torch.Tensor:
         self.switched = False
         mean, std = self._raw_mean_std(model, grid, spec)
+        # Average uncertainty across outputs in scale-free units (multibax fits on
+        # min-max-scaled outputs); raw stds would let the largest-unit output win.
+        rel = (std / self._out_scale.to(std)).mean(dim=-1)
         if self.strategy == "US":
-            return std.mean(dim=-1)
+            return rel
         # MeanBAX / SwitchBAX gate on the mean-execution target set.
         if self.strategy in ("MeanBAX", "SwitchBAX"):
             target = self.goal.identify_subspace(mean, grid)
             if self._stuck(target):
                 self.switched = True
                 if self.strategy == "MeanBAX":
-                    return std.mean(dim=-1)  # fall back to US
+                    return rel  # fall back to US
                 return self._infobax(spec, model, grid, std)  # SwitchBAX -> InfoBAX
             acq = torch.zeros(grid.shape[0], dtype=torch.double)
-            acq[target] = std.mean(dim=-1)[target]
+            acq[target] = rel[target]
             return acq
         # InfoBAX
         return self._infobax(spec, model, grid, std)
@@ -569,7 +580,21 @@ def _entropy(std: torch.Tensor) -> torch.Tensor:
 
 
 def _grid_matches(grid: torch.Tensor, X: torch.Tensor) -> list[int]:
-    """Indices of ``grid`` rows that exactly equal some row of ``X``."""
+    """Indices of ``grid`` rows that equal some row of ``X``.
+
+    Equal up to float32 round-off: callers that store designs in single precision
+    (sbido does) must still match the double grid point they came from.
+    """
     X = X.reshape(X.shape[0], -1).to(grid)
-    hit = (grid.unsqueeze(1) == X.unsqueeze(0)).all(dim=-1).any(dim=-1)
-    return hit.nonzero().reshape(-1).tolist()
+    close = torch.isclose(grid.unsqueeze(1), X.unsqueeze(0), rtol=1e-6, atol=1e-9)
+    return close.all(dim=-1).any(dim=-1).nonzero().reshape(-1).tolist()
+
+
+def _output_scale(history: History) -> torch.Tensor:
+    """Per-output spread of the clean observed outputs ``(m,)`` (1 where unknown),
+    used to put posterior stds of different outputs on a common scale."""
+    clean = [r.outputs.reshape(-1) for r in history.clean.records if r.outputs is not None]
+    if len(clean) < 2:
+        return torch.ones(1, dtype=torch.double)
+    sd = torch.stack(clean).double().std(dim=0)
+    return torch.where(sd > 1e-12, sd, torch.ones_like(sd))

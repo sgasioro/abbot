@@ -17,7 +17,7 @@ Xopt's ``ModelConstructor`` ABC.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import torch
 from botorch.fit import fit_gpytorch_mll
@@ -55,6 +55,21 @@ class ModelConstructor(Protocol):
     ) -> Model: ...
 
 
+Kernel = Literal["default", "matern52"]
+
+
+def _covar_module(kernel: Kernel, d: int):
+    """``None`` keeps BoTorch's default kernel; ``"matern52"`` is a scaled ARD
+    Matern-5/2 (the sklearn ``ConstantKernel * Matern(nu=2.5)`` multibax used)."""
+    if kernel == "default":
+        return None
+    if kernel == "matern52":
+        from gpytorch.kernels import MaternKernel, ScaleKernel
+
+        return ScaleKernel(MaternKernel(nu=2.5, ard_num_dims=d))
+    raise ValueError(f"kernel must be 'default' or 'matern52', got {kernel!r}")
+
+
 class SingleTaskGPConstructor:
     """Scalar / independent-output GP with input normalization and MLL fit.
 
@@ -65,9 +80,13 @@ class SingleTaskGPConstructor:
 
     provides_uq = "calibrated_variance"
 
-    def __init__(self, bounds: torch.Tensor | None = None) -> None:
+    def __init__(
+        self, bounds: torch.Tensor | None = None, kernel: Kernel = "default"
+    ) -> None:
         # bounds: (2, d) for input Normalize; None -> normalize from data.
         self.bounds = bounds
+        self.kernel = kernel
+        _covar_module(kernel, 1)  # validate early
 
     def build(
         self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None
@@ -85,6 +104,7 @@ class SingleTaskGPConstructor:
             Y,
             train_Yvar=Yvar.double() if Yvar is not None else None,
             input_transform=input_transform,
+            covar_module=_covar_module(self.kernel, d),
         )
         fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
         return gp
@@ -100,8 +120,12 @@ class ModelListConstructor:
 
     provides_uq = "calibrated_variance"
 
-    def __init__(self, bounds: torch.Tensor | None = None) -> None:
+    def __init__(
+        self, bounds: torch.Tensor | None = None, kernel: Kernel = "default"
+    ) -> None:
         self.bounds = bounds
+        self.kernel = kernel
+        _covar_module(kernel, 1)  # validate early
 
     def build(
         self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None
@@ -122,6 +146,7 @@ class ModelListConstructor:
                     Y[..., j : j + 1],
                     train_Yvar=Yvar[..., j : j + 1].double() if Yvar is not None else None,
                     input_transform=input_transform,
+                    covar_module=_covar_module(self.kernel, d),
                 )
             )
         model = ModelListGP(*gps)

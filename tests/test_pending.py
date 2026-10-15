@@ -200,3 +200,50 @@ def test_legacy_policy_without_pending_still_works(caplog):
         c.suggest(1)
     assert "takes no pending" in caplog.text
     assert len(c.outstanding()) == 2
+
+
+def test_bax_uses_supplied_candidates_and_matches_float32_history():
+    spec = _spec(direction="OBSERVE")
+    model, _ = _fit()
+    cands = torch.tensor([[0.11], [0.52], [0.93]], dtype=torch.double)
+    pol = BAXPolicy(PercentileSet(50.0), strategy="US", candidates=cands)
+    assert torch.equal(pol.candidate_grid(spec), cands)
+    # Two of the three are already measured, stored in float32 (as sbido does).
+    h = History(records=[
+        Record(candidate=cands[i].float(), observation=None, outputs=torch.tensor([0.0]))
+        for i in (0, 2)
+    ])
+    assert pol.suggest(h, spec, model, n=1).tolist() == [[0.52]]
+
+
+def test_bax_uncertainty_is_compared_across_outputs_in_relative_units():
+    """Two outputs with identical shape but 1000x different units must count
+    equally (multibax fits on scaled outputs); raw stds let the big one win."""
+    torch.manual_seed(0)
+    spec = _spec(n_outputs=2, direction="OBSERVE")
+    X = torch.tensor([[0.1], [0.2], [0.8], [0.9]], dtype=torch.double)
+    # The same signal in two unit systems.
+    Y = torch.cat([torch.sin(6 * X), 1000 * torch.sin(6 * X)], dim=-1)
+    model = ModelListConstructor().build(X, Y, None)
+    pol = BAXPolicy(BandIntersection([(-2.0, 2.0), (-2000.0, 2000.0)]), strategy="US",
+                    n_candidates=64)
+    pol.suggest(_history(X, Y), spec, model, n=1)
+    assert torch.allclose(pol._out_scale, Y.std(dim=0))
+    grid = pol.candidate_grid(spec)
+    _, std = pol._raw_mean_std(model, grid, spec)
+    rel = std / pol._out_scale
+    # In relative units both contribute comparably (in raw units the ratio is ~1000).
+    ratio = rel[:, 1].mean() / rel[:, 0].mean()
+    assert 0.5 < float(ratio) < 2.0
+
+
+@pytest.mark.parametrize("ctor", [SingleTaskGPConstructor, ModelListConstructor])
+def test_matern_kernel_option(ctor):
+    from gpytorch.kernels import MaternKernel
+
+    X, Y = _data(m=1 if ctor is SingleTaskGPConstructor else 2)
+    model = ctor(kernel="matern52").build(X, Y, None)
+    gp = model if ctor is SingleTaskGPConstructor else model.models[0]
+    assert isinstance(gp.covar_module.base_kernel, MaternKernel)
+    with pytest.raises(ValueError, match="kernel must be"):
+        ctor(kernel="rq")

@@ -153,7 +153,9 @@ is never flipped by the canonical convention.
 what the posterior actually supplies (`"calibrated_variance"` for a GP, `"samples"`
 for an ensemble, `"point"` for a bare net — the loop enforces the match). A different
 kernel, a fully-Bayesian GP, or a deep ensemble all slot in this way; see
-`examples/custom_models.py`. `EnsembleConstructor` is the builtin non-GP example.
+`examples/custom_models.py`. `EnsembleConstructor` is the builtin non-GP example. The GP constructors take
+`kernel="default"` (BoTorch's choice) or `kernel="matern52"` (scaled ARD Matern-5/2,
+what multibax's sklearn GPs used).
 
 ## Defaults
 
