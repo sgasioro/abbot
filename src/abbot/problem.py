@@ -309,8 +309,11 @@ class ProblemSpec(BaseModel):
         """Draw ``n`` space-filling designs (scrambled Sobol) as an (n, d) tensor.
 
         Continuous axes span their bounds; enumerated axes land on their allowed
-        values; inequality constraints are met by rejection. ``seed=None`` draws
-        the scramble seed from torch's global RNG, so ``torch.manual_seed``
+        values. With inequality constraints on an all-continuous space the draw is
+        from the feasible polytope by hit-and-run (botorch's
+        ``get_polytope_samples``), which has no failure mode for thin regions;
+        with enumerated axes, constraints are met by rejection. ``seed=None``
+        draws the seed from torch's global RNG, so ``torch.manual_seed``
         reproduces it.
         """
         import torch
@@ -318,6 +321,15 @@ class ProblemSpec(BaseModel):
 
         if seed is None:
             seed = int(torch.randint(2**31 - 1, (1,)))
+        if self.constraints and all(isinstance(d, ContinuousDomain) for d in self.domain):
+            from botorch.utils.sampling import get_polytope_samples
+
+            return get_polytope_samples(
+                n,
+                self.bounds_tensor(),
+                inequality_constraints=self.inequality_constraints(),
+                seed=seed,
+            )
         engine = SobolEngine(dimension=len(self.domain), scramble=True, seed=seed)
         if not self.constraints:
             return self._from_unit(engine.draw(n).double())

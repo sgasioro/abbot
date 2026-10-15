@@ -26,7 +26,7 @@ from abbot.goal import (
     Wishlist,
     goals_from_spec,
 )
-from abbot.history import DataStore, History, Record
+from abbot.history import DataStore, History, Record, ResumeMismatchError
 from abbot.loop import run_campaign
 from abbot.model import (
     EnsembleConstructor,
@@ -54,7 +54,7 @@ from abbot.problem import (
     StructuredDomain,
 )
 from abbot.reduce import BoxMembershipReducer, ObjectiveReducer
-from abbot.sbi import sbi_evaluate
+from abbot.sbi import RescoredBO, TrainedPosterior, sbi_evaluate
 from abbot.session import (
     Campaign,
     CampaignResult,
@@ -96,6 +96,8 @@ __all__ = [
     "PosteriorSampler",
     "ProblemSpec",
     "Record",
+    "RescoredBO",
+    "ResumeMismatchError",
     "SimpleBO",
     "SingleTaskGPConstructor",
     "StructuredDomain",
@@ -103,6 +105,7 @@ __all__ = [
     "SyntheticExperiment",
     "TensorExperiment",
     "TopK",
+    "TrainedPosterior",
     "UncertaintySampling",
     "Verdict",
     "Wishlist",

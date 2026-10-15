@@ -356,6 +356,8 @@ class Campaign:
         max_retries: int = 1,
         on_step: StepHook | list[StepHook] | None = None,
         pre_run: PreRunCheck | None = None,
+        fingerprint: dict | None = None,
+        allow_resume_mismatch: bool = False,
     ) -> None:
         if policy is None:
             policy = default_policy(spec)
@@ -376,7 +378,14 @@ class Campaign:
         if on_step is not None:
             self._hooks.extend(on_step if isinstance(on_step, list) else [on_step])
 
-        # Resume from disk if the store already has steps.
+        # Resume from disk if the store already has steps — but only into the same
+        # problem: the spec plus any caller ``fingerprint`` must match what the
+        # store was written with (``allow_resume_mismatch`` overrides).
+        if store is not None:
+            fp = {"spec": spec.model_dump(mode="json")}
+            if fingerprint:
+                fp["extra"] = fingerprint
+            store.check_fingerprint(fp, allow_mismatch=allow_resume_mismatch)
         self.history = store.load() if store is not None else History()
         if len(self.history):
             logger.info("Resumed %d steps", len(self.history))

@@ -86,13 +86,13 @@ src/abbot/
   goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
                   #   FunctionGoal (arbitrary fn(f, X) -> indices — nn-bax-style flexibility)
   reduce.py       # ObjectiveReducer + BoxMembershipReducer (composite SBI, M2)
-  sbi.py          # sbi_evaluate: PosteriorSampler + reducer -> (F, theta) evaluate seam; rescore
+  sbi.py          # sbi_evaluate (F, theta) seam; rescore; RescoredBO; TrainedPosterior [sbi]
+  supervision.py  # per-shot detectors + stall / drift / consecutive-fault monitors
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
     builder.py    # form rows -> ProblemSpec; optimizer selection (surfaces mixed-space limit)
     app.py        # single-dashboard: Define / Run / Progress; `python -m abbot.ui`
   interop/
-    sbido.py      # spec_from_sbido + protocol-conformance (lazy; co-dev drift sentinel) [M2]
     xopt.py       # gest VOCS <-> spec + CorePolicyGenerator (runs under Xopt) [F3]
 ```
 
@@ -101,10 +101,13 @@ Each observation → posterior samples over θ → a scalar objective F via an
 `ObjectiveReducer` (`BoxMembershipReducer` ports sbido's `selection_score`); the
 GP sees `(xi, F)` and the θ samples are cached on `Record.aux` so an annealed
 reducer can `rescore` without re-sampling. `sbi_evaluate(sampler, reducer, spec)`
-builds the loop's `evaluate` callback. sbido co-develops via structural protocols
-+ a lazy `interop/sbido.py` adapter — validated against sbido's analytic
-`AnalyticalGaussianPosterior` (no `sbi` install); the mat_finder benchmark
-reproduction is a follow-on.
+builds the loop's `evaluate` callback. `RescoredBO(reducer, schedule)` is sbido's
+SBIdO designer made generic: it re-scores every clean shot's cached θ with the
+application's reducer at the current schedule step (e.g. an annealed indicator)
+and runs noisy log-EI on the result. `TrainedPosterior` wraps a trained `sbi`
+posterior (`abbot[sbi]`) with the application's observation preprocessing. sbido
+is a thin application on top: its loop is a `Campaign`, and its targets, scores and
+theta-distribution goals plug into these seams.
 
 ### Session API & frontend
 The optimization engine is exposed as a headless, step-based `Campaign`
@@ -204,7 +207,6 @@ with no typed measurements — the quickest way to see the loop and plots workin
 pytest -m "not slow"   # fast unit tier (~15s, no GP fits) — run on every change
 pytest                 # full suite incl. GP-fitting integration tests (minutes;
                        # run before commits / on a compute node, not a login node)
-PYTHONPATH=~/sbido/src pytest tests/test_interop_sbido.py   # real sbido integration
 ruff check src/ tests/
 ```
 

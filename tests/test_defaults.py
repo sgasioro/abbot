@@ -177,3 +177,18 @@ def test_default_seeds_not_requeued_on_resume(tmp_path):
     run_campaign(_peak_spec(), _Peak(), n_shots=2, store=store)
     result = run_campaign(_peak_spec(), _Peak(), n_shots=2, store=store)
     assert len(result.history) == 3 + 2 + 2
+
+
+def test_sample_designs_reaches_a_thin_feasible_region():
+    # ~1e-6 of the box is feasible: rejection sampling can't find it, hit-and-run can.
+    spec = ProblemSpec(
+        domain=[
+            ContinuousDomain(name="a", lower=0.0, upper=1.0),
+            ContinuousDomain(name="b", lower=0.0, upper=1.0),
+        ],
+        objectives=[ObjectiveSpec(name="f")],
+        constraints=[InequalitySpec(indices=[0, 1], coeffs=[1.0, 1.0], rhs=1.998)],
+    )
+    X = spec.sample_designs(8, seed=0)
+    assert X.shape == (8, 2)
+    assert (X.sum(dim=-1) >= 1.998 - 1e-9).all() and (X <= 1.0).all()

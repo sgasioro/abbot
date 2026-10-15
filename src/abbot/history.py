@@ -12,12 +12,15 @@ references is the constraint that serves frontend + resume + agents at once
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -96,6 +99,25 @@ class History:
         return torch.stack([v.reshape(-1) for v in vals])
 
 
+class ResumeMismatchError(Exception):
+    """A store's saved fingerprint disagrees with the problem being resumed."""
+
+
+def _diff(old: Any, new: Any, path: str = "") -> list[tuple[str, Any, Any]]:
+    """Leaf-level differences between two JSON values, as (path, old, new)."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        out = []
+        for k in sorted(set(old) | set(new), key=str):
+            out += _diff(old.get(k), new.get(k), f"{path}.{k}" if path else str(k))
+        return out
+    if isinstance(old, list) and isinstance(new, list) and len(old) == len(new):
+        out = []
+        for i, (a, b) in enumerate(zip(old, new)):
+            out += _diff(a, b, f"{path}[{i}]")
+        return out
+    return [] if old == new else [(path or "<root>", old, new)]
+
+
 class DataStore:
     """Persist/resume a run as per-step files (sbido ``step_NNN.pt`` pattern).
 
@@ -112,6 +134,42 @@ class DataStore:
         self.root = Path(root)
         self.steps_dir = self.root / "steps"
         self.queue_path = self.root / "queue.json"
+        self.fingerprint_path = self.root / "fingerprint.json"
+
+    def check_fingerprint(self, fingerprint: dict, *, allow_mismatch: bool = False) -> None:
+        """Refuse to resume a store written for a different problem.
+
+        ``fingerprint`` is a JSON-able dict of whatever defines "the same problem"
+        (a ``Campaign`` passes its spec plus any caller extras). The first call
+        writes it; later calls compare. A mismatch raises
+        :class:`ResumeMismatchError` naming the differing keys, unless
+        ``allow_mismatch`` (then it logs, keeps the old steps as valid history,
+        and records the new fingerprint). Loading a foreign run's steps into a
+        fresh optimization is silent corruption, not a crash, hence the check.
+        """
+        new = json.loads(json.dumps(fingerprint))  # normalize (tuples, key types)
+        if not self.fingerprint_path.exists():
+            self.root.mkdir(parents=True, exist_ok=True)
+            self.fingerprint_path.write_text(json.dumps(new, indent=1))
+            return
+        old = json.loads(self.fingerprint_path.read_text())
+        if old == new:
+            return
+        diffs = _diff(old, new)
+        n = len(list(self.steps_dir.glob("step_*.pt"))) if self.steps_dir.exists() else 0
+        lines = "\n".join(f"  {k}: {a!r} -> {b!r}" for k, a, b in diffs)
+        if allow_mismatch:
+            logger.warning(
+                "Resuming %s (%d steps) despite a different problem; existing steps "
+                "are kept as valid history:\n%s", self.root, n, lines,
+            )
+            self.fingerprint_path.write_text(json.dumps(new, indent=1))
+            return
+        raise ResumeMismatchError(
+            f"{self.root}/ holds {n} steps from a different problem:\n{lines}\n"
+            "Start a fresh store, or pass allow_resume_mismatch=True to keep the "
+            "existing steps as valid history."
+        )
 
     def setup(self) -> None:
         self.steps_dir.mkdir(parents=True, exist_ok=True)

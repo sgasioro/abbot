@@ -62,6 +62,9 @@ def run_campaign(
     max_retries: int = 1,
     on_persistent_fault: str = "halt",
     pre_run: PreRunCheck | None = None,
+    on_step=None,
+    fingerprint: dict | None = None,
+    allow_resume_mismatch: bool = False,
 ) -> CampaignResult:
     """Run the propose -> evaluate -> retrain loop to completion.
 
@@ -88,6 +91,9 @@ def run_campaign(
         supervisor=supervisor,
         max_retries=max_retries,
         pre_run=pre_run,
+        on_step=on_step,
+        fingerprint=fingerprint,
+        allow_resume_mismatch=allow_resume_mismatch,
     )
     campaign.seed(initial_designs)
 
