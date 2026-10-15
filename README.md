@@ -243,11 +243,15 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   - Composite SBI + BAX on sbido: the sbido cutover PR, then whatever the paper
     benchmark needs (mat_finder regret-parity, continuous BAX).
   - Layering: abbot is the general-purpose engine (what multibax-sklearn was to
-    sbido, and more); sbido becomes a thin SBI layer that imports abbot. Generic
-    plumbing moves down into abbot — sbido's loop/resume (`measure_and_optimize`
-    onto `Campaign`), `initial_designs`, and the supervision monitors (stall /
-    drift / consecutive-fault). SBI-specific pieces stay in sbido: posteriors,
-    theta-distribution scores, mat_finder, benchmarks, configs. The
+    sbido, and more), including general SBI-for-guidance methods; sbido becomes
+    a thin application (the mat_finder / SAXS problem) that imports abbot. Moves
+    down into abbot: sbido's loop/resume (`measure_and_optimize` onto
+    `Campaign`), `initial_designs`, the supervision monitors (stall / drift /
+    consecutive-fault), the posterior-based scores and denoised recommendation
+    (`objectives`, `recommend`), the SBIdO designer as a policy, the theta-
+    distribution BAX goals, and the trained-`sbi`-posterior sampler
+    (`abbot[sbi]`). Stays in sbido: the mat_finder simulator and beamtime
+    experiment, trained posteriors, benchmarks, configs, paper runs. The
     `interop/sbido.py` adapter then moves to sbido's side.
   - Agent setup: an MCP server over `Campaign`, then a setup copilot that writes
     the spec / goal. The UI stays the run console and the human-in-the-loop
