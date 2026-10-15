@@ -114,12 +114,16 @@ def condition_on_pending(model: Model, pending: torch.Tensor | None) -> Model:
         return model
 
 
-def _condition(model: Model, X: torch.Tensor, Y: torch.Tensor) -> Model:
+def _condition(
+    model: Model, X: torch.Tensor, Y: torch.Tensor, noise: float | None = None
+) -> Model:
     """``model.condition_on_observations(X, Y)`` for the surrogates abbot builds.
 
     Covers the two cases the plain call refuses: a ``ModelListGP`` (wants one X per
     output) is conditioned submodel by submodel, and a fixed-noise GP (fitted with
     per-point ``Yvar``) is given its mean training noise for the new points.
+    ``noise`` instead sets the new points' noise variance explicitly, in the
+    model's outcome-transformed units (InfoBAX's near-noise-free fantasies).
     """
     from botorch.models import ModelListGP
     from gpytorch.likelihoods import FixedNoiseGaussianLikelihood
@@ -128,12 +132,14 @@ def _condition(model: Model, X: torch.Tensor, Y: torch.Tensor) -> Model:
         subs, col = [], 0
         for sub in model.models:
             k = sub.num_outputs
-            subs.append(_condition(sub, X, Y[..., col : col + k]))
+            subs.append(_condition(sub, X, Y[..., col : col + k], noise))
             col += k
         return ModelListGP(*subs)
     kwargs = {}
     lik = getattr(model, "likelihood", None)
-    if isinstance(lik, FixedNoiseGaussianLikelihood):
+    if noise is not None:
+        kwargs["noise"] = torch.full_like(Y, noise)
+    elif isinstance(lik, FixedNoiseGaussianLikelihood):
         # Already in the model's outcome-transformed space, as botorch expects.
         level = lik.noise.reshape(-1, lik.noise.shape[-1]).mean(-1)  # (m,) or (1,)
         kwargs["noise"] = level.to(Y).expand(Y.shape)
@@ -411,6 +417,7 @@ class BAXPolicy:
         n_posterior_samples: int = 20,
         candidate_seed: int = 0,
         candidates: torch.Tensor | None = None,
+        noise_at=None,
     ) -> None:
         if strategy not in _BAX_UQ:
             raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
@@ -429,6 +436,9 @@ class BAXPolicy:
         # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
         self.switched: bool = False  # last suggest fell back to the explore strategy
+        # Optional ``noise_at(X) -> (N, m)`` measurement-noise variance (raw units) at
+        # candidates, for InfoBAX; default: the model's own observation noise.
+        self.noise_at = noise_at
         self._out_scale = torch.ones(1, dtype=torch.double)  # per-output, set by suggest
 
     # -- grid --
@@ -538,14 +548,36 @@ class BAXPolicy:
         """multibax ``meanbax_stuck``: empty target set, or already all collected."""
         return len(set(target)) == 0 or set(target).issubset(self._collected)
 
+    def _measurement_noise(self, model, grid) -> torch.Tensor:
+        """Measurement-noise variance ``(N, m)`` in raw units at each candidate:
+        ``noise_at`` if given, else the model's (learned, or mean per-point) noise.
+        """
+        N = grid.shape[0]
+        if self.noise_at is not None:
+            return torch.as_tensor(self.noise_at(grid), dtype=torch.double).reshape(N, -1)
+        try:
+            with torch.no_grad():
+                noisy = model.posterior(grid.double(), observation_noise=True).variance
+                latent = model.posterior(grid.double()).variance
+            return (noisy - latent).clamp_min(0).reshape(N, -1)
+        except Exception as exc:  # noqa: BLE001 - e.g. a model with no likelihood
+            logger.info(
+                "InfoBAX: no observation noise from %s (%s); using none.",
+                type(model).__name__, exc,
+            )
+            return torch.zeros(N, 1, dtype=torch.double)
+
     def _infobax(self, spec, model, grid, std) -> torch.Tensor:
         """EIG via fantasy conditioning (multibax ``multiproperty_infobax``).
 
-        acq = H[current] - E_sample[ H[posterior | execution(sample)] ], averaged
-        over outputs. Coherent joint samples over the grid; condition the model on
-        each sample's goal-target points; recompute summed latent entropy.
+        acq = H[y_x] - E_sample[ H[y_x | execution(sample)] ], averaged over
+        outputs, where y_x is a noisy MEASUREMENT at x: both entropies include the
+        measurement noise at x. Coherent joint samples over the grid; the model is
+        conditioned (hyperparameters fixed) on each sample's goal-target values,
+        which are function values, so with only a numerical jitter as noise.
         """
-        term1 = _entropy(std)  # (N, d_y) current predictive entropy
+        noise = self._measurement_noise(model, grid)  # (N, m) or (N, 1)
+        term1 = _entropy((std**2 + noise).sqrt())  # (N, d_y)
         with torch.no_grad():
             post = model.posterior(grid.double())
             # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
@@ -560,15 +592,24 @@ class BAXPolicy:
                 term2 += term1  # no execution info -> entropy unchanged
                 continue
             try:
-                fant = _condition(model, grid[target].double(), f_canon[target])
+                fant = _condition(
+                    model, grid[target].double(), f_canon[target], noise=_FANTASY_JITTER
+                )
                 _, fstd = self._raw_mean_std(fant, grid, spec)
-                term2 += _entropy(fstd)
+                term2 += _entropy((fstd**2 + noise).sqrt())
             except Exception:
                 logger.exception("InfoBAX fantasy conditioning failed for a sample.")
                 term2 += term1
         term2 = term2 / n
         eig = (term1 - term2).mean(dim=-1)  # (N,) averaged over outputs
         return eig
+
+
+# Noise variance (outcome-transformed units) for InfoBAX's fantasy points. In
+# theory they are exact function values (zero noise); the jitter only keeps the
+# update well-conditioned when the target set has many nearby grid points under
+# a smooth kernel.
+_FANTASY_JITTER = 1e-6
 
 
 def _entropy(std: torch.Tensor) -> torch.Tensor:

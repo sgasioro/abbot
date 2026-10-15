@@ -247,3 +247,53 @@ def test_matern_kernel_option(ctor):
     assert isinstance(gp.covar_module.base_kernel, MaternKernel)
     with pytest.raises(ValueError, match="kernel must be"):
         ctor(kernel="rq")
+
+
+# --- InfoBAX measurement noise -------------------------------------------------
+
+
+def _infobax_setup(noise_at=None):
+    spec = _spec(direction="OBSERVE")
+    model, _ = _fit()
+    pol = BAXPolicy(PercentileSet(70.0), strategy="InfoBAX", n_candidates=64,
+                    n_posterior_samples=8, noise_at=noise_at)
+    grid = pol.candidate_grid(spec)
+    return spec, model, pol, grid
+
+
+def test_infobax_gain_shrinks_with_measurement_noise():
+    """EIG = 0.5*log((s^2 + n) / (s'^2 + n)) falls as the noise n at x grows: a
+    noisy measurement there resolves less."""
+    def quiet(X):
+        return torch.zeros(X.shape[0], 1, dtype=torch.double)
+
+    def noisy_right(X):
+        return torch.where(X[:, :1] > 0.5, 1.0, 0.0).double()
+
+    eig = {}
+    for name, fn in (("quiet", quiet), ("noisy", noisy_right)):
+        torch.manual_seed(0)
+        spec, model, pol, grid = _infobax_setup(fn)
+        eig[name] = pol._acquisition(spec, model, grid)
+    right = grid[:, 0] > 0.5
+    assert torch.allclose(eig["noisy"][~right], eig["quiet"][~right])
+    assert (eig["noisy"][right] < eig["quiet"][right]).all()
+
+
+def test_infobax_default_noise_is_the_models_own():
+    _, model, pol, grid = _infobax_setup()
+    noise = pol._measurement_noise(model, grid)
+    learned = model.likelihood.noise.item() * model.outcome_transform.stdvs.item() ** 2
+    assert torch.allclose(noise, torch.full_like(noise, learned), rtol=1e-4)
+
+
+def test_fantasy_points_are_conditioned_nearly_exactly():
+    from abbot.policy import _FANTASY_JITTER, _condition
+
+    X, Y = _data(m=2)
+    for yvar in (None, torch.full_like(Y, 1e-2)):
+        model = ModelListConstructor().build(X, Y, yvar)
+        P = torch.tensor([[0.33]], dtype=torch.double)
+        cond = _condition(model, P, model.posterior(P).mean.reshape(1, -1),
+                          noise=_FANTASY_JITTER)
+        assert (cond.posterior(P).variance < 1e-5).all()

@@ -20,7 +20,7 @@ without a deprecation period.
 | Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `fail`, `cancel`, `outstanding`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `pending_count`, `add_hook`), `Candidate`, `CampaignResult`, `CampaignState` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, ...)` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
-| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
+| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `PosteriorSampler`, `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment`, `TensorExperiment` |
@@ -172,6 +172,17 @@ are derived from the spec:
 The function names and signatures are Stable; the specific choices they make
 (e.g. the seed count) may improve between minor versions. Pass the argument
 explicitly if you need it pinned.
+
+## BAX details
+
+- **InfoBAX measures information about a noisy measurement.** Both entropy terms
+  include the measurement noise at each candidate: the model's own (learned, or
+  the mean per-point `Yvar`), or `BAXPolicy(noise_at=fn)` with `fn(X) -> (N, m)`
+  variances in raw output units. The hallucinated target values are conditioned
+  on with hyperparameters fixed and only a 1e-6 numerical jitter, since they are
+  function values, not measurements.
+- **US / MeanBAX compare outputs in relative units:** each output's posterior std
+  is divided by its observed spread before averaging, so units don't decide.
 
 ## Failure behavior
 
