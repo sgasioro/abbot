@@ -237,9 +237,9 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   campaigns: abbot defines the problem, Xopt orchestrates evaluation.
 - **Now** (pilot campaigns: one simulation, one human-in-the-loop; and a
   composite-SBI + BAX paper on sbido):
-  - Batch / async: candidate ids and a persisted outstanding queue *(done)*;
-    pending-aware policies (`pending=`, kriging believer for BAX); optional
-    `Experiment.run_batch` and an outstanding-candidates list in the UI.
+  - Batch / async: candidate ids and a persisted outstanding queue, and
+    pending-aware policies (`pending=`; kriging believer for BAX) *(done)*;
+    optional `Experiment.run_batch` and an outstanding-candidates list in the UI.
   - Composite SBI + BAX on sbido: the sbido cutover PR, then whatever the paper
     benchmark needs (mat_finder regret-parity, continuous BAX).
   - Agent setup: an MCP server over `Campaign`, then a setup copilot that writes

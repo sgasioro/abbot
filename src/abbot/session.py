@@ -134,6 +134,20 @@ def _looks_like_tensor_code(exc: Exception) -> bool:
     return isinstance(exc, KeyError) and bool(exc.args) and isinstance(exc.args[0], int)
 
 
+def _accepts_pending(policy: Policy) -> bool:
+    """Does ``policy.suggest`` take ``pending=``? (Policies written before it was
+    added to the protocol don't.)"""
+    import inspect
+
+    try:
+        params = inspect.signature(policy.suggest).parameters
+    except (TypeError, ValueError):
+        return False
+    return "pending" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
 def canonical_Y(history: History, spec: ProblemSpec) -> torch.Tensor:
     """Clean raw outputs (ALL outputs) mapped to maximize-canonical space.
 
@@ -430,8 +444,14 @@ class Campaign:
         n_retry = min(n, len(self._retry_queue))
         n_seed = min(n - n_retry, len(self._seed_queue))
         rem = n - n_retry - n_seed
-        # Propose first: a misconfiguration raises before any queue is touched.
-        xs = self._propose(rem) if rem > 0 else []
+        # Propose first: a misconfiguration raises before any queue is touched. The
+        # policy sees everything in flight, incl. retries/seeds issued alongside.
+        xs = []
+        if rem > 0:
+            in_flight = [it.x for it in self._inflight.values()]
+            in_flight += [x for x, _, _ in self._retry_queue[:n_retry]]
+            in_flight += self._seed_queue[:n_seed]
+            xs = self._propose(rem, in_flight)
         issued = [self._issue(*self._retry_queue.pop(0)) for _ in range(n_retry)]
         issued += [self._issue(self._seed_queue.pop(0)) for _ in range(n_seed)]
         issued += [self._issue(xs[i]) for i in range(rem)]
@@ -719,7 +739,7 @@ class Campaign:
     # propagate so the caller/UI sees them immediately — never a silent random run.
     _MISCONFIG_ERRORS = (ValueError, NotImplementedError, TypeError)
 
-    def _propose(self, n: int) -> torch.Tensor:
+    def _propose(self, n: int, pending: list[torch.Tensor] | None = None) -> torch.Tensor:
         model = self.current_model()
         if model is None:
             # Cold start: too few clean points to fit yet. A uniform probe is the
@@ -727,7 +747,7 @@ class Campaign:
             logger.debug("no model yet (too few clean points); drawing a random probe.")
             return self._random_draw(n)
         try:
-            return self.policy.suggest(self.history, self.spec, model, n=n)
+            return self._policy_suggest(model, n, pending or [])
         except self._MISCONFIG_ERRORS:
             # Setup is wrong (e.g. ParetoBO on a 1-objective spec). Fail loud.
             raise
@@ -739,6 +759,19 @@ class Campaign:
             logger.warning("%s", msg, exc_info=True)
             self.last_warning = msg
             return self._random_draw(n)
+
+    def _policy_suggest(self, model, n: int, pending: list[torch.Tensor]) -> torch.Tensor:
+        if not pending:
+            return self.policy.suggest(self.history, self.spec, model, n=n)
+        X_pending = torch.stack([x.reshape(-1).double() for x in pending])
+        if _accepts_pending(self.policy):
+            return self.policy.suggest(self.history, self.spec, model, n=n, pending=X_pending)
+        logger.warning(
+            "%s.suggest takes no pending= argument, so it can't see the %d design(s) "
+            "in flight and may propose duplicates.",
+            type(self.policy).__name__, len(pending),
+        )
+        return self.policy.suggest(self.history, self.spec, model, n=n)
 
     def _random_draw(self, n: int) -> torch.Tensor:
         # Space-filling, and respects enumerated values + inequality constraints.

@@ -20,7 +20,7 @@ without a deprecation period.
 | Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `fail`, `cancel`, `outstanding`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `pending_count`, `add_hook`), `Candidate`, `CampaignResult`, `CampaignState` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, ...)` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
-| Policies | `Policy` (protocol: `suggest` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidate_grid`, `collected_count`) |
+| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `PosteriorSampler`, `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment`, `TensorExperiment` |
@@ -103,6 +103,17 @@ a lab can have several vials, or a cluster several jobs, in flight at once.
 `outstanding()` lists them, oldest first; `state().pending` / `.pending_ids` carry
 the same in JSON. Every `Record` stores the `id` it closed. `step` runs the oldest
 outstanding candidate before suggesting a new one.
+
+**Proposals avoid work in flight.** When the policy proposes, it receives every
+outstanding design (plus retries and seeds issued in the same call) as `pending`
+`(k, d)`. `SimpleBO` / `ParetoBO` pass it to BoTorch as `X_pending`;
+`UncertaintySampling` and `BAXPolicy` use `condition_on_pending(model, pending)`, a
+kriging believer that conditions the model on the pending designs at its own mean
+(mean unchanged, variance shrunk nearby). `BAXPolicy` also never re-proposes a
+grid point that is measured or pending. A model that can't be conditioned (e.g. an
+ensemble) is used as is, with a log line. A custom policy should accept
+`pending=`; one that doesn't still works, with a warning that it may propose
+duplicates.
 
 **Resume is exact.** With a `DataStore`, outstanding candidates, queued retries,
 unissued seeds and the id counter are written to `<root>/queue.json` after every

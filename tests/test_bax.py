@@ -49,13 +49,17 @@ def test_meanbax_exploits_in_predicted_target_then_prevents_requery():
     ys = [0.0, 0.4, 1.0, 0.4, 0.0]
     model, h = _fit(spec, xs, ys)
     pol = BAXPolicy(BandIntersection([(0.3, 1.2)]), strategy="MeanBAX", n_candidates=200)
-    pol.suggest(h, spec, model, n=1)
+    x0 = pol.suggest(h, spec, model, n=1)
     assert pol.collected_count == 1
-    # prevent-requery: the chosen grid index is never picked again.
+    # prevent-requery: a pick still in flight is not proposed again.
     idx0 = pol._collected[0]
-    pol.suggest(h, spec, model, n=1)
+    x1 = pol.suggest(h, spec, model, n=1, pending=x0)
     assert pol._collected[0] == idx0 and len(pol._collected) == 2
-    assert pol._collected[1] != idx0
+    assert pol._collected[1] != idx0 and not torch.equal(x0, x1)
+    # ...nor once it has been measured.
+    h.append(Record(candidate=x0[0], observation=None, outputs=torch.tensor([1.0])))
+    x2 = pol.suggest(h, spec, model, n=1)
+    assert not torch.equal(x0, x2)
 
 
 def test_meanbax_falls_back_to_us_when_target_empty():

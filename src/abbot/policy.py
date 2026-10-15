@@ -44,9 +44,20 @@ class Policy(Protocol):
     uq_requirement: UQRequirement
 
     def suggest(
-        self, history: History, spec: ProblemSpec, model: Model, n: int = 1
+        self,
+        history: History,
+        spec: ProblemSpec,
+        model: Model,
+        n: int = 1,
+        *,
+        pending: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Propose ``n`` candidates: (n, d)."""
+        """Propose ``n`` candidates: (n, d).
+
+        ``pending`` ``(k, d)`` holds designs already handed out but not yet
+        measured; a policy should steer away from duplicating them. ``None`` or
+        empty means nothing is outstanding.
+        """
         ...
 
     def ingest(self, results) -> None:
@@ -72,6 +83,63 @@ def _objective_transform(spec: ProblemSpec):
     return ScalarizedPosteriorTransform(weights=weights)
 
 
+def _pending_or_none(pending: torch.Tensor | None) -> torch.Tensor | None:
+    if pending is None or pending.numel() == 0:
+        return None
+    return pending.double().reshape(pending.shape[0], -1)
+
+
+def condition_on_pending(model: Model, pending: torch.Tensor | None) -> Model:
+    """Kriging believer: condition ``model`` on ``pending`` designs at its own
+    posterior mean.
+
+    The mean is unchanged; the variance shrinks at and near the pending designs, so
+    a variance-driven acquisition stops proposing duplicates of work in flight.
+    Returns ``model`` unchanged when nothing is pending or the model can't be
+    conditioned (e.g. an ensemble), logging the latter.
+    """
+    pending = _pending_or_none(pending)
+    if pending is None:
+        return model
+    try:
+        with torch.no_grad():
+            mean = model.posterior(pending).mean.reshape(pending.shape[0], -1)
+            return _condition(model, pending, mean)
+    except Exception as exc:  # noqa: BLE001 - any model may refuse; degrade gracefully
+        logger.info(
+            "Model %s can't condition on pending designs (%s: %s); proposals only "
+            "exclude the exact pending points.",
+            type(model).__name__, type(exc).__name__, exc,
+        )
+        return model
+
+
+def _condition(model: Model, X: torch.Tensor, Y: torch.Tensor) -> Model:
+    """``model.condition_on_observations(X, Y)`` for the surrogates abbot builds.
+
+    Covers the two cases the plain call refuses: a ``ModelListGP`` (wants one X per
+    output) is conditioned submodel by submodel, and a fixed-noise GP (fitted with
+    per-point ``Yvar``) is given its mean training noise for the new points.
+    """
+    from botorch.models import ModelListGP
+    from gpytorch.likelihoods import FixedNoiseGaussianLikelihood
+
+    if isinstance(model, ModelListGP):
+        subs, col = [], 0
+        for sub in model.models:
+            k = sub.num_outputs
+            subs.append(_condition(sub, X, Y[..., col : col + k]))
+            col += k
+        return ModelListGP(*subs)
+    kwargs = {}
+    lik = getattr(model, "likelihood", None)
+    if isinstance(lik, FixedNoiseGaussianLikelihood):
+        # Already in the model's outcome-transformed space, as botorch expects.
+        level = lik.noise.reshape(-1, lik.noise.shape[-1]).mean(-1)  # (m,) or (1,)
+        kwargs["noise"] = level.to(Y).expand(Y.shape)
+    return model.condition_on_observations(X, Y, **kwargs)
+
+
 class SimpleBO:
     """Single-objective BO: noisy log-EI + a CandidateOptimizer.
 
@@ -89,7 +157,13 @@ class SimpleBO:
         self.optimizer = optimizer or Continuous()
 
     def suggest(
-        self, history: History, spec: ProblemSpec, model: Model, n: int = 1
+        self,
+        history: History,
+        spec: ProblemSpec,
+        model: Model,
+        n: int = 1,
+        *,
+        pending: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if spec.n_objectives != 1:
             raise ValueError(
@@ -98,7 +172,10 @@ class SimpleBO:
             )
         X = history.clean.designs.double()
         acq = qLogNoisyExpectedImprovement(
-            model, X_baseline=X, posterior_transform=_objective_transform(spec)
+            model,
+            X_baseline=X,
+            posterior_transform=_objective_transform(spec),
+            X_pending=_pending_or_none(pending),
         )
         return self.optimizer.optimize(acq, spec, n)
 
@@ -140,7 +217,13 @@ class ParetoBO:
         return spec.objective_view(history.clean.outputs)
 
     def suggest(
-        self, history: History, spec: ProblemSpec, model: Model, n: int = 1
+        self,
+        history: History,
+        spec: ProblemSpec,
+        model: Model,
+        n: int = 1,
+        *,
+        pending: torch.Tensor | None = None,
     ) -> torch.Tensor:
         m = spec.n_objectives
         if m < 2:
@@ -156,7 +239,9 @@ class ParetoBO:
                 Y.shape[0],
                 floor,
             )
-            return UncertaintySampling(self.optimizer).suggest(history, spec, model, n)
+            return UncertaintySampling(self.optimizer).suggest(
+                history, spec, model, n, pending=pending
+            )
 
         if self.ref_point is not None:
             ref_point = self.ref_point
@@ -173,7 +258,9 @@ class ParetoBO:
                     "from; proposals may be undirected. Supply ParetoBO(ref_point=...) "
                     "or add more seed points."
                 )
-                return UncertaintySampling(self.optimizer).suggest(history, spec, model, n)
+                return UncertaintySampling(self.optimizer).suggest(
+                    history, spec, model, n, pending=pending
+                )
             ref_point = infer_reference_point(pareto_Y)
             logger.info(
                 "ParetoBO: inferred canonical ref_point=%s from %d non-dominated "
@@ -197,7 +284,11 @@ class ParetoBO:
 
             objective = IdentityMCMultiOutputObjective(outcomes=spec.objective_indices())
         acq = qLogNoisyExpectedHypervolumeImprovement(
-            model=model, ref_point=ref_point, X_baseline=X, objective=objective
+            model=model,
+            ref_point=ref_point,
+            X_baseline=X,
+            objective=objective,
+            X_pending=_pending_or_none(pending),
         )
         return self.optimizer.optimize(acq, spec, n)
 
@@ -219,12 +310,19 @@ class UncertaintySampling:
         self.optimizer = optimizer or Continuous()
 
     def suggest(
-        self, history: History, spec: ProblemSpec, model: Model, n: int = 1
+        self,
+        history: History,
+        spec: ProblemSpec,
+        model: Model,
+        n: int = 1,
+        *,
+        pending: torch.Tensor | None = None,
     ) -> torch.Tensor:
         from botorch.acquisition import PosteriorStandardDeviation
 
         # Pure exploration over ALL modeled outputs (direction-agnostic, incl.
         # OBSERVE columns) — keyed on n_outputs, not objective count.
+        model = condition_on_pending(model, pending)
         if spec.n_outputs == 1:
             acq = PosteriorStandardDeviation(model)
         else:
@@ -322,6 +420,8 @@ class BAXPolicy:
         self.candidate_seed = candidate_seed
         self.uq_requirement: UQRequirement = _BAX_UQ[strategy]
         self._grid: torch.Tensor | None = None
+        # Grid indices measured or pending at the last suggest, plus its picks.
+        # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
         self.switched: bool = False  # last suggest fell back to the explore strategy
 
@@ -358,7 +458,8 @@ class BAXPolicy:
 
     @property
     def collected_count(self) -> int:
-        """How many grid points have been proposed so far (prevent-requery state)."""
+        """How many grid points were measured, pending or picked as of the last
+        ``suggest`` (the prevent-requery set)."""
         return len(self._collected)
 
     def _raw_mean_std(self, model, X, spec):
@@ -376,10 +477,22 @@ class BAXPolicy:
     # -- Policy API --
 
     def suggest(
-        self, history: History, spec: ProblemSpec, model: Model, n: int = 1
+        self,
+        history: History,
+        spec: ProblemSpec,
+        model: Model,
+        n: int = 1,
+        *,
+        pending: torch.Tensor | None = None,
     ) -> torch.Tensor:
         grid = self.candidate_grid(spec)
-        acq = self._acquisition(spec, model, grid)
+        pending = _pending_or_none(pending)
+        # Prevent-requery: grid points already measured (any record) or in flight.
+        taken = [history.designs.double()] if len(history) else []
+        if pending is not None:
+            taken.append(pending)
+        self._collected = _grid_matches(grid, torch.cat(taken)) if taken else []
+        acq = self._acquisition(spec, condition_on_pending(model, pending), grid)
         acq = acq.clone()
         acq[self._collected] = float("-inf")
         picks = torch.topk(acq, k=min(n, acq.numel())).indices.tolist()
@@ -436,9 +549,7 @@ class BAXPolicy:
                 term2 += term1  # no execution info -> entropy unchanged
                 continue
             try:
-                fant = model.condition_on_observations(
-                    grid[target].double(), f_canon[target]
-                )
+                fant = _condition(model, grid[target].double(), f_canon[target])
                 _, fstd = self._raw_mean_std(fant, grid, spec)
                 term2 += _entropy(fstd)
             except Exception:
@@ -455,3 +566,10 @@ def _entropy(std: torch.Tensor) -> torch.Tensor:
 
     var = std.clamp_min(1e-12) ** 2
     return 0.5 * torch.log(2 * math.pi * var) + 0.5
+
+
+def _grid_matches(grid: torch.Tensor, X: torch.Tensor) -> list[int]:
+    """Indices of ``grid`` rows that exactly equal some row of ``X``."""
+    X = X.reshape(X.shape[0], -1).to(grid)
+    hit = (grid.unsqueeze(1) == X.unsqueeze(0)).all(dim=-1).any(dim=-1)
+    return hit.nonzero().reshape(-1).tolist()
