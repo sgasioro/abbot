@@ -1,11 +1,9 @@
 """Interop with sbido (lazy import; ``abbot[sbi]`` for the heavy path).
 
-sbido is actively developed, so the operating model is **structural protocols +
-a thin adapter**: sbido's classes satisfy abbot's ``Experiment`` /
-``PosteriorSampler`` protocols by shape (no ``import abbot`` in sbido, no
-``import sbido`` in abbot core). This module is the single place that absorbs
-sbido drift — when sbido refactors internals, only this file changes; abbot's
-core and sbido's core both stay put.
+sbido's classes satisfy abbot's ``Experiment`` / ``PosteriorSampler`` protocols
+by shape, and abbot core never imports sbido. sbido is becoming a thin SBI layer
+on abbot (its BAX designers already import it), so this adapter is slated to
+move to sbido's side; until then it is the one place that absorbs sbido drift.
 
 Two bridges:
   - ``spec_from_sbido`` — sbido ``ProblemSpec`` (xi_bounds + target boxes +
