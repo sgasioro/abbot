@@ -235,6 +235,16 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   `Xopt(generator=...)` on Xopt's parallel evaluator — the "never the spine" proof
   (`abbot[xopt]`) *(done)*. This is also the path for expensive-parallel/DFT
   campaigns: abbot defines the problem, Xopt orchestrates evaluation.
-- **F-tier** — BAXstics goal-BAX port, full nn-bax productionization + upstreaming
-  to Xopt, Xopt/Badger interop via gest-api, and agent integration (setup-copilot,
-  then an MCP server).
+- **Now** (pilot campaigns: one simulation, one human-in-the-loop; and a
+  composite-SBI + BAX paper on sbido):
+  - Batch / async: candidate ids and a persisted outstanding queue *(done)*;
+    pending-aware policies (`pending=`, kriging believer for BAX); optional
+    `Experiment.run_batch` and an outstanding-candidates list in the UI.
+  - Composite SBI + BAX on sbido: the sbido cutover PR, then whatever the paper
+    benchmark needs (mat_finder regret-parity, continuous BAX).
+  - Agent setup: an MCP server over `Campaign`, then a setup copilot that writes
+    the spec / goal. The UI stays the run console and the human-in-the-loop
+    entry point.
+- **Later** — mixed continuous + categorical spaces (`optimize_acqf_mixed`), output
+  constraints, BAXstics goals on abbot, nn-bax productionization + upstreaming to
+  Xopt, Xopt/Badger and Bluesky interop.

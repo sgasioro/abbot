@@ -85,6 +85,9 @@ def test_core_policy_generator_is_a_gest_generator():
     assert set(s[0].keys()) == {"temp", "catalyst"}
     gen.ingest([{**s[0], "yield": 42.0}])
     assert len(gen.campaign.history) == 1
+    # The result came back by value, not id; it still closes the suggestion.
+    assert gen.campaign.outstanding() == []
+    assert gen.campaign.history.records[0].id == s[0].id
 
 
 # --- end-to-end under real Xopt (needs xopt) ----------------------------------
@@ -119,6 +122,8 @@ def test_abbot_policy_drives_an_xopt_run():
     assert len(xo.data) == 13
     # abbot's campaign (inside the live generator) saw every evaluated point.
     assert len(live.campaign.history) == 13
+    # Every suggestion came back through Xopt's DataFrame and closed by exact value.
+    assert live.campaign.outstanding() == []
     # Both Xopt's data and abbot's recommendation locate the optimum ~0.3.
     best_xopt = float(xo.data.loc[xo.data["y"].idxmax(), "x"])
     assert abs(best_xopt - 0.3) < 0.1

@@ -17,7 +17,7 @@ without a deprecation period.
 | Area | Public surface |
 | --- | --- |
 | Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec` |
-| Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `pending_count`, `add_hook`), `CampaignResult`, `CampaignState` |
+| Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `fail`, `cancel`, `outstanding`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `pending_count`, `add_hook`), `Candidate`, `CampaignResult`, `CampaignState` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, ...)` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
 | Policies | `Policy` (protocol: `suggest` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidate_grid`, `collected_count`) |
@@ -57,7 +57,7 @@ public method with the same intent instead:
 | `Campaign._safe_fit()` | `Campaign.current_model()` |
 | `BAXPolicy._ensure_grid(spec)` | `BAXPolicy.candidate_grid(spec)` |
 | `BAXPolicy._raw_mean_std(...)` / `._collected` / `._acquisition(...)` | `abbot.analysis.bax_target_region(policy, model, spec)` / `BAXPolicy.collected_count` |
-| writing `Campaign._pending` to inject a result | `Campaign.record(x, y)` |
+| writing `Campaign._pending` / `._inflight` to inject a result | `Campaign.record(x, y)` |
 
 (`_safe_fit` and `_ensure_grid` currently remain as thin deprecated aliases; they
 will be removed in a future minor version.)
@@ -85,6 +85,29 @@ consumes, or a future constraint).
   `output_signs()` (all columns) / `objective_signs()` (the optimized subset). A
   pure-BAX spec is all-`OBSERVE`: `n_objectives == 0`, and `recommend()` returns
   `[]` (handover is the goal's job, not a single best point).
+
+## Outstanding candidates
+
+`suggest(n)` returns `n` `Candidate`s: `{variable name: value}` dicts with an
+`.id` (`"c0000"`, `"c0001"`, …). Each stays **outstanding** until it is closed, and
+calling `suggest` again adds to the outstanding set rather than replacing it — so
+a lab can have several vials, or a cluster several jobs, in flight at once.
+
+| Close it with | Effect |
+| --- | --- |
+| `ingest(result, id=c.id)` | record the measured outputs (`ids=[...]` for several; with neither, one result per outstanding candidate, oldest first) |
+| `fail(c.id, error)` | faulted record carrying `error`, retried up to `max_retries`, then halt |
+| `cancel(c.id)` | withdraw it; nothing recorded, no retry |
+| `record(x, y)` | if `x` exactly equals an outstanding design, closes it; otherwise records a new design |
+
+`outstanding()` lists them, oldest first; `state().pending` / `.pending_ids` carry
+the same in JSON. Every `Record` stores the `id` it closed. `step` runs the oldest
+outstanding candidate before suggesting a new one.
+
+**Resume is exact.** With a `DataStore`, outstanding candidates, queued retries,
+unissued seeds and the id counter are written to `<root>/queue.json` after every
+change. A `Campaign` built on the same store picks them up (ids included), and
+`seed()` is ignored on resume.
 
 ## Column contract
 
@@ -155,7 +178,7 @@ explicitly if you need it pinned.
 - **Pre-run check.** `Campaign(..., pre_run=check)` / `run_campaign(..., pre_run=)`
   calls `check(candidate_dict)` before each `step` runs the experiment. Return
   `None` to proceed or a reason string to block: the campaign halts with that
-  reason and the candidate is left pending (in `state().pending`), not run. Use it
+  reason and the candidate is left outstanding (in `state().pending`), not run. Use it
   for safety interlocks; soft feasibility rules belong in the spec's constraints.
 - **Transient numerical hiccups self-heal.** A one-off GP/acquisition failure mid-run
   falls back to a single random probe and records a message on

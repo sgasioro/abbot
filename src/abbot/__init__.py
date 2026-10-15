@@ -59,6 +59,7 @@ from abbot.session import (
     Campaign,
     CampaignResult,
     CampaignState,
+    Candidate,
     default_initial_designs,
 )
 
@@ -72,6 +73,7 @@ __all__ = [
     "Campaign",
     "CampaignResult",
     "CampaignState",
+    "Candidate",
     "ContinuousDomain",
     "DataStore",
     "EnsembleConstructor",

@@ -571,7 +571,8 @@ def _manual_controls(state: UIState) -> None:
 
     def do_suggest() -> None:
         try:
-            state.pending = ctrl.suggest(1)
+            # Re-show an outstanding candidate rather than issuing another.
+            state.pending = ctrl.campaign.outstanding()[:1] or ctrl.suggest(1)
         except Exception as exc:  # noqa: BLE001
             ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
             return
@@ -599,7 +600,7 @@ def _manual_controls(state: UIState) -> None:
                 if any(v is None for v in vals):
                     ui.notify("Enter all measured values first.", type="warning")
                     return
-                ctrl.submit(torch.tensor(vals, dtype=torch.double))
+                ctrl.submit(torch.tensor(vals, dtype=torch.double), id=cand.id)
                 state.pending = None
                 ui.notify("Recorded.", type="positive")
                 state._left.refresh()

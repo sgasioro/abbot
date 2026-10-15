@@ -246,9 +246,10 @@ class CampaignState:
     designs: list[list[float]]
     outputs: list[list[float] | None]
     faults: list[bool]
-    pending: list[dict] | None
+    pending: list[dict] | None  # outstanding (in-flight) designs, oldest first
     recommended: list[int]
     halted: str | None
+    pending_ids: list[str] = field(default_factory=list)  # ids aligned with pending
 
     def to_json(self) -> str:
         import json
@@ -290,6 +291,30 @@ class CampaignResult:
 
 
 # --- the session --------------------------------------------------------------
+
+
+class Candidate(dict):
+    """A suggested design: a ``{variable name: value}`` dict that also carries the
+    ``id`` to hand back to ``Campaign.ingest`` / ``fail`` / ``cancel``.
+    """
+
+    def __init__(self, *args, id: str | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.id = id
+
+    def __repr__(self) -> str:
+        return f"Candidate(id={self.id!r}, {dict.__repr__(self)})"
+
+
+@dataclass
+class _InFlight:
+    """A design handed out by ``suggest`` and not yet ingested, failed or cancelled."""
+
+    id: str
+    x: torch.Tensor
+    retry_of: int | None = None
+    attempt: int = 0
+
 
 # A hook is called after each ingest with (state, fitted_model_or_None).
 StepHook = Callable[[CampaignState, Any], None]
@@ -344,7 +369,9 @@ class Campaign:
 
         self._seed_queue: list[torch.Tensor] = []
         self._retry_queue: list[tuple[torch.Tensor, int, int]] = []  # (x, retry_of, attempt)
-        self._pending: list[tuple[torch.Tensor, int | None, int]] | None = None
+        # Outstanding designs, in issue order (dicts keep insertion order).
+        self._inflight: dict[str, _InFlight] = {}
+        self._next_id = 0
         self._recommended: list[int] = []
         self.halted: str | None = None
         # The last non-fatal warning surfaced to a caller (e.g. a transient
@@ -353,6 +380,7 @@ class Campaign:
         # Cached fit of the current clean history, invalidated on history mutation.
         self._model = None
         self._model_valid = False
+        self._queue_restored = self._load_queue()
 
     # -- setup --
 
@@ -361,12 +389,14 @@ class Campaign:
 
     def seed(self, designs: torch.Tensor) -> None:
         """Queue initial designs to measure before the policy proposes. No-op (with
-        a log) if the campaign resumed with existing history — seeds are already in.
+        a log) if the campaign resumed from a store — its seeds are already in the
+        history or the saved queue.
         """
-        if len(self.history):
+        if len(self.history) or self._queue_restored:
             logger.info("seed() ignored: campaign resumed with %d steps.", len(self.history))
             return
         self._seed_queue.extend(list(designs))
+        self._save_queue()
 
     def load_history(self, history: History) -> None:
         """Append already-measured records (e.g. imported from CSV) to the history.
@@ -382,84 +412,102 @@ class Campaign:
             self.history.append(record)
             if self.store is not None:
                 self.store.save_step(step, record)
+        self._save_queue()
 
     # -- ask/tell --
 
-    def suggest(self, n: int = 1) -> list[dict]:
-        """Propose ``n`` candidates. Retries take priority, then queued seeds, then
-        a batch proposal from the policy. Returns gest-shaped dicts keyed by
-        variable name; the pending candidates are held until ``ingest``.
+    def suggest(self, n: int = 1) -> list[Candidate]:
+        """Propose ``n`` more candidates. Retries take priority, then queued seeds,
+        then a batch proposal from the policy.
+
+        Each returned :class:`Candidate` is a ``{variable name: value}`` dict with
+        an ``.id``. It stays outstanding (``outstanding()``, ``state().pending``)
+        until ``ingest``, ``fail`` or ``cancel`` closes it; calling ``suggest``
+        again adds to the outstanding set rather than replacing it.
         """
         if self.halted:
             raise RuntimeError(f"campaign is halted: {self.halted}")
-        pend: list[tuple[torch.Tensor, int | None, int]] = []
-        while len(pend) < n and self._retry_queue:
-            pend.append(self._retry_queue.pop(0))
-        while len(pend) < n and self._seed_queue:
-            pend.append((self._seed_queue.pop(0), None, 0))
-        rem = n - len(pend)
-        if rem > 0:
-            xs = self._propose(rem)
-            for i in range(rem):
-                pend.append((xs[i], None, 0))
-        self._pending = pend
-        return [self._to_dict(x) for x, _, _ in pend]
+        n_retry = min(n, len(self._retry_queue))
+        n_seed = min(n - n_retry, len(self._seed_queue))
+        rem = n - n_retry - n_seed
+        # Propose first: a misconfiguration raises before any queue is touched.
+        xs = self._propose(rem) if rem > 0 else []
+        issued = [self._issue(*self._retry_queue.pop(0)) for _ in range(n_retry)]
+        issued += [self._issue(self._seed_queue.pop(0)) for _ in range(n_seed)]
+        issued += [self._issue(xs[i]) for i in range(rem)]
+        self._save_queue()
+        return [self._candidate(item) for item in issued]
 
     def ingest(
         self,
         results: object,
-        observations: list | None = None,
-        output_vars: list | None = None,
+        observations: object | None = None,
+        output_vars: object | None = None,
+        *,
+        id: str | None = None,
+        ids: list[str] | None = None,
     ) -> CampaignState:
-        """Fold measured results for the pending suggestion back in.
+        """Fold measured results for outstanding candidates back in.
 
-        ``results`` is one eval-output per pending candidate (a tensor or an
-        ``(outputs, aux)`` tuple each); a bare value is accepted when a single
-        candidate is pending. ``observations`` optionally stores the raw
-        observation per record; ``output_vars`` optionally supplies per-output noise
-        VARIANCE ``(m,)`` per candidate (e.g. from replicate measurements) — stored
-        on the record and threaded to the surrogate's ``train_Yvar`` when every clean
-        record has it. Runs the supervisor, persists, and fires hooks.
+        Which candidates the results belong to:
+
+        - ``id="c0003"``: ``results`` is that one candidate's result (and
+          ``observations`` / ``output_vars`` its single observation / variance).
+        - ``ids=[...]``: one result per listed id.
+        - neither: one result per outstanding candidate, oldest first (a bare
+          value is accepted when exactly one is outstanding).
+
+        A result is the raw outputs (a tensor, a list in ``spec.outputs`` order, or
+        a ``{output name: value}`` dict) or an ``(outputs, aux)`` tuple.
+        ``observations`` optionally stores the raw observation per record;
+        ``output_vars`` optionally supplies per-output noise VARIANCE ``(m,)`` per
+        candidate (e.g. from replicate measurements) — stored on the record and
+        threaded to the surrogate's ``train_Yvar`` when every clean record has it.
+        All results are validated before any is recorded. Runs the supervisor,
+        persists, and fires hooks.
         """
-        if self._pending is None:
-            raise RuntimeError("ingest() called before suggest()")
-        results = self._as_list(results)
-        if len(results) != len(self._pending):
-            raise ValueError(
-                f"ingest got {len(results)} result(s) for {len(self._pending)} pending "
-                "candidate(s)."
-            )
-        obs_list = observations if observations is not None else [None] * len(results)
-        var_list = output_vars if output_vars is not None else [None] * len(results)
-
-        for (x, retry_of, attempt), res, obs, var in zip(
-            self._pending, results, obs_list, var_list
-        ):
-            y, aux = split_eval(res, self.spec)
-            ov = None if var is None else torch.as_tensor(var, dtype=torch.double).reshape(-1)
-            record = Record(
-                candidate=x, observation=obs, outputs=y, output_var=ov,
-                aux=aux, retry_of=retry_of,
-            )
-            step = len(self.history)
-            self.history.append(record)
-
-            verdict = self.supervisor(self.history) if self.supervisor else Verdict()
-            record.fault = verdict.retry
-
-            if self.store is not None:
-                self.store.save_step(step, record)
-
-            if verdict.halt is not None:
-                self.halted = verdict.halt
-            if verdict.retry and attempt < self.max_retries:
-                self._retry_queue.append(
-                    (x, step if retry_of is None else retry_of, attempt + 1)
+        if id is not None and ids is not None:
+            raise TypeError("pass id= or ids=, not both")
+        if id is not None:
+            ids, results = [id], [results]
+            observations = [observations]
+            output_vars = [output_vars]
+        else:
+            if ids is None:
+                if not self._inflight:
+                    raise RuntimeError(
+                        "ingest() with nothing outstanding; call suggest() first, or "
+                        "record(x, y) for a design you chose yourself."
+                    )
+                ids = list(self._inflight)
+            results = self._as_list(results)
+            if len(results) != len(ids):
+                raise ValueError(
+                    f"ingest got {len(results)} result(s) for {len(ids)} outstanding "
+                    f"candidate(s) {ids}; pass id= / ids= to ingest a subset."
                 )
+        n = len(ids)
+        obs_list = observations if observations is not None else [None] * n
+        var_list = output_vars if output_vars is not None else [None] * n
+        items = [self._outstanding_item(i) for i in ids]
+        return self._commit(list(zip(items, results, obs_list, var_list)))
 
-        self._pending = None
-        self._model_valid = False  # history grew -> cached fit is stale
-        self._after_ingest()
+    def fail(self, id: str, error: str | BaseException) -> CampaignState:
+        """Close an outstanding candidate whose run failed (the instrument errored,
+        the sample was lost). Recorded as a faulted record carrying ``error``, then
+        retried up to ``max_retries`` times before the campaign halts — the same
+        path ``step`` takes when ``experiment.run`` raises.
+        """
+        return self._record_run_error(self._outstanding_item(id), error)
+
+    def cancel(self, id: str) -> CampaignState:
+        """Withdraw an outstanding candidate without running it. Nothing is
+        recorded and it is not retried.
+        """
+        item = self._outstanding_item(id)
+        del self._inflight[item.id]
+        self._save_queue()
+        logger.info("cancelled %s at %s", item.id, self._to_dict(item.x))
         return self.state()
 
     def step(
@@ -468,47 +516,59 @@ class Campaign:
         """One full cycle: suggest -> experiment.run -> evaluate -> ingest.
 
         The single primitive both ``run_campaign`` and the UI auto-runner call.
+        If candidates are already outstanding (e.g. resumed after a crash
+        mid-experiment), the oldest is run instead of suggesting a new one.
 
         Before running, ``pre_run`` (if set) sees the named candidate; a returned
-        reason halts the campaign with the candidate left pending and NOT run. If
+        reason halts the campaign with the candidate left outstanding and NOT run. If
         ``experiment.run`` raises, the shot is recorded as a fault (with the error
         text, no outputs) and retried up to ``max_retries`` times, then the
         campaign halts. Errors from ``evaluate`` propagate (they are analysis bugs,
         and re-running the experiment would not fix them).
         """
-        self.suggest(1)
-        x, retry_of, attempt = self._pending[0]
+        if self.halted:
+            raise RuntimeError(f"campaign is halted: {self.halted}")
+        if not self._inflight:
+            self.suggest(1)
+        item = next(iter(self._inflight.values()))
+        design = self._to_dict(item.x)
         if self.pre_run is not None:
-            reason = self.pre_run(self._to_dict(x))
+            reason = self.pre_run(dict(design))
             if reason:
-                self.halted = f"pre-run check blocked {self._to_dict(x)}: {reason}"
+                self.halted = f"pre-run check blocked {design}: {reason}"
                 logger.warning("%s", self.halted)
                 return self.state()
         try:
-            observation = experiment.run(self._to_dict(x))
+            observation = experiment.run(design)
         except Exception as exc:
-            logger.exception("experiment.run failed at %s", self._to_dict(x))
-            return self._record_run_error(x, retry_of, attempt, exc)
+            logger.exception("experiment.run failed at %s", design)
+            return self._record_run_error(item, exc)
         out = evaluate(observation)
-        return self.ingest([out], observations=[observation])
+        return self.ingest(out, observations=observation, id=item.id)
 
     def _record_run_error(
-        self, x: torch.Tensor, retry_of: int | None, attempt: int, exc: Exception
+        self, item: _InFlight, exc: str | BaseException
     ) -> CampaignState:
         """Persist a failed run as a faulted record, then retry or halt."""
-        error = f"{type(exc).__name__}: {exc}"
-        if _looks_like_tensor_code(exc):
-            error += (
-                " (Experiment.run receives a {name: value} design dict; wrap a "
-                "tensor-based experiment in abbot.TensorExperiment.)"
-            )
+        if isinstance(exc, BaseException):
+            error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, Exception) and _looks_like_tensor_code(exc):
+                error += (
+                    " (Experiment.run receives a {name: value} design dict; wrap a "
+                    "tensor-based experiment in abbot.TensorExperiment.)"
+                )
+        else:
+            error = str(exc)
+        x, retry_of, attempt = item.x, item.retry_of, item.attempt
         record = Record(
-            candidate=x, observation=None, fault=True, retry_of=retry_of, error=error
+            candidate=x, observation=None, fault=True, retry_of=retry_of, error=error,
+            id=item.id,
         )
         step = len(self.history)
         self.history.append(record)
         if self.store is not None:
             self.store.save_step(step, record)
+        self._inflight.pop(item.id, None)
         where = self._to_dict(x)
         if attempt < self.max_retries:
             self._retry_queue.append(
@@ -519,7 +579,7 @@ class Campaign:
             self.halted = (
                 f"Experiment failed {attempt + 1} time(s) at {where}; last error: {error}"
             )
-        self._pending = None
+        self._save_queue()
         self._after_ingest()
         return self.state()
 
@@ -535,14 +595,15 @@ class Campaign:
         """Fold an already-evaluated ``(candidate, outputs)`` pair in directly.
 
         For external evaluators (an Xopt/gest generator, a live batch the caller
-        measured itself) that chose the point rather than taking it from
-        ``suggest``. ``x`` is one design (a ``(d,)`` tensor or a ``{variable name:
-        value}`` dict), ``y`` the RAW outputs (``(m,)`` in ``spec.outputs`` order,
-        or a ``{output name: value}`` dict); ``aux`` is the optional cached payload (SBI theta
-        samples); ``output_var`` the optional per-output noise variance ``(m,)``.
+        measured itself) that hand back a design rather than an id. ``x`` is one
+        design (a ``(d,)`` tensor or a ``{variable name: value}`` dict), ``y`` the
+        RAW outputs (``(m,)`` in ``spec.outputs`` order, or a ``{output name:
+        value}`` dict); ``aux`` is the optional cached payload (SBI theta samples);
+        ``output_var`` the optional per-output noise variance ``(m,)``. If ``x``
+        exactly equals an outstanding candidate, that candidate is closed (the
+        oldest, if several match); otherwise the design is recorded as new.
         Runs the supervisor, persists, queues a retry if flagged, and fires
-        ``on_step`` hooks — identical to ``ingest``, only the candidate is supplied
-        by the caller instead of being pending.
+        ``on_step`` hooks — identical to ``ingest``.
 
         Distinct from ``load_history`` (which bulk-imports prior data WITHOUT the
         supervisor/hooks). Returns the resulting :class:`CampaignState`.
@@ -550,11 +611,46 @@ class Campaign:
         if isinstance(x, Mapping):
             x = [float(x[n]) for n in self.spec.variable_names]
         xt = torch.as_tensor(x, dtype=torch.double).reshape(-1)
-        self._pending = [(xt, None, 0)]
-        result = (y, aux) if aux is not None else y
-        return self.ingest(
-            [result], observations=[observation], output_vars=[output_var]
+        item = next(
+            (it for it in self._inflight.values() if torch.equal(it.x, xt)), None
         )
+        if item is None:
+            item = _InFlight(id=self._new_id(), x=xt)
+        result = (y, aux) if aux is not None else y
+        return self._commit([(item, result, observation, output_var)])
+
+    def _commit(self, entries: list[tuple[_InFlight, object, object, object]]) -> CampaignState:
+        """Record ``(item, result, observation, output_var)`` entries: validate all,
+        then append, supervise, persist and close each, then fire hooks once.
+        """
+        parsed = [split_eval(res, self.spec) for _, res, _, _ in entries]
+        for (item, _, obs, var), (y, aux) in zip(entries, parsed):
+            ov = None if var is None else torch.as_tensor(var, dtype=torch.double).reshape(-1)
+            record = Record(
+                candidate=item.x, observation=obs, outputs=y, output_var=ov,
+                aux=aux, retry_of=item.retry_of, id=item.id,
+            )
+            step = len(self.history)
+            self.history.append(record)
+
+            verdict = self.supervisor(self.history) if self.supervisor else Verdict()
+            record.fault = verdict.retry
+
+            if self.store is not None:
+                self.store.save_step(step, record)
+            self._inflight.pop(item.id, None)
+
+            if verdict.halt is not None:
+                self.halted = verdict.halt
+            if verdict.retry and item.attempt < self.max_retries:
+                self._retry_queue.append(
+                    (item.x, step if item.retry_of is None else item.retry_of, item.attempt + 1)
+                )
+
+        self._save_queue()
+        self._model_valid = False  # history grew -> cached fit is stale
+        self._after_ingest()
+        return self.state()
 
     # -- queries --
 
@@ -591,8 +687,13 @@ class Campaign:
         """Queued units of work owed before the policy must propose again:
         unmeasured seeds plus supervisor-queued retries. A headless driver
         (``run_campaign``, an agent) uses this to size its budget and drain retries.
+        Candidates already handed out are counted separately by ``outstanding()``.
         """
         return len(self._seed_queue) + len(self._retry_queue)
+
+    def outstanding(self) -> list[Candidate]:
+        """Candidates handed out by ``suggest`` and not yet closed, oldest first."""
+        return [self._candidate(item) for item in self._inflight.values()]
 
     def state(self) -> CampaignState:
         return CampaignState(
@@ -605,11 +706,10 @@ class Campaign:
                 for r in self.history.records
             ],
             faults=[r.fault for r in self.history.records],
-            pending=[self._to_dict(x) for x, _, _ in self._pending]
-            if self._pending
-            else None,
+            pending=[self._to_dict(it.x) for it in self._inflight.values()] or None,
             recommended=list(self._recommended),
             halted=self.halted,
+            pending_ids=list(self._inflight),
         )
 
     # -- internals --
@@ -685,6 +785,83 @@ class Campaign:
                 hook(state, model)
             except Exception:
                 logger.exception("on_step hook failed.")
+
+    def _new_id(self) -> str:
+        cid = f"c{self._next_id:04d}"
+        self._next_id += 1
+        return cid
+
+    def _issue(
+        self, x: torch.Tensor, retry_of: int | None = None, attempt: int = 0
+    ) -> _InFlight:
+        item = _InFlight(id=self._new_id(), x=x.reshape(-1).double(),
+                         retry_of=retry_of, attempt=attempt)
+        self._inflight[item.id] = item
+        return item
+
+    def _outstanding_item(self, id: str) -> _InFlight:
+        try:
+            return self._inflight[id]
+        except KeyError:
+            raise KeyError(
+                f"{id!r} is not outstanding (outstanding: {list(self._inflight)}); "
+                "it may already have been ingested, failed or cancelled."
+            ) from None
+
+    def _candidate(self, item: _InFlight) -> Candidate:
+        return Candidate(self._to_dict(item.x), id=item.id)
+
+    def _save_queue(self) -> None:
+        if self.store is None:
+            return
+        self.store.save_queue({
+            "version": 1,
+            "next_id": self._next_id,
+            "in_flight": [
+                {"id": it.id, "design": it.x.tolist(), "retry_of": it.retry_of,
+                 "attempt": it.attempt}
+                for it in self._inflight.values()
+            ],
+            "retries": [
+                {"design": x.tolist(), "retry_of": r, "attempt": a}
+                for x, r, a in self._retry_queue
+            ],
+            "seeds": [x.reshape(-1).tolist() for x in self._seed_queue],
+        })
+
+    def _load_queue(self) -> bool:
+        """Restore outstanding work from the store's queue.json. Returns whether
+        one was found.
+        """
+        q = self.store.load_queue() if self.store is not None else None
+        # Ids already in the history: if a crash landed between writing a record
+        # and the queue, that item is done, not outstanding.
+        done = {r.id for r in self.history.records if getattr(r, "id", None)}
+        # Pre-queue stores: continue numbering after any ids the history carries.
+        self._next_id = 1 + max(
+            (int(i[1:]) for i in done if i[:1] == "c" and i[1:].isdigit()), default=-1
+        )
+        if q is None:
+            return False
+
+        def t(v: list) -> torch.Tensor:
+            return torch.tensor(v, dtype=torch.double)
+
+        self._next_id = max(self._next_id, int(q["next_id"]))
+        for it in q["in_flight"]:
+            if it["id"] not in done:
+                self._inflight[it["id"]] = _InFlight(
+                    id=it["id"], x=t(it["design"]), retry_of=it["retry_of"],
+                    attempt=it["attempt"],
+                )
+        self._retry_queue = [(t(r["design"]), r["retry_of"], r["attempt"]) for r in q["retries"]]
+        self._seed_queue = [t(x) for x in q["seeds"]]
+        if self._inflight or self._retry_queue or self._seed_queue:
+            logger.info(
+                "Restored %d outstanding, %d retries, %d seeds from the store.",
+                len(self._inflight), len(self._retry_queue), len(self._seed_queue),
+            )
+        return True
 
     def _to_dict(self, x: torch.Tensor) -> dict:
         return dict(zip(self.spec.variable_names, x.reshape(-1).tolist()))

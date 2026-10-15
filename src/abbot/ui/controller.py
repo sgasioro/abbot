@@ -63,8 +63,10 @@ class RunController:
         self.status = RunStatus.RUNNING
         return self.campaign.suggest(n)
 
-    def submit(self, results: object, observations: list | None = None) -> CampaignState:
-        state = self.campaign.ingest(results, observations=observations)
+    def submit(
+        self, results: object, observations: list | None = None, *, id: str | None = None
+    ) -> CampaignState:
+        state = self.campaign.ingest(results, observations=observations, id=id)
         self._sync_status()
         return state
 

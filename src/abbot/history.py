@@ -11,6 +11,8 @@ references is the constraint that serves frontend + resume + agents at once
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,7 @@ class Record:
     fault: bool = False  # detector flagged this shot as unusable
     retry_of: int | None = None  # index this shot re-runs, if any
     error: str | None = None  # experiment.run raised (then fault=True, outputs=None)
+    id: str | None = None  # the Campaign candidate id this record closed (e.g. "c0007")
 
 
 @dataclass
@@ -99,11 +102,16 @@ class DataStore:
     Minimal M1 implementation: ``torch.save`` each Record to
     ``<root>/steps/step_NNN.pt`` and reload them in order. A JSON sidecar for the
     serializable fields (and an aux cap/drop policy) is a follow-on.
+
+    ``<root>/queue.json`` holds the work not yet in the history: in-flight
+    candidates (with their ids), queued retries and seeds, and the id counter, so a
+    resumed ``Campaign`` picks up exactly where it stopped.
     """
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
         self.steps_dir = self.root / "steps"
+        self.queue_path = self.root / "queue.json"
 
     def setup(self) -> None:
         self.steps_dir.mkdir(parents=True, exist_ok=True)
@@ -119,3 +127,15 @@ class DataStore:
         for f in sorted(self.steps_dir.glob("step_*.pt")):
             history.append(torch.load(f, weights_only=False))
         return history
+
+    def save_queue(self, queue: dict) -> None:
+        """Atomically write the campaign's outstanding-work queue."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        tmp = self.queue_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(queue, indent=1))
+        os.replace(tmp, self.queue_path)
+
+    def load_queue(self) -> dict | None:
+        if not self.queue_path.exists():
+            return None
+        return json.loads(self.queue_path.read_text())
