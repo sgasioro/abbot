@@ -246,11 +246,14 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
     sbido, and more), including general SBI-for-guidance machinery; sbido is a
     thin application that imports abbot. Problem-specific targets stay
     user-defined and plug into abbot's seams (`ObjectiveReducer` for composite
-    scores over posterior samples, `Goal` for BAX). Moves down into abbot: the
-    loop/resume (`measure_and_optimize` onto `Campaign`), `initial_designs`, the
-    supervision monitors, denoised recommendation, the SBIdO designer as a
-    policy over a user-supplied reducer, and the trained-`sbi`-posterior sampler
-    (`abbot[sbi]`). Stays in sbido: its scores and theta-distribution goals, the
+    scores over posterior samples, `Goal` for BAX). abbot already covers the loop
+    (seeds, retries, `Supervisor`/`Verdict`, step hooks, proposal fallback,
+    `(outputs, aux)` caching, resume, denoised `recommend`), so sbido's
+    `measure_and_optimize` is replaced by `Campaign`, not moved. Genuinely new
+    to abbot: concrete supervisor monitors (stall / drift / consecutive-fault /
+    `any_of`), a config fingerprint that refuses a mismatched resume, the SBIdO
+    designer as a policy over a user-supplied reducer, and the
+    trained-`sbi`-posterior sampler (`abbot[sbi]`). Stays in sbido: its scores and theta-distribution goals, the
     mat_finder simulator and beamtime experiment, trained posteriors,
     benchmarks, configs, paper runs. The `interop/sbido.py` adapter then moves
     to sbido's side.
