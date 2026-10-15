@@ -168,10 +168,6 @@ explicitly if you need it pinned.
   promise; **Provisional** may change on any release; **Private** has no promise.
 - Soft-deprecated aliases (`ObjectiveSpec`, `objectives=`, `_safe_fit`,
   `_ensure_grid`) are kept at least one minor version after a replacement ships.
-- **`Experiment.run` changed from a tensor to a design dict.** An experiment whose
-  `run` is annotated `(x: torch.Tensor)` is still adapted automatically, with a
-  one-time `FutureWarning`; that shim will be removed in a future minor version.
-  Unannotated tensor code can't be detected — wrap it in `TensorExperiment`.
 - Breaking changes to Stable names happen only on a minor-version bump and are
   called out in the changelog.
 

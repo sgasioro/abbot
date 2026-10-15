@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
-from abbot.experiment import Experiment, Supervisor, Verdict, as_design_experiment
+from abbot.experiment import Experiment, Supervisor, Verdict
 from abbot.history import DataStore, History, Record
 from abbot.model import ModelConstructor, default_constructor
 from abbot.policy import Policy, default_policy
@@ -123,6 +123,15 @@ def _outputs_from_dict(outputs: Mapping, spec: ProblemSpec) -> list[float]:
             f"{names} (missing {missing}, unexpected {extra})."
         )
     return [float(outputs[n]) for n in names]
+
+
+def _looks_like_tensor_code(exc: Exception) -> bool:
+    """Did ``run`` fail treating its design dict as a tensor (``x.reshape``,
+    ``x * 2``, ``x[0]``)? Used only to add a hint to the recorded error.
+    """
+    if isinstance(exc, (AttributeError, TypeError)) and "'dict'" in str(exc):
+        return True
+    return isinstance(exc, KeyError) and bool(exc.args) and isinstance(exc.args[0], int)
 
 
 def canonical_Y(history: History, spec: ProblemSpec) -> torch.Tensor:
@@ -476,7 +485,7 @@ class Campaign:
                 logger.warning("%s", self.halted)
                 return self.state()
         try:
-            observation = as_design_experiment(experiment).run(self._to_dict(x))
+            observation = experiment.run(self._to_dict(x))
         except Exception as exc:
             logger.exception("experiment.run failed at %s", self._to_dict(x))
             return self._record_run_error(x, retry_of, attempt, exc)
@@ -488,7 +497,7 @@ class Campaign:
     ) -> CampaignState:
         """Persist a failed run as a faulted record, then retry or halt."""
         error = f"{type(exc).__name__}: {exc}"
-        if isinstance(exc, (AttributeError, TypeError)) and "'dict'" in str(exc):
+        if _looks_like_tensor_code(exc):
             error += (
                 " (Experiment.run receives a {name: value} design dict; wrap a "
                 "tensor-based experiment in abbot.TensorExperiment.)"

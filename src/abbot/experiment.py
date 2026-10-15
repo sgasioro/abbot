@@ -12,8 +12,6 @@ it. This is the headless-first property — the loop never knows which it is.
 
 from __future__ import annotations
 
-import typing
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -53,41 +51,6 @@ class TensorExperiment:
     def run(self, design: Design) -> Any:
         x = torch.tensor(list(design.values()), dtype=torch.double)
         return self.experiment.run(x)
-
-
-_warned_tensor_classes: set[type] = set()
-
-
-def _takes_tensor(experiment: Any) -> bool:
-    """True if ``experiment.run`` annotates its argument as ``torch.Tensor``."""
-    try:
-        hints = typing.get_type_hints(experiment.run)
-    except (NameError, TypeError, AttributeError):  # unresolvable -> current contract
-        return False
-    hints.pop("return", None)
-    return bool(hints) and next(iter(hints.values())) is torch.Tensor
-
-
-def as_design_experiment(experiment: Any) -> Any:
-    """Return ``experiment`` ready to be called with a design dict.
-
-    Deprecated path: an experiment whose ``run`` is annotated ``(x: torch.Tensor)``
-    (the pre-0.2 contract) is wrapped in :class:`TensorExperiment` with a one-time
-    ``FutureWarning``. Wrap it explicitly to silence the warning.
-    """
-    if isinstance(experiment, TensorExperiment) or not _takes_tensor(experiment):
-        return experiment
-    cls = type(experiment)
-    if cls not in _warned_tensor_classes:
-        _warned_tensor_classes.add(cls)
-        warnings.warn(
-            f"{cls.__name__}.run takes a tensor; Experiment.run now receives a "
-            "{name: value} design dict. Adapting it automatically for now — wrap it "
-            "in abbot.TensorExperiment(...) or switch run() to the dict.",
-            FutureWarning,
-            stacklevel=3,
-        )
-    return TensorExperiment(experiment)
 
 
 @runtime_checkable

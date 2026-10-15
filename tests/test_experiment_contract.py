@@ -1,7 +1,5 @@
 """Experiment.run takes a {name: value} design dict; outputs may come back by name."""
 
-import warnings
-
 import pytest
 import torch
 
@@ -14,7 +12,6 @@ from abbot import (
     ProblemSpec,
     TensorExperiment,
 )
-from abbot.experiment import as_design_experiment
 
 
 def _spec() -> ProblemSpec:
@@ -93,40 +90,37 @@ def test_manual_experiment_responder_gets_the_design():
     assert seen == [{"temp": 30.0, "catalyst": 2.0}]
 
 
-class _LegacyTensorExperiment:
+class _VectorExperiment:
     def __init__(self):
         self.seen: list[torch.Tensor] = []
 
-    def run(self, candidate: torch.Tensor) -> torch.Tensor:
-        self.seen.append(candidate)
-        return torch.tensor([candidate[0] / 10.0, 0.0])
+    def run(self, x: torch.Tensor) -> torch.Tensor:
+        self.seen.append(x)
+        return torch.tensor([x[0] / 10.0, 0.0])
 
 
-def test_tensor_annotated_experiment_is_adapted_with_one_warning():
+def test_tensor_experiment_hands_run_the_vector_in_spec_order():
     c = _seeded()
-    exp = _LegacyTensorExperiment()
-    with pytest.warns(FutureWarning, match="TensorExperiment"):
-        c.step(exp, _identity)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # warned once per class, not every step
-        c.step(exp, _identity)
-    assert [x.tolist() for x in exp.seen] == [[30.0, 2.0], [50.0, 0.0]]
+    inner = _VectorExperiment()
+    c.step(TensorExperiment(inner), _identity)
+    (x,) = inner.seen
+    assert x.dtype == torch.double and x.tolist() == [30.0, 2.0]
     assert c.history.records[0].outputs.tolist() == [3.0, 0.0]
 
 
-def test_explicit_tensor_experiment_does_not_warn():
-    exp = TensorExperiment(_LegacyTensorExperiment())
-    assert as_design_experiment(exp) is exp
-    c = _seeded()
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        c.step(exp, _identity)
-
-
-def test_unannotated_tensor_code_fails_with_a_hint():
+@pytest.mark.parametrize(
+    "body",
+    [
+        lambda x: x.reshape(-1),  # AttributeError
+        lambda x: x * 10.0,  # TypeError
+        lambda x: x[0],  # KeyError: 0
+    ],
+    ids=["method", "arithmetic", "indexing"],
+)
+def test_tensor_style_code_fails_with_a_hint(body):
     class _Old:
         def run(self, candidate):
-            return candidate.reshape(-1)
+            return body(candidate)
 
     c = _seeded()
     c.step(_Old(), _identity)
