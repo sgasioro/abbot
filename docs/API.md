@@ -23,7 +23,7 @@ without a deprecation period.
 | Policies | `Policy` (protocol: `suggest` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidate_grid`, `collected_count`) |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
-| Experiment seams | `Experiment`, `PosteriorSampler`, `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment` |
+| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `PosteriorSampler`, `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment`, `TensorExperiment` |
 | Run data | `History`, `Record`, `DataStore` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
 | Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
@@ -88,8 +88,15 @@ consumes, or a future constraint).
 
 ## Column contract
 
-`evaluate` / `Experiment.run` / `Campaign.record` all speak **raw physical units**,
-one value per output in `spec.outputs` order. The engine is *maximize-canonical*: it
+**Designs are named.** `Campaign.suggest` returns, and `Experiment.run` receives, a
+`{variable name: value}` dict in `spec.variable_names` order (`Campaign.record`
+accepts one too). An experiment written against vectors — a vectorized simulator,
+sbido — wraps in `TensorExperiment(exp)`, which hands `run` the `(d,)` double
+tensor in the same order.
+
+`evaluate` / `Experiment.run` / `Campaign.ingest` / `Campaign.record` all speak
+**raw physical units**: one value per output in `spec.outputs` order, or a
+`{output name: value}` dict (any order; missing or unknown names are an error). The engine is *maximize-canonical*: it
 applies `spec.output_signs()` internally so the surrogate always sees a
 "bigger-is-better" space — you never pre-negate a `MINIMIZE` output. `History.outputs`
 is `(n, n_outputs)` in the same order.
@@ -161,6 +168,10 @@ explicitly if you need it pinned.
   promise; **Provisional** may change on any release; **Private** has no promise.
 - Soft-deprecated aliases (`ObjectiveSpec`, `objectives=`, `_safe_fit`,
   `_ensure_grid`) are kept at least one minor version after a replacement ships.
+- **`Experiment.run` changed from a tensor to a design dict.** An experiment whose
+  `run` is annotated `(x: torch.Tensor)` is still adapted automatically, with a
+  one-time `FutureWarning`; that shim will be removed in a future minor version.
+  Unannotated tensor code can't be detected — wrap it in `TensorExperiment`.
 - Breaking changes to Stable names happen only on a minor-version bump and are
   called out in the changelog.
 

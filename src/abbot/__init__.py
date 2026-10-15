@@ -7,7 +7,15 @@ Model/Posterior layer, the BO/US loop primitives, async/batch, and
 serialization). If it drifts into "framework", stop.
 """
 
-from abbot.experiment import ManualExperiment, SyntheticExperiment
+from abbot.experiment import (
+    Experiment,
+    ManualExperiment,
+    PosteriorSampler,
+    Supervisor,
+    SyntheticExperiment,
+    TensorExperiment,
+    Verdict,
+)
 from abbot.goal import (
     BandIntersection,
     FunctionGoal,
@@ -68,6 +76,7 @@ __all__ = [
     "DataStore",
     "EnsembleConstructor",
     "EnumeratedDomain",
+    "Experiment",
     "FunctionGoal",
     "Goal",
     "History",
@@ -82,14 +91,18 @@ __all__ = [
     "ParetoBO",
     "PercentileSet",
     "Policy",
+    "PosteriorSampler",
     "ProblemSpec",
     "Record",
     "SimpleBO",
     "SingleTaskGPConstructor",
     "StructuredDomain",
+    "Supervisor",
     "SyntheticExperiment",
+    "TensorExperiment",
     "TopK",
     "UncertaintySampling",
+    "Verdict",
     "Wishlist",
     "__version__",
     "default_constructor",

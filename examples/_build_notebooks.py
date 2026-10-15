@@ -76,7 +76,8 @@ spec.variable_names
 `SyntheticExperiment` is a seeded, smooth virtual lab — it stands in for a real
 bench measurement so the notebook is self-contained. In practice you'd pass a
 `ManualExperiment` (a human enters the measured value) or any object with a
-`run(candidate) -> value` method.
+`run(design) -> value` method, where `design` is a `{variable name: value}` dict
+like `{"temp": 54.2, "conc": 0.31}`.
 """),
     code("""
 experiment = SyntheticExperiment(spec, seed=1)
@@ -255,8 +256,8 @@ we want the posterior over `theta` to sit inside the band `[4, 6]`.
 """),
     code("""
 class ToyExperiment:
-    def run(self, candidate):
-        return candidate.reshape(-1) * 10.0   # observation centered at theta* = 10*x
+    def run(self, design):                    # design = {"x": 0.42}
+        return torch.tensor([design["x"] * 10.0])   # observation centered at theta* = 10*x
 
 class ToyPosterior(PosteriorSampler):
     def sample(self, observation, n=512):
@@ -348,9 +349,8 @@ spec = ProblemSpec(
 
 class TargetExperiment:
     # a(x), b(x) both pass through the [0.4,0.6] box near x=0.5
-    def run(self, candidate):
-        x = candidate.reshape(-1)
-        return torch.cat([x, x])
+    def run(self, design):
+        return {"a": design["x"], "b": design["x"]}   # outputs by name
 
 goal = goals_from_spec(spec)              # Wishlist built from the target box
 policy = BAXPolicy(goal, strategy="MeanBAX", n_candidates=200)

@@ -44,9 +44,9 @@ def test_minimize_recovers_minimum_with_raw_outputs():
     torch.manual_seed(0)
     minimizer = 0.3
 
-    def responder(candidate: torch.Tensor) -> torch.Tensor:
+    def responder(design: dict) -> float:
         # raw physical cost: a positive parabola with its floor at `minimizer`
-        return (candidate.reshape(-1) - minimizer) ** 2 + 0.5
+        return (design["temp"] - minimizer) ** 2 + 0.5
 
     spec = ProblemSpec(
         domain=[ContinuousDomain(name="temp", lower=0.0, upper=1.0)],
@@ -85,9 +85,9 @@ def _biobjective_spec() -> ProblemSpec:
 def test_pareto_bo_returns_non_dominated_set():
     torch.manual_seed(0)
 
-    def responder(candidate: torch.Tensor) -> torch.Tensor:
-        x = candidate.reshape(-1)
-        return torch.cat([x, 1.0 - x])  # (f1, f2)
+    def responder(design: dict) -> list[float]:
+        x = design["x"]
+        return [x, 1.0 - x]  # (f1, f2)
 
     spec = _biobjective_spec()
     result = run_campaign(
@@ -121,9 +121,9 @@ def test_pareto_bo_mixed_directions():
     """
     torch.manual_seed(0)
 
-    def responder(candidate: torch.Tensor) -> torch.Tensor:
-        x = candidate.reshape(-1)
-        return torch.cat([x, x])  # (f1 to maximize, cost to minimize)
+    def responder(design: dict) -> dict:
+        x = design["x"]
+        return {"cost": x, "f1": x}  # outputs by name; order doesn't matter
 
     spec = ProblemSpec(
         domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
@@ -208,10 +208,10 @@ def test_mixed_objective_and_observe_output():
     torch.manual_seed(0)
     opt = 0.3
 
-    def responder(candidate):
-        x = candidate.reshape(-1)
+    def responder(design):
+        x = design["temp"]
         # col0 = objective (peak at 0.3); col1 = an observed-only feature
-        return torch.cat([-((x - opt) ** 2), x * 2.0])
+        return [-((x - opt) ** 2), x * 2.0]
 
     spec = ProblemSpec(
         domain=[ContinuousDomain(name="temp", lower=0.0, upper=1.0)],

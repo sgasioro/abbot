@@ -22,8 +22,8 @@ from abbot.session import Campaign
 class _ToyExperiment:
     """design x in [0,1] -> observation centered at theta* = 10*x (1-D theta)."""
 
-    def run(self, candidate: torch.Tensor) -> torch.Tensor:
-        return candidate.reshape(-1) * 10.0  # the 'observation' is the latent mean
+    def run(self, design: dict) -> torch.Tensor:
+        return torch.tensor([design["x"] * 10.0])  # the 'observation' is the latent mean
 
 
 class _ToyPosterior(PosteriorSampler):
@@ -49,7 +49,7 @@ def _spec():
 def test_sbi_evaluate_returns_f_and_theta():
     spec = _spec()
     ev = sbi_evaluate(_ToyPosterior(), BoxMembershipReducer("indicator", beta=5.0), spec, n_samples=256)
-    obs = _ToyExperiment().run(torch.tensor([0.5]))
+    obs = _ToyExperiment().run({"x": 0.5})
     out = ev(obs)
     assert isinstance(out, tuple)
     f, theta = out

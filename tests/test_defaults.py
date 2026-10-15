@@ -151,8 +151,8 @@ def test_campaign_explicit_policy_still_wins():
 class _Peak:
     """Max at x=0.3 on [0, 1]."""
 
-    def run(self, candidate: torch.Tensor) -> torch.Tensor:
-        return -((candidate.reshape(-1) - 0.3) ** 2)
+    def run(self, design: dict) -> float:
+        return -((design["x"] - 0.3) ** 2)
 
 
 def _peak_spec() -> ProblemSpec:

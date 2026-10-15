@@ -33,7 +33,7 @@ def test_manual_mode_requires_no_experiment():
 
 
 def test_auto_run_stops_at_max_steps():
-    exp = ManualExperiment(responder=lambda c: -((c.reshape(-1) - 0.3) ** 2))
+    exp = ManualExperiment(responder=lambda d: -((d["x"] - 0.3) ** 2))
     ctrl = RunController(_campaign(), experiment=exp, evaluate=lambda o: o, max_steps=6)
     assert ctrl.can_auto is True
     ctrl.run()
@@ -42,7 +42,7 @@ def test_auto_run_stops_at_max_steps():
 
 
 def test_should_continue_gate_pauses():
-    exp = ManualExperiment(responder=lambda c: -((c.reshape(-1) - 0.3) ** 2))
+    exp = ManualExperiment(responder=lambda d: -((d["x"] - 0.3) ** 2))
     ctrl = RunController(_campaign(), experiment=exp, evaluate=lambda o: o, max_steps=100)
     # Gate allows exactly 3 steps then pauses.
     budget = {"n": 3}
@@ -61,7 +61,7 @@ def test_should_continue_gate_pauses():
 def test_tick_surface_drives_auto_run():
     """The timer-driven surface the UI uses: start() + tick() + is_running, with
     the controller owning status (no parallel 'running' flag)."""
-    exp = ManualExperiment(responder=lambda c: -((c.reshape(-1) - 0.3) ** 2))
+    exp = ManualExperiment(responder=lambda d: -((d["x"] - 0.3) ** 2))
     ctrl = RunController(_campaign(), experiment=exp, evaluate=lambda o: o, max_steps=4)
     assert ctrl.is_running is False
     assert ctrl.tick() is False  # not started -> no-op
@@ -78,7 +78,7 @@ def test_tick_surface_drives_auto_run():
 
 
 def test_tick_respects_pause():
-    exp = ManualExperiment(responder=lambda c: -((c.reshape(-1) - 0.3) ** 2))
+    exp = ManualExperiment(responder=lambda d: -((d["x"] - 0.3) ** 2))
     ctrl = RunController(_campaign(), experiment=exp, evaluate=lambda o: o, max_steps=100)
     ctrl.start()
     ctrl.tick()

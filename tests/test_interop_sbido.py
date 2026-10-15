@@ -15,7 +15,7 @@ import torch
 
 sbido_lg = pytest.importorskip("sbido.testing.linear_gaussian")
 
-from abbot.experiment import Experiment, PosteriorSampler
+from abbot.experiment import Experiment, PosteriorSampler, TensorExperiment
 from abbot.interop.sbido import conforms, spec_from_sbido
 from abbot.model import SingleTaskGPConstructor
 from abbot.policy import SimpleBO
@@ -29,7 +29,8 @@ pytestmark = pytest.mark.slow  # real-sbido integration + GP fits
 def test_sbido_classes_conform_to_abbot_protocols():
     exp = sbido_lg.LinearGaussianExperiment(sigma_obs=0.1)
     post = sbido_lg.AnalyticalGaussianPosterior(sigma_prior=5.0, sigma_obs=0.1)
-    assert conforms(exp, Experiment), "sbido Experiment must satisfy abbot.Experiment"
+    # sbido's run takes a tensor; TensorExperiment adapts it to the design-dict contract.
+    assert conforms(TensorExperiment(exp), Experiment)
     assert conforms(post, PosteriorSampler), "sbido posterior must satisfy abbot.PosteriorSampler"
 
 
@@ -70,7 +71,7 @@ def test_real_sbido_sbi_loop_on_abbot_core():
     c = Campaign(spec, SimpleBO(), SingleTaskGPConstructor(bounds=spec.bounds_tensor()))
     c.seed(torch.tensor([[0.05], [0.5], [0.95]], dtype=torch.double))
     for _ in range(12):
-        c.step(exp, ev)
+        c.step(TensorExperiment(exp), ev)
 
     assert all(r.aux is not None for r in c.history.records)  # theta cached
     best_x = float(c.history.records[c.recommend()[0]].candidate)
@@ -115,7 +116,7 @@ def test_bax_on_sbido_analytic_benchmark_concentrates_on_target():
     # Seed from the policy's own grid so fits and proposals share the candidate set.
     grid = policy.candidate_grid(spec)
     c.seed(grid[torch.randperm(grid.shape[0])[:6]])
-    exp = _AnalyticExperiment()
+    exp = TensorExperiment(_AnalyticExperiment())  # benchmark map is vectorized
     for _ in range(20):
         c.step(exp, lambda obs: obs)
 

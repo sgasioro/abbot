@@ -33,7 +33,7 @@ def test_readme_quickstart_recovers_optimum():
     for _ in range(8):
         x = campaign.suggest(1)[0]
         assert set(x) == {"temp"}
-        campaign.ingest(torch.tensor([run_in_lab(x["temp"])]))
+        campaign.ingest({"yield": run_in_lab(x["temp"])})
 
     best = campaign.result().best
     assert abs(float(best.candidate) - 55.0) < 8.0

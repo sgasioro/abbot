@@ -18,14 +18,14 @@ the caller chooses how to react.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import torch
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
-from abbot.experiment import Experiment, Supervisor, Verdict
+from abbot.experiment import Experiment, Supervisor, Verdict, as_design_experiment
 from abbot.history import DataStore, History, Record
 from abbot.model import ModelConstructor, default_constructor
 from abbot.policy import Policy, default_policy
@@ -90,15 +90,19 @@ def check_uq_pairing(policy: Policy, model_constructor: ModelConstructor) -> Non
 def split_eval(result: object, spec: ProblemSpec) -> tuple[torch.Tensor, object | None]:
     """Normalize an ``evaluate`` return into ``(raw_outputs, aux)``.
 
-    Accepts a bare tensor (aux=None) or an ``(outputs, aux)`` tuple. Validates the
-    number of OUTPUT columns against the spec so a wrong-width return fails here
-    with a clear message instead of crashing downstream.
+    Accepts a bare tensor / sequence / ``{output name: value}`` dict (aux=None) or
+    an ``(outputs, aux)`` tuple. Validates the OUTPUT columns against the spec so a
+    wrong-width or misnamed return fails here with a clear message instead of
+    crashing downstream.
     """
     if isinstance(result, tuple):
         outputs, aux = result
     else:
         outputs, aux = result, None
-    outputs = torch.as_tensor(outputs).reshape(-1).double()
+    if isinstance(outputs, Mapping):
+        outputs = _outputs_from_dict(outputs, spec)
+    # dtype up front: python floats would otherwise round-trip through float32.
+    outputs = torch.as_tensor(outputs, dtype=torch.double).reshape(-1)
     if outputs.shape[0] != spec.n_outputs:
         raise ValueError(
             f"evaluate() returned {outputs.shape[0]} value(s) but the spec declares "
@@ -106,6 +110,19 @@ def split_eval(result: object, spec: ProblemSpec) -> tuple[torch.Tensor, object 
             "spec.outputs order."
         )
     return outputs, aux
+
+
+def _outputs_from_dict(outputs: Mapping, spec: ProblemSpec) -> list[float]:
+    """Order a ``{output name: value}`` dict into ``spec.outputs`` order."""
+    names = spec.output_names
+    missing = [n for n in names if n not in outputs]
+    extra = [k for k in outputs if k not in names]
+    if missing or extra:
+        raise ValueError(
+            f"outputs dict keys {sorted(outputs)} don't match the spec's outputs "
+            f"{names} (missing {missing}, unexpected {extra})."
+        )
+    return [float(outputs[n]) for n in names]
 
 
 def canonical_Y(history: History, spec: ProblemSpec) -> torch.Tensor:
@@ -459,7 +476,7 @@ class Campaign:
                 logger.warning("%s", self.halted)
                 return self.state()
         try:
-            observation = experiment.run(x)
+            observation = as_design_experiment(experiment).run(self._to_dict(x))
         except Exception as exc:
             logger.exception("experiment.run failed at %s", self._to_dict(x))
             return self._record_run_error(x, retry_of, attempt, exc)
@@ -471,6 +488,11 @@ class Campaign:
     ) -> CampaignState:
         """Persist a failed run as a faulted record, then retry or halt."""
         error = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, (AttributeError, TypeError)) and "'dict'" in str(exc):
+            error += (
+                " (Experiment.run receives a {name: value} design dict; wrap a "
+                "tensor-based experiment in abbot.TensorExperiment.)"
+            )
         record = Record(
             candidate=x, observation=None, fault=True, retry_of=retry_of, error=error
         )
@@ -494,8 +516,8 @@ class Campaign:
 
     def record(
         self,
-        x: torch.Tensor,
-        y: torch.Tensor,
+        x: torch.Tensor | Mapping[str, float],
+        y: torch.Tensor | Mapping[str, float],
         *,
         observation: object | None = None,
         aux: object | None = None,
@@ -505,8 +527,9 @@ class Campaign:
 
         For external evaluators (an Xopt/gest generator, a live batch the caller
         measured itself) that chose the point rather than taking it from
-        ``suggest``. ``x`` is one design ``(d,)``, ``y`` the RAW outputs ``(m,)`` in
-        ``spec.outputs`` order; ``aux`` is the optional cached payload (SBI theta
+        ``suggest``. ``x`` is one design (a ``(d,)`` tensor or a ``{variable name:
+        value}`` dict), ``y`` the RAW outputs (``(m,)`` in ``spec.outputs`` order,
+        or a ``{output name: value}`` dict); ``aux`` is the optional cached payload (SBI theta
         samples); ``output_var`` the optional per-output noise variance ``(m,)``.
         Runs the supervisor, persists, queues a retry if flagged, and fires
         ``on_step`` hooks — identical to ``ingest``, only the candidate is supplied
@@ -515,6 +538,8 @@ class Campaign:
         Distinct from ``load_history`` (which bulk-imports prior data WITHOUT the
         supervisor/hooks). Returns the resulting :class:`CampaignState`.
         """
+        if isinstance(x, Mapping):
+            x = [float(x[n]) for n in self.spec.variable_names]
         xt = torch.as_tensor(x, dtype=torch.double).reshape(-1)
         self._pending = [(xt, None, 0)]
         result = (y, aux) if aux is not None else y

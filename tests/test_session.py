@@ -103,7 +103,7 @@ def test_step_cycle_parity_and_persistence(tmp_path):
     torch.manual_seed(0)
     spec = _scalar_spec()
     opt = 0.3
-    exp = ManualExperiment(responder=lambda cand: -((cand.reshape(-1) - opt) ** 2))
+    exp = ManualExperiment(responder=lambda d: -((d["x"] - opt) ** 2))
 
     c = _make_campaign(spec, store=DataStore(tmp_path))
     c.seed(torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double))
@@ -125,7 +125,7 @@ def test_state_round_trips_to_json():
     c = _make_campaign(spec)
     c.seed(torch.tensor([[0.2], [0.8]], dtype=torch.double))
     c.step(
-        ManualExperiment(responder=lambda cand: -(cand.reshape(-1) ** 2)),
+        ManualExperiment(responder=lambda d: -(d["x"] ** 2)),
         lambda obs: obs,
     )
     state = c.state()
@@ -145,8 +145,8 @@ def test_on_step_hook_fires():
 
     c = _make_campaign(spec, on_step=hook)
     c.seed(torch.tensor([[0.2], [0.8]], dtype=torch.double))
-    c.step(ManualExperiment(responder=lambda cand: -(cand.reshape(-1) ** 2)), lambda obs: obs)
-    c.step(ManualExperiment(responder=lambda cand: -(cand.reshape(-1) ** 2)), lambda obs: obs)
+    c.step(ManualExperiment(responder=lambda d: -(d["x"] ** 2)), lambda obs: obs)
+    c.step(ManualExperiment(responder=lambda d: -(d["x"] ** 2)), lambda obs: obs)
     assert seen == [1, 2]
 
 

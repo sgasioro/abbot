@@ -26,10 +26,10 @@ class _Flaky:
 
     def __init__(self, n_failures: int) -> None:
         self.n_failures = n_failures
-        self.calls: list[torch.Tensor] = []
+        self.calls: list[dict] = []
 
-    def run(self, candidate: torch.Tensor) -> torch.Tensor:
-        self.calls.append(candidate.clone())
+    def run(self, design: dict) -> torch.Tensor:
+        self.calls.append(dict(design))
         if len(self.calls) <= self.n_failures:
             raise TimeoutError("serial port timed out")
         return torch.tensor([1.0])
@@ -56,7 +56,7 @@ def test_transient_run_error_is_recorded_and_retried():
     assert "retrying" in c.last_warning
 
     c.step(exp, _identity)  # the retry runs the same candidate
-    assert torch.equal(exp.calls[0], exp.calls[1])
+    assert exp.calls[0] == exp.calls[1]
     ok = c.history.records[1]
     assert not ok.fault and ok.retry_of == 0 and ok.error is None
     assert len(c.history.clean) == 1

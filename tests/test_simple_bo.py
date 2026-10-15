@@ -19,8 +19,8 @@ _OPT = 0.3
 
 
 class _NegQuadratic(Experiment):
-    def run(self, candidate: torch.Tensor) -> torch.Tensor:
-        return -(candidate - _OPT) ** 2
+    def run(self, design: dict) -> torch.Tensor:
+        return torch.tensor([-((design["x"] - _OPT) ** 2)])
 
 
 def _evaluate(obs: torch.Tensor) -> torch.Tensor:

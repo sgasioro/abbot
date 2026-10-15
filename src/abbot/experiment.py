@@ -12,17 +12,82 @@ it. This is the headless-first property — the loop never knows which it is.
 
 from __future__ import annotations
 
+import typing
+import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import torch
 
+# A design as the loop hands it out: {variable name: value}, in spec.variable_names
+# order. The same shape ``Campaign.suggest`` returns.
+Design = Mapping[str, float]
+
 
 @runtime_checkable
 class Experiment(Protocol):
-    """Evaluate one candidate. Async-friendly (may block on slow hardware)."""
+    """Run one design and return what was measured. May block (slow hardware).
 
-    def run(self, candidate: torch.Tensor) -> Any: ...
+    ``design`` is ``{variable name: value}`` in ``spec.variable_names`` order — the
+    same dict ``Campaign.suggest`` returns. Return either the outputs directly (a
+    tensor / sequence / float in ``spec.outputs`` order, or a ``{output name:
+    value}`` dict) or a raw observation (a spectrum, an image, ...) that the
+    ``evaluate`` callable reduces to outputs.
+
+    An experiment written against vectors (a vectorized simulator, sbido) can be
+    wrapped in :class:`TensorExperiment`.
+    """
+
+    def run(self, design: Design) -> Any: ...
+
+
+class TensorExperiment:
+    """Adapt a vector-input experiment (``run(x: Tensor)``) to the design-dict
+    contract. ``x`` is the ``(d,)`` double tensor in ``spec.variable_names`` order.
+    """
+
+    def __init__(self, experiment: Any) -> None:
+        self.experiment = experiment
+
+    def run(self, design: Design) -> Any:
+        x = torch.tensor(list(design.values()), dtype=torch.double)
+        return self.experiment.run(x)
+
+
+_warned_tensor_classes: set[type] = set()
+
+
+def _takes_tensor(experiment: Any) -> bool:
+    """True if ``experiment.run`` annotates its argument as ``torch.Tensor``."""
+    try:
+        hints = typing.get_type_hints(experiment.run)
+    except (NameError, TypeError, AttributeError):  # unresolvable -> current contract
+        return False
+    hints.pop("return", None)
+    return bool(hints) and next(iter(hints.values())) is torch.Tensor
+
+
+def as_design_experiment(experiment: Any) -> Any:
+    """Return ``experiment`` ready to be called with a design dict.
+
+    Deprecated path: an experiment whose ``run`` is annotated ``(x: torch.Tensor)``
+    (the pre-0.2 contract) is wrapped in :class:`TensorExperiment` with a one-time
+    ``FutureWarning``. Wrap it explicitly to silence the warning.
+    """
+    if isinstance(experiment, TensorExperiment) or not _takes_tensor(experiment):
+        return experiment
+    cls = type(experiment)
+    if cls not in _warned_tensor_classes:
+        _warned_tensor_classes.add(cls)
+        warnings.warn(
+            f"{cls.__name__}.run takes a tensor; Experiment.run now receives a "
+            "{name: value} design dict. Adapting it automatically for now — wrap it "
+            "in abbot.TensorExperiment(...) or switch run() to the dict.",
+            FutureWarning,
+            stacklevel=3,
+        )
+    return TensorExperiment(experiment)
 
 
 @runtime_checkable
@@ -62,7 +127,9 @@ class ManualExperiment:
     By default it prompts on stdin, but a ``responder`` callable can be injected
     (so the same flow is headless-testable, and so a web frontend or an agent can
     supply the measurement instead of a terminal). The responder receives the
-    proposed candidate tensor and returns the measured output(s).
+    design dict and returns the measured output(s).
+    ``variable_names`` is accepted for backward compatibility and ignored (the
+    design dict carries the names).
     """
 
     def __init__(
@@ -75,16 +142,16 @@ class ManualExperiment:
         self.variable_names = variable_names
         self.output_names = output_names or ["value"]
 
-    def run(self, candidate: torch.Tensor) -> torch.Tensor:
+    def run(self, design: Design) -> Any:
         if self.responder is not None:
-            out = self.responder(candidate)
-            return out if isinstance(out, torch.Tensor) else torch.as_tensor(out)
-        return self._prompt(candidate)
+            out = self.responder(design)
+            if isinstance(out, (torch.Tensor, Mapping)):
+                return out
+            return torch.as_tensor(out, dtype=torch.double)
+        return self._prompt(design)
 
-    def _prompt(self, candidate: torch.Tensor) -> torch.Tensor:  # pragma: no cover
-        vals = candidate.reshape(-1).tolist()
-        names = self.variable_names or [f"x{i}" for i in range(len(vals))]
-        setting = ", ".join(f"{n}={v:.4g}" for n, v in zip(names, vals))
+    def _prompt(self, design: Design) -> torch.Tensor:  # pragma: no cover
+        setting = ", ".join(f"{n}={v:.4g}" for n, v in design.items())
         print(f"\nRun the experiment at: {setting}")
         measured = []
         for name in self.output_names:
@@ -129,8 +196,8 @@ class SyntheticExperiment:
         self._centers = torch.rand(m, d, generator=g, dtype=torch.double)
         self._widths = 0.15 + 0.25 * torch.rand(m, d, generator=g, dtype=torch.double)
 
-    def run(self, candidate: torch.Tensor) -> torch.Tensor:
-        x = candidate.reshape(-1).double()
+    def run(self, design: Design) -> torch.Tensor:
+        x = torch.tensor(list(design.values()), dtype=torch.double)
         span = (self._hi - self._lo).clamp(min=1e-9)
         xn = ((x - self._lo) / span).clamp(0.0, 1.0)  # normalized to [0, 1]^d
         # Gaussian bump per objective -> smooth value in (0, 100].

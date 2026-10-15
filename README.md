@@ -19,7 +19,6 @@ It unifies the method that is currently reimplemented across several SLAC repos
 ## Quickstart
 
 ```python
-import torch
 from abbot import (
     ProblemSpec, OutputSpec, ContinuousDomain,
     Campaign, default_initial_designs,
@@ -40,7 +39,7 @@ campaign.seed(default_initial_designs(spec))
 for _ in range(8):
     x = campaign.suggest(1)[0]                 # e.g. {"temp": 54.2}
     measured_yield = run_in_lab(x["temp"])     # your measurement here
-    campaign.ingest(torch.tensor([measured_yield]))
+    campaign.ingest({"yield": measured_yield})
 
 # 4. Hand over the recommended design.
 best = campaign.result().best                  # a Record; best.candidate is the setting
@@ -53,7 +52,9 @@ model_constructor)` to choose your own. A few variations:
 
 - **Programmatic experiment** — if measurements come from code (an instrument
   driver, a simulator), hand over the whole loop: `run_campaign(spec, experiment,
-  n_shots=8)`, where `experiment` is any object with `run(candidate) -> outputs`.
+  n_shots=8)`, where `experiment` is any object with `run(design) -> outputs`.
+  `design` is the same `{"temp": 54.2}` dict `suggest` gives you; return the
+  outputs as a `{"yield": ...}` dict (or a list in `spec.outputs` order).
 - **Multi-objective** — give the spec two+ directional outputs; the same calls
   pick `ParetoBO`, and `result().recommended` is the Pareto set.
 - **Find a region, not an optimum (BAX)** — mark outputs `direction="OBSERVE"`, pick

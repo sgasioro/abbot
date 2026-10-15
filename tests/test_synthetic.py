@@ -24,14 +24,14 @@ def test_output_width_matches_objectives():
     for m in (1, 2, 3):
         spec = _spec(m=m, d=2)
         exp = SyntheticExperiment(spec, seed=0)
-        out = exp.run(torch.tensor([0.3, 0.7], dtype=torch.double))
+        out = exp.run({"x0": 0.3, "x1": 0.7})
         assert out.shape == (m,)
         assert torch.all(out > 0) and torch.all(out <= 100.0 + 1e-6)
 
 
 def test_deterministic_and_noise_repeats():
     spec = _spec(m=1, d=2)
-    x = torch.tensor([0.4, 0.6], dtype=torch.double)
+    x = {"x0": 0.4, "x1": 0.6}
     # No noise -> identical across experiments with the same seed.
     a = SyntheticExperiment(spec, seed=1).run(x)
     b = SyntheticExperiment(spec, seed=1).run(x)
@@ -43,7 +43,7 @@ def test_deterministic_and_noise_repeats():
 
 def test_different_seeds_differ():
     spec = _spec(m=1, d=2)
-    x = torch.tensor([0.2, 0.8], dtype=torch.double)
+    x = {"x0": 0.2, "x1": 0.8}
     assert not torch.allclose(
         SyntheticExperiment(spec, seed=1).run(x), SyntheticExperiment(spec, seed=2).run(x)
     )

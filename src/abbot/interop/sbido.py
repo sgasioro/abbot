@@ -16,10 +16,11 @@ Two bridges:
   - ``conforms`` — a runtime check that a sbido object satisfies an abbot protocol
     (used by the conformance test to catch drift at the boundary, not mid-run).
 
-sbido's ``Experiment`` returns a TypedDict ``Observation`` ({"obs", "meta"}); its
-``PosteriorSampler.sample(observation, n)`` already matches abbot's shape, so both
-are used directly — the ``evaluate`` seam (see ``abbot.sbi.sbi_evaluate``) consumes
-them unchanged.
+sbido's ``Experiment.run`` takes a design TENSOR ``xi`` (abbot's ``run`` takes a
+``{name: value}`` dict), so wrap it: ``abbot.TensorExperiment(sbido_experiment)``.
+It returns a TypedDict ``Observation`` ({"obs", "meta"}); its
+``PosteriorSampler.sample(observation, n)`` already matches abbot's shape, so the
+``evaluate`` seam (see ``abbot.sbi.sbi_evaluate``) consumes both unchanged.
 """
 
 from __future__ import annotations

@@ -32,14 +32,14 @@ def test_lab_bo_continuous_via_manual_experiment(tmp_path):
     torch.manual_seed(0)
     opt = 0.7
 
-    def responder(candidate: torch.Tensor) -> torch.Tensor:
-        return -(candidate.reshape(-1) - opt) ** 2
+    def responder(design: dict) -> float:
+        return -((design["temp"] - opt) ** 2)
 
     spec = ProblemSpec(
         domain=[ContinuousDomain(name="temp", lower=0.0, upper=1.0)],
         objectives=[ObjectiveSpec(name="yield", direction="MAXIMIZE")],
     )
-    experiment = ManualExperiment(responder=responder, variable_names=["temp"])
+    experiment = ManualExperiment(responder=responder)
     seeds = torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double)
 
     result = run_campaign(
@@ -67,8 +67,8 @@ def test_lab_bo_enumerated_discrete():
     torch.manual_seed(0)
     best_choice = 4.0
 
-    def responder(candidate: torch.Tensor) -> torch.Tensor:
-        return -(candidate.reshape(-1) - best_choice) ** 2
+    def responder(design: dict) -> float:
+        return -((design["catalyst"] - best_choice) ** 2)
 
     spec = ProblemSpec(
         domain=[EnumeratedDomain(name="catalyst", values=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0])],
@@ -111,8 +111,8 @@ def test_sbi_aux_payload_persisted_and_resumed(tmp_path):
         objectives=[ObjectiveSpec(name="F", direction="MAXIMIZE")],
     )
 
-    def responder(candidate: torch.Tensor) -> torch.Tensor:
-        return -(candidate.reshape(-1) - 0.4) ** 2
+    def responder(design: dict) -> float:
+        return -((design["x"] - 0.4) ** 2)
 
     kw = {
         "experiment": ManualExperiment(responder=responder),
