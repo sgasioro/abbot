@@ -435,7 +435,7 @@ class BAXPolicy:
         # Grid indices measured or pending at the last suggest, plus its picks.
         # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
-        self.switched: bool = False  # last suggest fell back to the explore strategy
+        self.switched: bool = False  # last suggest left MeanBAX (SwitchBAX -> InfoBAX, MeanBAX -> US)
         # Optional ``noise_at(X) -> (N, m)`` measurement-noise variance (raw units) at
         # candidates, for InfoBAX; default: the model's own observation noise.
         self.noise_at = noise_at
