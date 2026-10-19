@@ -19,7 +19,7 @@ without a deprecation period.
 | Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec` |
 | Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `fail`, `cancel`, `outstanding`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `scored_history`, `pending_count`, `add_hook`), `Candidate`, `CampaignResult`, `CampaignState` |
 | Training targets | `Campaign(..., targets=)` / `Targets` (`(history, spec) -> Y` or `(Y, Yvar)`), `apply_targets` |
-| Blocking driver | `run_campaign(spec, experiment, *, n_shots, ...)`, `drive(campaign, experiment, evaluate, *, n_total, on_persistent_fault)`, `PersistentFaultError` |
+| Blocking driver | `run_campaign(spec, experiment, *, n_shots, ...)`, `drive(campaign, experiment, evaluate, *, n_total, on_persistent_fault, should_continue)` (the one blocking loop; `run_campaign` and the UI `RunController` run on it), `PersistentFaultError` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |

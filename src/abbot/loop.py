@@ -55,14 +55,22 @@ def drive(
     experiment: Experiment,
     evaluate: Callable[[object], object],
     *,
-    n_total: int,
+    n_total: int | None = None,
     on_persistent_fault: str = "halt",
+    should_continue: Callable[[], bool] | None = None,
 ) -> Campaign:
-    """Step ``campaign`` until its history holds ``n_total`` records.
+    """Step ``campaign`` until its history holds ``n_total`` records — the one
+    blocking loop, for a campaign you built yourself (``run_campaign`` and the UI's
+    ``RunController`` both run on it).
 
     The budget is a total, not "this many more": a rerun after a halt or a crash
     finishes the remainder instead of spending the whole budget again, and every
-    record counts against it — seeds, retries and failed runs alike.
+    record counts against it — seeds, retries and failed runs alike. ``None`` runs
+    until a halt or the gate stops it.
+
+    ``should_continue`` is checked before each step; returning False stops the loop
+    early (a UI's pause/stop). Read why it stopped off the campaign: ``halted``, or
+    ``len(history)`` against the budget.
 
     On a persistent fault (the supervisor halted, or a run kept failing),
     ``on_persistent_fault="halt"`` raises :class:`PersistentFaultError` (the store
@@ -74,15 +82,19 @@ def drive(
         raise ValueError(
             f"on_persistent_fault must be 'halt' or 'continue', got {on_persistent_fault!r}"
         )
-    while len(campaign.history) < n_total:
+    while n_total is None or len(campaign.history) < n_total:
+        if should_continue is not None and not should_continue():
+            break
         before = len(campaign.history)
         campaign.step(experiment, evaluate)
         if not campaign.halted:
             continue
         if on_persistent_fault == "halt" or len(campaign.history) == before:
+            done = len(campaign.history)
+            of = f" of {n_total}" if n_total is not None else ""
             raise PersistentFaultError(
-                f"{campaign.halted}\n{len(campaign.history)} of {n_total} shots "
-                "completed. Fix the cause and rerun to resume."
+                f"{campaign.halted}\n{done}{of} shots completed. Fix the cause and "
+                "rerun to resume."
             )
         logger.warning("Persistent fault (%s); continuing as configured.", campaign.halted)
         campaign.halted = None
