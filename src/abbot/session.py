@@ -239,7 +239,7 @@ def apply_targets(targets: Targets, history: History, spec: ProblemSpec) -> Hist
 
     For objectives defined after the fact: re-weighting a scalarization mid-run,
     a recalibrated analysis of stored raw observations, a score that sharpens over
-    the campaign (see :class:`abbot.sbi.Rescore`). Faulted records pass through
+    the campaign (see :class:`abbot.composite.Rescore`). Faulted records pass through
     unchanged; the stored history is not modified.
     """
     clean = [r for r in history.records if not r.fault]
@@ -673,7 +673,7 @@ class Campaign:
         measured itself) that hand back a design rather than an id. ``x`` is one
         design (a ``(d,)`` tensor or a ``{variable name: value}`` dict), ``y`` the
         RAW outputs (``(m,)`` in ``spec.outputs`` order, or a ``{output name:
-        value}`` dict); ``aux`` is the optional cached payload (SBI theta samples);
+        value}`` dict); ``aux`` is the optional cached payload (see :mod:`abbot.composite`);
         ``output_var`` the optional per-output noise variance ``(m,)``. If ``x``
         exactly equals an outstanding candidate, that candidate is closed (the
         oldest, if several match); otherwise the design is recorded as new.

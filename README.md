@@ -81,12 +81,12 @@ src/abbot/
   loop.py         # run_campaign / drive — thin blocking drivers over a Campaign
   analysis.py     # live-analysis built-ins (convergence, hypervolume, recommended_set)
   history.py      # Record{candidate, observation, outputs, aux, fault} + History + DataStore
-  experiment.py   # Experiment / PosteriorSampler / Supervisor protocols, Verdict, ManualExperiment
+  experiment.py   # Experiment / Supervisor protocols, Verdict, ManualExperiment
   config.py       # name -> class registries
   goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
                   #   FunctionGoal (arbitrary fn(f, X) -> indices — nn-bax-style flexibility)
-  reduce.py       # ObjectiveReducer + BoxMembershipReducer (composite SBI, M2)
-  sbi.py          # sbi_evaluate (F, theta) seam; rescore; Rescore targets; TrainedPosterior
+  composite.py    # composite objectives: composite_evaluate, Rescore (targets hook),
+                  #   ObjectiveReducer + BoxMembershipReducer
   supervision.py  # per-shot detectors + stall / drift / consecutive-fault monitors
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
@@ -94,21 +94,26 @@ src/abbot/
     app.py        # single-dashboard: Define / Run / Progress; `python -m abbot.ui`
   interop/
     xopt.py       # gest VOCS <-> spec + CorePolicyGenerator (runs under Xopt) [F3]
+    sbi.py        # SBI as a composite objective: PosteriorSampler, sbi_evaluate,
+                  #   TrainedPosterior [sbi]
 ```
 
-### Composite-SBI (M2)
-Each observation → posterior samples over θ → a scalar objective F via an
-`ObjectiveReducer` (`BoxMembershipReducer` ports sbido's `selection_score`); the
-GP sees `(xi, F)` and the θ samples are cached on `Record.aux` so an annealed
-reducer can `rescore` without re-sampling. `sbi_evaluate(sampler, reducer, spec)`
-builds the loop's `evaluate` callback. For an objective that changes during the
-run, `Campaign(..., targets=Rescore(reducer, schedule))` re-scores every clean
-shot's cached θ at the current schedule step (e.g. an annealed indicator), and the
-model, the policy and the hand-over all see the re-scored values — so any policy
-(`SimpleBO`, BAX, ...) can anneal. `targets=` itself is general: any
-`(history, spec) -> outputs` function redefines what the surrogate trains on.
-`TrainedPosterior` wraps a loaded `sbi` posterior (`abbot[sbi]`) with the
-application's observation preprocessing. sbido is a thin application on top: its
+### Composite objectives and SBI (M2)
+A measurement is often richer than the number being optimized — a spectrum,
+replicate measurements, posterior samples. `composite_evaluate(analysis, reducer,
+spec)` maps each observation to a payload (`analysis`), reduces it to the outputs
+the surrogate sees (an `ObjectiveReducer`), and caches the payload on
+`Record.aux`. For an objective that changes during the run,
+`Campaign(..., targets=Rescore(reducer, schedule))` re-scores every clean shot's
+cached payload at the current schedule step (a score that sharpens, a tolerance
+that tightens), and the model, the policy and the hand-over all see the re-scored
+values — so any policy (`SimpleBO`, BAX, ...) can anneal. `targets=` itself is
+general: any `(history, spec) -> outputs` function redefines what the surrogate
+trains on. `BoxMembershipReducer` scores samples against `spec.boxes` (sbido's
+`selection_score`). Simulation-based inference is the case where the analysis
+draws posterior samples over θ: `abbot.interop.sbi` has `sbi_evaluate(sampler,
+reducer, spec)` and `TrainedPosterior`, which wraps a loaded `sbi` posterior
+(`abbot[sbi]`) with the application's observation preprocessing. sbido is a thin application on top: its
 loop is a `Campaign`, and its targets, scores and theta-distribution goals plug
 into these seams.
 
@@ -226,7 +231,7 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   session API, with a type-polymorphic variable editor *(done; FastAPI+React
   split and `optimize_acqf_mixed` are follow-ons)*.
 - **M2** — composite-SBI app: `BoxMembershipReducer` + `sbi_evaluate` + aux
-  caching + the lazy `interop/sbido.py` adapter, validated on sbido's analytic
+  caching + a lazy `interop/sbido.py` adapter (since removed), validated on sbido's analytic
   posterior *(done)*. Follow-on: install `sbi` + reproduce sbido's mat_finder
   benchmark (regret-parity) on the abbot core.
 - **F1** — goal-BAX layer so sbido's BAX designers run on abbot (retires the
@@ -257,12 +262,11 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
     `(outputs, aux)` caching, resume, denoised `recommend`), so sbido's
     `measure_and_optimize` is replaced by `Campaign`, not moved. Genuinely new
     to abbot: concrete supervisor monitors (stall / drift / consecutive-fault /
-    `any_of`), a config fingerprint that refuses a mismatched resume, the SBIdO
-    designer as a policy over a user-supplied reducer, and the
+    `any_of`), a config fingerprint that refuses a mismatched resume, a `targets=` hook
+    with `Rescore` (SBIdO becomes `SimpleBO` + a re-scoring hook), and the
     trained-`sbi`-posterior sampler (`abbot[sbi]`). Stays in sbido: its scores and theta-distribution goals, the
     mat_finder simulator and beamtime experiment, trained posteriors,
-    benchmarks, configs, paper runs. The `interop/sbido.py` adapter then moves
-    to sbido's side.
+    benchmarks, configs, paper runs. The `interop/sbido.py` adapter is removed.
   - Agent setup: an MCP server over `Campaign`, then a setup copilot that writes
     the spec / goal. The UI stays the run console and the human-in-the-loop
     entry point.

@@ -2,8 +2,8 @@
 
 import torch
 
+from abbot.composite import BoxMembershipReducer, boxes_to_tensors
 from abbot.problem import Box, ContinuousDomain, ObjectiveSpec, ProblemSpec
-from abbot.reduce import BoxMembershipReducer, boxes_to_tensors
 
 
 def _spec(boxes):

@@ -2,7 +2,7 @@
 
 These are the seams the lab-experiment orchestration layer plugs into — one of the two
 genuinely-novel surfaces abbot owns on top of botorch (the other is the
-composite-SBI objective + aux layer).
+composite objective + aux layer, :mod:`abbot.composite`).
 
 ``Experiment`` is deliberately a plain callable contract: a GUI action, an HTTP
 reactor call, a simulator, or (later) an agent driving an instrument all satisfy
@@ -52,17 +52,6 @@ class TensorExperiment:
     def run(self, design: Design) -> Any:
         x = torch.tensor(list(design.values()), dtype=self.dtype)
         return self.experiment.run(x)
-
-
-@runtime_checkable
-class PosteriorSampler(Protocol):
-    """Optional (SBI): map an observation to posterior samples over theta.
-
-    Returns (n_samples, d_theta). The composite-SBI app caches these on the
-    Record ``aux`` payload so a re-scorable reducer avoids re-sampling.
-    """
-
-    def sample(self, observation: Any, n: int) -> torch.Tensor: ...
 
 
 @dataclass

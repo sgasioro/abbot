@@ -17,7 +17,7 @@ from abbot import (
     TrainedPosterior,
     sbi_evaluate,
 )
-from abbot.reduce import BoxMembershipReducer
+from abbot.composite import BoxMembershipReducer
 
 
 def _spec(lo: float = 0.4) -> ProblemSpec:
@@ -75,7 +75,7 @@ def test_rescore_refuses_records_without_cached_theta():
     spec = _spec()
     c = Campaign(spec, SimpleBO(), targets=Rescore(BoxMembershipReducer()))
     c.record({"x": 0.2}, [0.0])
-    with pytest.raises(ValueError, match="cached posterior samples"):
+    with pytest.raises(ValueError, match="cached payload"):
         c.scored_history()
 
 
@@ -123,3 +123,4 @@ def test_mismatch_with_no_saved_steps_just_starts_over(tmp_path):
     Campaign(_spec(), store=store)  # crashed before its first shot
     c = Campaign(_spec(lo=0.3), store=store)
     assert len(c.history) == 0
+

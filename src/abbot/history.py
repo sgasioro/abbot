@@ -1,8 +1,8 @@
 """Run history and a resumable DataStore.
 
 Each ``Record`` carries an optional opaque ``aux`` payload
-(e.g. cached theta posterior samples) so an annealed/re-scorable reducer re-runs
-without re-sampling. The ``aux`` payload is the one piece that is NOT trivially
+(a spectrum, replicate measurements, posterior samples) so a re-scoring reducer
+(:class:`abbot.composite.Rescore`) runs without re-measuring. The ``aux`` payload is the one piece that is NOT trivially
 JSON-serializable; keeping run state round-trippable with no live-object
 references is the constraint that serves frontend + resume + agents at once
 (see plan open-question #1 for the heavy-aux cap/drop policy, deferred).

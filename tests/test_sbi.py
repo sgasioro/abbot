@@ -1,4 +1,4 @@
-"""Composite-SBI wiring: sbi_evaluate + aux caching + rescore, driving a Campaign.
+"""Composite-SBI wiring: sbi_evaluate + aux caching + Rescore, driving a Campaign.
 
 Self-contained (no sbido/sbi): a toy analytic posterior stands in for the learned
 one. The mechanism — observation -> posterior samples -> reduce -> (F, theta),
@@ -8,12 +8,11 @@ theta cached on aux, loop fits GP over (xi, F) — is identical to the real case
 import pytest
 import torch
 
-from abbot.experiment import PosteriorSampler
+from abbot.composite import BoxMembershipReducer, Rescore
+from abbot.interop.sbi import PosteriorSampler, sbi_evaluate
 from abbot.model import SingleTaskGPConstructor
 from abbot.policy import SimpleBO
 from abbot.problem import Box, ContinuousDomain, ObjectiveSpec, ProblemSpec
-from abbot.reduce import BoxMembershipReducer
-from abbot.sbi import rescore, sbi_evaluate
 
 pytestmark = pytest.mark.slow  # Campaign GP fits
 from abbot.session import Campaign
@@ -88,9 +87,10 @@ def test_rescore_uses_cached_theta_without_resampling():
     for _ in range(3):
         c.step(exp, ev)
     # Re-reduce with a different beta (annealing) off cached theta.
-    sharp = rescore(c.history, reducer, spec, beta=100.0)
-    soft = rescore(c.history, reducer, spec, beta=1.0)
-    assert len(sharp) == len(c.history) == len(soft)
-    assert all(s is not None for s in sharp)
+    def scores(beta):
+        return Rescore(reducer, lambda t: {"beta": beta})(c.history, spec).reshape(-1).tolist()
+
+    sharp, soft = scores(100.0), scores(1.0)
+    assert len(sharp) == len(c.history.clean) == len(soft)
     # The record whose theta is most inside the box scores highest under both.
     assert sharp.index(max(sharp)) == soft.index(max(soft))

@@ -242,9 +242,8 @@ import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
     ProblemSpec, ContinuousDomain, OutputSpec, Box,
-    Campaign, BoxMembershipReducer, sbi_evaluate,
+    Campaign, BoxMembershipReducer, PosteriorSampler, Rescore, sbi_evaluate,
 )
-from abbot.experiment import PosteriorSampler
 torch.manual_seed(0)
 """),
     md("""
@@ -291,11 +290,17 @@ best = campaign.history.records[rec[0]]
 print("recommended x:", round(float(best.candidate), 3), "(theta* lands in [4,6] near x=0.5)")
 print("cached theta samples per record (aux):", campaign.history.records[0].aux.shape)
 """),
-    md("### Re-scoring from cached posteriors\nBecause `theta` is cached, we can re-reduce with a sharper annealing `beta` without re-running the (expensive) inference."),
+    md("""
+### Re-scoring from cached posteriors
+Because `theta` is cached, the objective can be re-reduced — here with a sharper
+`beta` — without re-running the (expensive) inference. `Rescore(reducer, schedule)`
+does this; passed as `Campaign(spec, targets=Rescore(...))` it re-scores every
+clean shot at each step, so the model, the proposals and the hand-over follow an
+annealed objective.
+"""),
     code("""
-from abbot.sbi import rescore
-sharp = rescore(campaign.history, reducer, spec, beta=50.0)
-print("re-scored F (sharper beta), first 5:", [round(v, 3) for v in sharp[:5]])
+sharp = Rescore(reducer, lambda t: {"beta": 50.0})(campaign.history, spec)
+print("re-scored F (sharper beta), first 5:", [round(v, 3) for v in sharp.reshape(-1)[:5].tolist()])
 """),
     md("""
 **What this showed:** the objective is a functional of an inferred posterior, not a

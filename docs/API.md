@@ -24,7 +24,7 @@ without a deprecation period.
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
-| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `PosteriorSampler`, `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment`, `TensorExperiment` |
+| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `SyntheticExperiment`, `TensorExperiment` |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
 | Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
@@ -34,10 +34,11 @@ Useful and tested, but the surface is still settling; pin a version if you depen
 on them.
 
 - **`abbot.interop.*`** — the gest-api / Xopt field map (`spec_to_vocs`,
-  `vocs_to_spec`, `CorePolicyGenerator`). These track external packages, which move.
-- **`abbot.reduce.*`** + **`abbot.sbi`** (`sbi_evaluate`, `rescore`, `Rescore`,
-  `TrainedPosterior`) — composite SBI; the reducer-mount API may grow when the
-  full `sbi`-backed benchmark lands.
+  `vocs_to_spec`, `CorePolicyGenerator`) and the SBI adapter (`PosteriorSampler`,
+  `sbi_evaluate`, `TrainedPosterior`). These track external packages, which move.
+- **`abbot.composite`** (`composite_evaluate`, `Rescore`, `ObjectiveReducer`,
+  `BoxMembershipReducer`) — composite objectives; the reducer-mount API may grow
+  (e.g. reducing inside the acquisition).
 - **`abbot.supervision`** — `per_shot`, `any_of`, `stall_monitor`, `drift_monitor`,
   `consecutive_fault_monitor`, `standard_supervisor`. The default thresholds were
   calibrated on sbido's scattering benchmark.

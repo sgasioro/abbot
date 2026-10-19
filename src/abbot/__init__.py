@@ -7,10 +7,15 @@ Model/Posterior layer, the BO/US loop primitives, async/batch, and
 serialization). If it drifts into "framework", stop.
 """
 
+from abbot.composite import (
+    BoxMembershipReducer,
+    ObjectiveReducer,
+    Rescore,
+    composite_evaluate,
+)
 from abbot.experiment import (
     Experiment,
     ManualExperiment,
-    PosteriorSampler,
     Supervisor,
     SyntheticExperiment,
     TensorExperiment,
@@ -27,6 +32,7 @@ from abbot.goal import (
     goals_from_spec,
 )
 from abbot.history import DataStore, History, Record, ResumeMismatchError
+from abbot.interop.sbi import PosteriorSampler, TrainedPosterior, sbi_evaluate
 from abbot.loop import drive, run_campaign
 from abbot.model import (
     EnsembleConstructor,
@@ -53,8 +59,6 @@ from abbot.problem import (
     ProblemSpec,
     StructuredDomain,
 )
-from abbot.reduce import BoxMembershipReducer, ObjectiveReducer
-from abbot.sbi import Rescore, TrainedPosterior, sbi_evaluate
 from abbot.session import (
     Campaign,
     CampaignResult,
@@ -116,6 +120,7 @@ __all__ = [
     "Wishlist",
     "__version__",
     "apply_targets",
+    "composite_evaluate",
     "default_constructor",
     "default_initial_designs",
     "default_policy",
