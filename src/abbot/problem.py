@@ -313,9 +313,11 @@ class ProblemSpec(BaseModel):
         inequality constraints on an all-continuous space the draw is uniform over
         the feasible polytope by hit-and-run (botorch's ``get_polytope_samples``),
         which cannot fail on a thin feasible region but is random rather than
-        low-discrepancy; with enumerated axes, Sobol draws are filtered by rejection. ``seed=None``
-        draws the seed from torch's global RNG, so ``torch.manual_seed``
-        reproduces it.
+        low-discrepancy. With constraints and enumerated axes, Sobol draws are
+        filtered by rejection.
+
+        ``seed=None`` draws the seed from torch's global RNG, so
+        ``torch.manual_seed`` reproduces it.
         """
         import torch
         from torch.quasirandom import SobolEngine
