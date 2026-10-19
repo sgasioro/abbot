@@ -86,7 +86,7 @@ src/abbot/
   goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
                   #   FunctionGoal (arbitrary fn(f, X) -> indices — nn-bax-style flexibility)
   composite.py    # composite objectives: composite_evaluate, Rescore (targets hook),
-                  #   ObjectiveReducer + BoxMembershipReducer
+                  #   the ObjectiveReducer protocol
   supervision.py  # per-shot detectors + stall / drift / consecutive-fault monitors
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
@@ -109,8 +109,7 @@ cached payload at the current schedule step (a score that sharpens, a tolerance
 that tightens), and the model, the policy and the hand-over all see the re-scored
 values — so any policy (`SimpleBO`, BAX, ...) can anneal. `targets=` itself is
 general: any `(history, spec) -> outputs` function redefines what the surrogate
-trains on. `BoxMembershipReducer` scores samples against `spec.boxes` (sbido's
-`selection_score`). Simulation-based inference is the case where the analysis
+trains on. The reducer is the application's own score. Simulation-based inference is the case where the analysis
 draws posterior samples over θ: `abbot.interop.sbi` has `sbi_evaluate(sampler,
 reducer, spec)` and `TrainedPosterior`, which wraps a loaded `sbi` posterior
 (`abbot[sbi]`) with the application's observation preprocessing. sbido is a thin application on top: its

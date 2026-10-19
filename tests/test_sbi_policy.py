@@ -17,7 +17,6 @@ from abbot import (
     TrainedPosterior,
     sbi_evaluate,
 )
-from abbot.composite import BoxMembershipReducer
 
 
 def _spec(lo: float = 0.4) -> ProblemSpec:
@@ -26,6 +25,12 @@ def _spec(lo: float = 0.4) -> ProblemSpec:
         outputs=[OutputSpec(name="F", direction="MAXIMIZE")],
         boxes=[Box(lower=[lo], upper=[0.6])],
     )
+
+
+def band_score(theta, spec, beta: float = 50.0):
+    """Soft fraction of theta samples inside the spec's first target box."""
+    lo, hi = (torch.tensor(v, dtype=theta.dtype) for v in (spec.boxes[0].lower, spec.boxes[0].upper))
+    return (torch.sigmoid(beta * (theta - lo)) * torch.sigmoid(beta * (hi - theta))).prod(-1).mean()
 
 
 class _Sampler:
@@ -54,10 +59,10 @@ def _schedule_log():
 def test_rescore_rescores_cached_theta_each_step():
     spec = _spec()
     calls, schedule = _schedule_log()
-    rescore = Rescore(BoxMembershipReducer("indicator"), schedule, n_initial=3)
+    rescore = Rescore(band_score, schedule, n_initial=3)
     c = Campaign(spec, SimpleBO(), targets=rescore)
     c.seed(torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double))
-    ev = sbi_evaluate(_Sampler(), BoxMembershipReducer("indicator"), spec, n_samples=64)
+    ev = sbi_evaluate(_Sampler(), band_score, spec, n_samples=64)
     for _ in range(5):
         c.step(_Exp(), ev)
     # one schedule call per proposal; the clock starts at 0 after the seeds
@@ -73,7 +78,7 @@ def test_rescore_rescores_cached_theta_each_step():
 
 def test_rescore_refuses_records_without_cached_theta():
     spec = _spec()
-    c = Campaign(spec, SimpleBO(), targets=Rescore(BoxMembershipReducer()))
+    c = Campaign(spec, SimpleBO(), targets=Rescore(band_score))
     c.record({"x": 0.2}, [0.0])
     with pytest.raises(ValueError, match="cached payload"):
         c.scored_history()

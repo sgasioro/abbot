@@ -242,7 +242,7 @@ import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
     ProblemSpec, ContinuousDomain, OutputSpec, Box,
-    Campaign, BoxMembershipReducer, PosteriorSampler, Rescore, sbi_evaluate,
+    Campaign, PosteriorSampler, Rescore, sbi_evaluate,
 )
 torch.manual_seed(0)
 """),
@@ -271,12 +271,16 @@ spec = ProblemSpec(
 """),
     md("""
 ### The composite objective
-`BoxMembershipReducer` scores each posterior as the (soft) fraction of `theta`
-samples inside the target band. `sbi_evaluate` chains sampler → reducer and returns
-`(F, theta)` so `theta` is cached as `aux`.
+The reducer is yours: it turns a posterior into the number you want to maximize.
+Here it is the (soft) fraction of `theta` samples inside the target band, with
+`beta` setting how sharp the band edges are. `sbi_evaluate` chains sampler →
+reducer and returns `(F, theta)` so `theta` is cached as `aux`.
 """),
     code("""
-reducer = BoxMembershipReducer("indicator", beta=5.0)
+def reducer(theta, spec, beta=5.0):
+    lo, hi = spec.boxes[0].lower[0], spec.boxes[0].upper[0]
+    return (torch.sigmoid(beta * (theta - lo)) * torch.sigmoid(beta * (hi - theta))).mean()
+
 evaluate = sbi_evaluate(ToyPosterior(), reducer, spec, n_samples=256)
 
 campaign = Campaign(spec)  # SimpleBO + single-output GP, inferred from the spec

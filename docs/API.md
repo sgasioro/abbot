@@ -36,8 +36,8 @@ on them.
 - **`abbot.interop.*`** — the gest-api / Xopt field map (`spec_to_vocs`,
   `vocs_to_spec`, `CorePolicyGenerator`) and the SBI adapter (`PosteriorSampler`,
   `sbi_evaluate`, `TrainedPosterior`). These track external packages, which move.
-- **`abbot.composite`** (`composite_evaluate`, `Rescore`, `ObjectiveReducer`,
-  `BoxMembershipReducer`) — composite objectives; the reducer-mount API may grow
+- **`abbot.composite`** (`composite_evaluate`, `Rescore`, `ObjectiveReducer`) —
+  composite objectives; the reducer-mount API may grow
   (e.g. reducing inside the acquisition).
 - **`abbot.supervision`** — `per_shot`, `any_of`, `stall_monitor`, `drift_monitor`,
   `consecutive_fault_monitor`, `standard_supervisor`. The default thresholds were

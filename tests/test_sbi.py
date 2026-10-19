@@ -8,7 +8,7 @@ theta cached on aux, loop fits GP over (xi, F) — is identical to the real case
 import pytest
 import torch
 
-from abbot.composite import BoxMembershipReducer, Rescore
+from abbot.composite import Rescore
 from abbot.interop.sbi import PosteriorSampler, sbi_evaluate
 from abbot.model import SingleTaskGPConstructor
 from abbot.policy import SimpleBO
@@ -16,6 +16,12 @@ from abbot.problem import Box, ContinuousDomain, ObjectiveSpec, ProblemSpec
 
 pytestmark = pytest.mark.slow  # Campaign GP fits
 from abbot.session import Campaign
+
+
+def band_score(theta, spec, beta: float = 5.0):
+    """Soft fraction of theta samples inside the spec's first target box."""
+    lo, hi = (torch.tensor(v, dtype=theta.dtype) for v in (spec.boxes[0].lower, spec.boxes[0].upper))
+    return (torch.sigmoid(beta * (theta - lo)) * torch.sigmoid(beta * (hi - theta))).prod(-1).mean()
 
 
 class _ToyExperiment:
@@ -47,7 +53,7 @@ def _spec():
 
 def test_sbi_evaluate_returns_f_and_theta():
     spec = _spec()
-    ev = sbi_evaluate(_ToyPosterior(), BoxMembershipReducer("indicator", beta=5.0), spec, n_samples=256)
+    ev = sbi_evaluate(_ToyPosterior(), band_score, spec, n_samples=256)
     obs = _ToyExperiment().run({"x": 0.5})
     out = ev(obs)
     assert isinstance(out, tuple)
@@ -60,7 +66,7 @@ def test_sbi_evaluate_returns_f_and_theta():
 def test_campaign_caches_theta_on_aux_and_finds_box():
     torch.manual_seed(0)
     spec = _spec()
-    reducer = BoxMembershipReducer("indicator", beta=5.0)
+    reducer = band_score
     ev = sbi_evaluate(_ToyPosterior(), reducer, spec, n_samples=256)
     c = Campaign(spec, SimpleBO(), SingleTaskGPConstructor(bounds=spec.bounds_tensor()))
     c.seed(torch.tensor([[0.05], [0.5], [0.95]], dtype=torch.double))
@@ -79,7 +85,7 @@ def test_campaign_caches_theta_on_aux_and_finds_box():
 def test_rescore_uses_cached_theta_without_resampling():
     torch.manual_seed(0)
     spec = _spec()
-    reducer = BoxMembershipReducer("indicator", beta=5.0)
+    reducer = band_score
     ev = sbi_evaluate(_ToyPosterior(), reducer, spec, n_samples=128)
     c = Campaign(spec, SimpleBO(), SingleTaskGPConstructor(bounds=spec.bounds_tensor()))
     c.seed(torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double))

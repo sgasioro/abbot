@@ -8,7 +8,6 @@ serialization). If it drifts into "framework", stop.
 """
 
 from abbot.composite import (
-    BoxMembershipReducer,
     ObjectiveReducer,
     Rescore,
     composite_evaluate,
@@ -76,7 +75,6 @@ __all__ = [
     "BAXPolicy",
     "BandIntersection",
     "Box",
-    "BoxMembershipReducer",
     "Campaign",
     "CampaignResult",
     "CampaignState",
