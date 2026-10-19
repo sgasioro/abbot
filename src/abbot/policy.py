@@ -89,6 +89,14 @@ def _pending_or_none(pending: torch.Tensor | None) -> torch.Tensor | None:
     return pending.double().reshape(pending.shape[0], -1)
 
 
+def _extend_pending(
+    pending: torch.Tensor | None, picks: list[torch.Tensor]
+) -> torch.Tensor | None:
+    """``pending`` plus this batch's earlier picks, ``(k, d)``, or None if both empty."""
+    parts = ([] if pending is None else [pending]) + [p.double().reshape(len(p), -1) for p in picks]
+    return torch.cat(parts) if parts else None
+
+
 def condition_on_pending(model: Model, pending: torch.Tensor | None) -> Model:
     """Kriging believer: condition ``model`` on ``pending`` designs at its own
     posterior mean.
@@ -308,6 +316,8 @@ class UncertaintySampling:
     All variance -> miscalibration is fatal, hence ``calibrated_variance``.
     Multi-output models are scalarized as the SUM of per-output posterior standard
     deviations (direction-agnostic, so no objective-sign handling is needed).
+    A batch of ``n`` is built greedily, conditioning on each pick at the model's
+    own mean (kriging believer) before the next.
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
@@ -327,13 +337,19 @@ class UncertaintySampling:
         from botorch.acquisition import PosteriorStandardDeviation
 
         # Pure exploration over ALL modeled outputs (direction-agnostic, incl.
-        # OBSERVE columns) — keyed on n_outputs, not objective count.
-        model = condition_on_pending(model, pending)
-        if spec.n_outputs == 1:
-            acq = PosteriorStandardDeviation(model)
-        else:
-            acq = _SumPosteriorStd(model)
-        return self.optimizer.optimize(acq, spec, n)
+        # OBSERVE columns) — keyed on n_outputs, not objective count. The std
+        # acquisition is single-point, so a batch is built greedily: each pick joins
+        # the pending set the model is conditioned on before the next.
+        pending = _pending_or_none(pending)
+        picks: list[torch.Tensor] = []
+        for _ in range(n):
+            cond = condition_on_pending(model, _extend_pending(pending, picks))
+            if spec.n_outputs == 1:
+                acq = PosteriorStandardDeviation(cond)
+            else:
+                acq = _SumPosteriorStd(cond)
+            picks.append(self.optimizer.optimize(acq, spec, 1))
+        return torch.cat(picks)
 
     def ingest(self, results) -> None:
         return None
@@ -401,7 +417,9 @@ class BAXPolicy:
 
     Discrete: the acquisition is a length-N vector over a Sobol candidate grid
     (built once from the spec), selection is argmax, and already-collected grid
-    indices are masked to ``-inf`` (prevent-requery). Continuous proposal
+    indices are masked to ``-inf`` (prevent-requery). A batch of ``n`` is built
+    greedily: each pick is added to the pending designs, which the model is
+    conditioned on at its own mean (kriging believer) before the next pick. Continuous proposal
     (pathwise / seeded-ascent) is a deferred extension point.
 
     Outputs are read in RAW units before the goal runs (the model is canonical;
@@ -435,7 +453,7 @@ class BAXPolicy:
         # Grid indices measured or pending at the last suggest, plus its picks.
         # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
-        self.switched: bool = False  # last suggest left MeanBAX (SwitchBAX -> InfoBAX, MeanBAX -> US)
+        self.switched: bool = False  # last suggest left MeanBAX for any pick (SwitchBAX -> InfoBAX, MeanBAX -> US)
         # Optional ``noise_at(X) -> (N, m)`` measurement-noise variance (raw units) at
         # candidates, for InfoBAX; default: the model's own observation noise.
         self.noise_at = noise_at
@@ -504,17 +522,26 @@ class BAXPolicy:
     ) -> torch.Tensor:
         grid = self.candidate_grid(spec)
         pending = _pending_or_none(pending)
-        # Prevent-requery: grid points already measured (any record) or in flight.
-        taken = [history.designs.double()] if len(history) else []
-        if pending is not None:
-            taken.append(pending)
-        self._collected = _grid_matches(grid, torch.cat(taken)) if taken else []
         self._out_scale = _output_scale(history)
-        acq = self._acquisition(spec, condition_on_pending(model, pending), grid)
-        acq = acq.clone()
-        acq[self._collected] = float("-inf")
-        picks = torch.topk(acq, k=min(n, acq.numel())).indices.tolist()
-        self._collected.extend(picks)
+        # A batch is built greedily (kriging believer): each pick joins the pending
+        # designs, the model is conditioned on them at its own mean, and the
+        # acquisition is recomputed before the next pick.
+        picks: list[int] = []
+        switched = False
+        for _ in range(min(n, grid.shape[0])):
+            inflight = _extend_pending(pending, [grid[picks]] if picks else [])
+            # Prevent-requery: grid points already measured (any record) or in flight.
+            taken = [history.designs.double()] if len(history) else []
+            if inflight is not None:
+                taken.append(inflight)
+            self._collected = _grid_matches(grid, torch.cat(taken)) if taken else []
+            acq = self._acquisition(spec, condition_on_pending(model, inflight), grid)
+            switched |= self.switched
+            acq = acq.clone()
+            acq[self._collected] = float("-inf")
+            picks.append(int(acq.argmax()))
+        self._collected.append(picks[-1])
+        self.switched = switched
         return grid[picks]
 
     def ingest(self, results) -> None:
