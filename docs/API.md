@@ -17,8 +17,9 @@ without a deprecation period.
 | Area | Public surface |
 | --- | --- |
 | Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec` |
-| Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `fail`, `cancel`, `outstanding`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `pending_count`, `add_hook`), `Candidate`, `CampaignResult`, `CampaignState` |
-| Blocking driver | `run_campaign(spec, experiment, *, n_shots, ...)` |
+| Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `fail`, `cancel`, `outstanding`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `scored_history`, `pending_count`, `add_hook`), `Candidate`, `CampaignResult`, `CampaignState` |
+| Training targets | `Campaign(..., targets=)` / `Targets` (`(history, spec) -> Y` or `(Y, Yvar)`), `apply_targets` |
+| Blocking driver | `run_campaign(spec, experiment, *, n_shots, ...)`, `drive(campaign, experiment, evaluate, *, n_total, on_persistent_fault)`, `PersistentFaultError` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
@@ -34,7 +35,7 @@ on them.
 
 - **`abbot.interop.*`** — the gest-api / Xopt field map (`spec_to_vocs`,
   `vocs_to_spec`, `CorePolicyGenerator`). These track external packages, which move.
-- **`abbot.reduce.*`** + **`abbot.sbi`** (`sbi_evaluate`, `rescore`, `RescoredBO`,
+- **`abbot.reduce.*`** + **`abbot.sbi`** (`sbi_evaluate`, `rescore`, `Rescore`,
   `TrainedPosterior`) — composite SBI; the reducer-mount API may grow when the
   full `sbi`-backed benchmark lands.
 - **`abbot.supervision`** — `per_shot`, `any_of`, `stall_monitor`, `drift_monitor`,
@@ -132,9 +133,9 @@ the old steps as valid history and records the new fingerprint.
 
 **Designs are named.** `Campaign.suggest` returns, and `Experiment.run` receives, a
 `{variable name: value}` dict in `spec.variable_names` order (`Campaign.record`
-accepts one too). An experiment written against vectors — a vectorized simulator,
-sbido — wraps in `TensorExperiment(exp)`, which hands `run` the `(d,)` double
-tensor in the same order.
+accepts one too). An experiment written against vectors — a vectorized simulator —
+wraps in `TensorExperiment(exp)`, which hands `run` the `(d,)` tensor in the same
+order (double, or `dtype=`).
 
 `evaluate` / `Experiment.run` / `Campaign.ingest` / `Campaign.record` all speak
 **raw physical units**: one value per output in `spec.outputs` order, or a
@@ -204,8 +205,11 @@ explicitly if you need it pinned.
   `Campaign.step` / `run_campaign`, the shot is persisted as a faulted `Record`
   (`fault=True`, `outputs=None`, `error="<Type>: <message>"`) and the same candidate
   is retried up to `max_retries` times (default 1); after that the campaign halts
-  and `run_campaign` raises `PersistentFaultError` ("fix the hardware and rerun to
-  resume"). Errors from `evaluate` propagate unchanged — they are analysis bugs,
+  and `run_campaign` raises `PersistentFaultError` ("fix the cause and rerun to
+  resume"; `on_persistent_fault="continue"` spends the rest of the budget instead).
+  The budget (`len(initial_designs) + n_shots`) is a total that every record
+  counts against, failures and retries included, so the rerun finishes the
+  remainder. Errors from `evaluate` propagate unchanged — they are analysis bugs,
   and re-running the experiment would not fix them.
 - **Pre-run check.** `Campaign(..., pre_run=check)` / `run_campaign(..., pre_run=)`
   calls `check(candidate_dict)` before each `step` runs the experiment. Return

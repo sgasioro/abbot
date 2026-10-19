@@ -27,7 +27,7 @@ from abbot.goal import (
     goals_from_spec,
 )
 from abbot.history import DataStore, History, Record, ResumeMismatchError
-from abbot.loop import run_campaign
+from abbot.loop import drive, run_campaign
 from abbot.model import (
     EnsembleConstructor,
     ModelConstructor,
@@ -54,12 +54,15 @@ from abbot.problem import (
     StructuredDomain,
 )
 from abbot.reduce import BoxMembershipReducer, ObjectiveReducer
-from abbot.sbi import RescoredBO, TrainedPosterior, sbi_evaluate
+from abbot.sbi import Rescore, TrainedPosterior, sbi_evaluate
 from abbot.session import (
     Campaign,
     CampaignResult,
     CampaignState,
     Candidate,
+    PersistentFaultError,
+    Targets,
+    apply_targets,
     default_initial_designs,
 )
 
@@ -92,17 +95,19 @@ __all__ = [
     "OutputSpec",
     "ParetoBO",
     "PercentileSet",
+    "PersistentFaultError",
     "Policy",
     "PosteriorSampler",
     "ProblemSpec",
     "Record",
-    "RescoredBO",
+    "Rescore",
     "ResumeMismatchError",
     "SimpleBO",
     "SingleTaskGPConstructor",
     "StructuredDomain",
     "Supervisor",
     "SyntheticExperiment",
+    "Targets",
     "TensorExperiment",
     "TopK",
     "TrainedPosterior",
@@ -110,9 +115,11 @@ __all__ = [
     "Verdict",
     "Wishlist",
     "__version__",
+    "apply_targets",
     "default_constructor",
     "default_initial_designs",
     "default_policy",
+    "drive",
     "goals_from_spec",
     "run_campaign",
     "sbi_evaluate",

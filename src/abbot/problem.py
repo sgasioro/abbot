@@ -109,7 +109,7 @@ ObjectiveSpec = OutputSpec
 
 
 class Box(BaseModel):
-    """An sbido-style target band in output/theta space.
+    """A target band (per-dimension lower/upper) in output or theta space.
 
     A list of boxes drives a BoxMembershipGoal (see goal.py). ``lower``/``upper``
     are per-dimension vectors of equal length.
@@ -306,13 +306,14 @@ class ProblemSpec(BaseModel):
         ]
 
     def sample_designs(self, n: int, *, seed: int | None = None):
-        """Draw ``n`` space-filling designs (scrambled Sobol) as an (n, d) tensor.
+        """Draw ``n`` designs as an (n, d) tensor.
 
-        Continuous axes span their bounds; enumerated axes land on their allowed
-        values. With inequality constraints on an all-continuous space the draw is
-        from the feasible polytope by hit-and-run (botorch's
-        ``get_polytope_samples``), which has no failure mode for thin regions;
-        with enumerated axes, constraints are met by rejection. ``seed=None``
+        Unconstrained, they are space-filling (scrambled Sobol): continuous axes
+        span their bounds, enumerated axes land on their allowed values. With
+        inequality constraints on an all-continuous space the draw is uniform over
+        the feasible polytope by hit-and-run (botorch's ``get_polytope_samples``),
+        which cannot fail on a thin feasible region but is random rather than
+        low-discrepancy; with enumerated axes, Sobol draws are filtered by rejection. ``seed=None``
         draws the seed from torch's global RNG, so ``torch.manual_seed``
         reproduces it.
         """

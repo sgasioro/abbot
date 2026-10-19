@@ -9,7 +9,7 @@ Ports multibax-sklearn's subset algorithms (``algorithms.py``) onto abbot: abbot
 has no sklearn scalers, so ``f`` arrives already in raw units (the ``BAXPolicy``
 converts the canonical-space model output before calling the goal, mirroring
 multibax's ``SubsetAlgorithm.unnormalize``). ``PercentileSet`` + ``Wishlist`` cover
-both sbido BAX designers.
+percentile and multi-band targets.
 
 Beyond the box/threshold builtins, ``FunctionGoal`` wraps an arbitrary
 ``fn(f, X) -> indices`` (abbot's analogue of nn-bax ``FunctionAlgorithm``), so any
@@ -172,7 +172,7 @@ def goals_from_spec(spec: ProblemSpec) -> Wishlist:
     """Build a ``Wishlist`` from a ``ProblemSpec``'s target boxes (OR over boxes).
 
     Each ``Box`` becomes one AND-across-outputs band; the Wishlist unions them —
-    the sbido multi-box OR target maps straight in. Requires ``spec.boxes``.
+    a multi-box OR target maps straight in. Requires ``spec.boxes``.
     """
     if not spec.boxes:
         raise ValueError("goals_from_spec requires ProblemSpec.boxes (target bands).")

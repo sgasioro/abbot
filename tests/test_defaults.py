@@ -175,8 +175,8 @@ def test_default_seeds_not_requeued_on_resume(tmp_path):
     torch.manual_seed(0)
     store = DataStore(tmp_path / "run")
     run_campaign(_peak_spec(), _Peak(), n_shots=2, store=store)
-    result = run_campaign(_peak_spec(), _Peak(), n_shots=2, store=store)
-    assert len(result.history) == 3 + 2 + 2
+    result = run_campaign(_peak_spec(), _Peak(), n_shots=4, store=store)
+    assert len(result.history) == 3 + 4
 
 
 def test_sample_designs_reaches_a_thin_feasible_region():
@@ -192,3 +192,28 @@ def test_sample_designs_reaches_a_thin_feasible_region():
     X = spec.sample_designs(8, seed=0)
     assert X.shape == (8, 2)
     assert (X.sum(dim=-1) >= 1.998 - 1e-9).all() and (X <= 1.0).all()
+
+
+def test_targets_hook_redefines_the_objective_after_the_fact():
+    """A non-SBI use of ``targets``: the stored outputs score one quantity, the
+    lab later decides another matters; the hand-over follows the new definition
+    without re-measuring."""
+    from abbot import Campaign, apply_targets
+
+    spec = _peak_spec()
+    measured = {0.1: (0.1, 0.9), 0.5: (0.5, 0.5), 0.9: (0.9, 0.1)}  # x -> (a, b)
+
+    def score_b(history, spec):
+        return torch.tensor([[r.observation[1]] for r in history.clean.records], dtype=torch.double)
+
+    stored, rescored = Campaign(spec), Campaign(spec, targets=score_b)
+    for c in (stored, rescored):
+        for x, (a, b) in measured.items():
+            c.record({"x": x}, [a], observation=(a, b))  # stored output: a
+    def best(c):
+        return float(c.history.records[c.recommend()[0]].candidate)
+
+    assert best(stored) == 0.9 and best(rescored) == 0.1
+    assert apply_targets(score_b, rescored.history, spec).clean.outputs.reshape(-1).tolist() == [
+        0.9, 0.5, 0.1,
+    ]

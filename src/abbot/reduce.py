@@ -10,11 +10,10 @@ two points:
              ``MCAcquisitionObjective`` / posterior transform (information-rich
              SBI; the Astudillo-Frazier composite-BO pattern). **Follow-on.**
 
-Basis: ``~/sbido/src/sbido/objectives.py::selection_score`` — ported verbatim in
-scoring so abbot's numbers match sbido's (the oracle and the optimizer objective
-are only comparable if they are literally the same rule). abbot reads target
-bands from ``ProblemSpec.boxes`` (``Box.lower``/``Box.upper`` lists) rather than
-sbido's ``(a, b)`` tensor tuples; ``boxes_to_tensors`` bridges the two.
+The scoring rule is sbido's ``selection_score``, kept identical (and tested
+against it) so an oracle and the optimizer objective can be the same rule. Target
+bands come from ``ProblemSpec.boxes`` (``Box.lower``/``Box.upper`` lists);
+``boxes_to_tensors`` turns them into ``(a, b)`` tensor pairs.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ class ObjectiveReducer(Protocol):
         ...
 
 
-# --- per-sample scoring (ported from sbido/objectives.py) ---------------------
+# --- per-sample scoring ------------------------------------------------------
 
 
 def _per_sample_score(
@@ -47,7 +46,7 @@ def _per_sample_score(
 ) -> torch.Tensor:
     """Per-sample score against one box. Distance mode (beta=None) or soft-indicator.
 
-    Verbatim from sbido ``objectives._per_sample_score`` so scores are identical.
+    Identical to sbido's ``objectives._per_sample_score``.
     """
     if beta is None:
         below = (a - theta).clamp(min=0)
@@ -63,7 +62,7 @@ def _or_score(
     boxes: list[tuple[torch.Tensor, torch.Tensor]],
     beta: float | None,
 ) -> torch.Tensor:
-    """Mean of the max per-sample score across all boxes (sbido ``or_score``)."""
+    """Mean of the max per-sample score across all boxes (an OR over boxes)."""
     per_box = []
     for a, b in boxes:
         scale = (b - a).clamp(min=1e-6)
@@ -79,7 +78,7 @@ SelectionObjective = Literal["indicator", "distance", "or_indicator", "or_distan
 def boxes_to_tensors(
     boxes: list[Box], dtype=None, device=None
 ) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """Turn abbot ``Box`` list into sbido-style ``(a, b)`` tensor tuples."""
+    """Turn a ``Box`` list into ``(a, b)`` lower/upper tensor pairs."""
     dt = dtype or torch.double
     return [
         (
@@ -96,12 +95,13 @@ def boxes_to_tensors(
 class BoxMembershipReducer:
     """Composite-SBI reducer: posterior samples over theta -> scalar F.
 
-    Mirrors ``sbido.objectives.selection_score``. ``objective``:
+    ``objective``:
       * ``"indicator"`` / ``"distance"`` — single-box scoring against ``boxes[0]``.
       * ``"or_indicator"`` / ``"or_distance"`` — OR scoring across all boxes.
     Note the different ranges: indicator is in [0, 1] (MAXIMIZE), distance is <= 0
     (MAXIMIZE toward 0). ``beta`` is the soft-indicator sharpness; a caller running
-    the sbido annealing schedule overrides it per step via ``beta=`` on the call.
+    an annealing schedule (see :class:`abbot.sbi.Rescore`) overrides it per step
+    via ``beta=`` on the call.
     """
 
     def __init__(

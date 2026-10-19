@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -193,7 +193,7 @@ def recommend(
     mapped back to ``history.records`` coordinates. Two input sources:
 
     - ``denoise=True`` with a fitted ``model`` scores the clean designs by the
-      posterior MEAN (the sbido denoising idea — avoids chasing a lucky noisy
+      posterior MEAN (avoids chasing a lucky noisy
       sample). Falls back to observed values when no model is given.
     - ``denoise=False`` (or no model) ranks the OBSERVED (noisy) values directly;
       this is also the loop's model-free fallback.
@@ -226,6 +226,44 @@ def observed_front(history: History, spec: ProblemSpec) -> list[int]:
     Kept as a named helper (the model-free fallback) and for backward compatibility.
     """
     return recommend(history, spec, model=None, denoise=False)
+
+
+# Re-derives the training targets from the record history (see ``apply_targets``):
+# RAW outputs ``(n_clean, n_outputs)`` for the clean records in order, or a
+# ``(Y, Yvar)`` tuple to also supply per-point noise variances.
+Targets = Callable[[History, ProblemSpec], "torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]"]
+
+
+def apply_targets(targets: Targets, history: History, spec: ProblemSpec) -> History:
+    """The history with every clean record's outputs replaced by ``targets``.
+
+    For objectives defined after the fact: re-weighting a scalarization mid-run,
+    a recalibrated analysis of stored raw observations, a score that sharpens over
+    the campaign (see :class:`abbot.sbi.Rescore`). Faulted records pass through
+    unchanged; the stored history is not modified.
+    """
+    clean = [r for r in history.records if not r.fault]
+    out = targets(history, spec)
+    Y, Yvar = out if isinstance(out, tuple) else (out, None)
+    Y = torch.as_tensor(Y, dtype=torch.double).reshape(len(clean), -1)
+    if Y.shape[-1] != spec.n_outputs:
+        raise ValueError(
+            f"targets returned {Y.shape[-1]} column(s) for a spec with "
+            f"{spec.n_outputs} output(s) {spec.output_names}."
+        )
+    if Yvar is not None:
+        Yvar = torch.as_tensor(Yvar, dtype=torch.double).reshape(Y.shape)
+    rows = iter(range(len(clean)))
+    records = []
+    for r in history.records:
+        if r.fault:
+            records.append(r)
+            continue
+        i = next(rows)
+        records.append(
+            replace(r, outputs=Y[i], output_var=None if Yvar is None else Yvar[i])
+        )
+    return History(records=records)
 
 
 def fit_model(
@@ -358,6 +396,7 @@ class Campaign:
         pre_run: PreRunCheck | None = None,
         fingerprint: dict | None = None,
         allow_resume_mismatch: bool = False,
+        targets: Targets | None = None,
     ) -> None:
         if policy is None:
             policy = default_policy(spec)
@@ -374,6 +413,10 @@ class Campaign:
         self.supervisor = supervisor
         self.max_retries = max_retries
         self.pre_run = pre_run
+        # Optional re-derivation of the training targets from the history; the
+        # surrogate, the policy and the hand-over all see ``scored_history()``.
+        self.targets = targets
+        self._scored: History | None = None
         self._hooks: list[StepHook] = []
         if on_step is not None:
             self._hooks.extend(on_step if isinstance(on_step, list) else [on_step])
@@ -430,6 +473,7 @@ class Campaign:
         """
         self._seed_queue.clear()
         self._model_valid = False  # history mutates -> cached fit is stale
+        self._scored = None
         for record in history.records:
             step = len(self.history)
             self.history.append(record)
@@ -598,6 +642,8 @@ class Campaign:
         if self.store is not None:
             self.store.save_step(step, record)
         self._inflight.pop(item.id, None)
+        self._model_valid = False
+        self._scored = None
         where = self._to_dict(x)
         if attempt < self.max_retries:
             self._retry_queue.append(
@@ -678,6 +724,7 @@ class Campaign:
 
         self._save_queue()
         self._model_valid = False  # history grew -> cached fit is stale
+        self._scored = None
         self._after_ingest()
         return self.state()
 
@@ -693,6 +740,19 @@ class Campaign:
     def result(self) -> CampaignResult:
         """A ``CampaignResult`` with the end-of-run recommendation."""
         return CampaignResult(history=self.history, recommended=self.recommend())
+
+    def scored_history(self) -> History:
+        """The history the surrogate, the policy and the hand-over see: the stored
+        one, or with each clean record's outputs re-derived by ``targets``.
+
+        Cached until the history next changes, so ``targets`` must depend on the
+        history (and spec) alone; anything else it reads must not change mid-run.
+        """
+        if self.targets is None:
+            return self.history
+        if self._scored is None:
+            self._scored = apply_targets(self.targets, self.history, self.spec)
+        return self._scored
 
     def current_model(self) -> Model | None:
         """The surrogate fitted on the current clean history, or ``None``.
@@ -771,16 +831,18 @@ class Campaign:
 
     def _policy_suggest(self, model, n: int, pending: list[torch.Tensor]) -> torch.Tensor:
         if not pending:
-            return self.policy.suggest(self.history, self.spec, model, n=n)
+            return self.policy.suggest(self.scored_history(), self.spec, model, n=n)
         X_pending = torch.stack([x.reshape(-1).double() for x in pending])
         if _accepts_pending(self.policy):
-            return self.policy.suggest(self.history, self.spec, model, n=n, pending=X_pending)
+            return self.policy.suggest(
+                self.scored_history(), self.spec, model, n=n, pending=X_pending
+            )
         logger.warning(
             "%s.suggest takes no pending= argument, so it can't see the %d design(s) "
             "in flight and may propose duplicates.",
             type(self.policy).__name__, len(pending),
         )
-        return self.policy.suggest(self.history, self.spec, model, n=n)
+        return self.policy.suggest(self.scored_history(), self.spec, model, n=n)
 
     def _random_draw(self, n: int) -> torch.Tensor:
         # Space-filling, and respects enumerated values + inequality constraints.
@@ -790,8 +852,10 @@ class Campaign:
         """Fit the surrogate on the current clean history (uncached), or None."""
         if not len(self.history.clean):
             return None
+        # Outside the try: a broken ``targets`` is a setup error, not a bad fit.
+        history = self.scored_history()
         try:
-            return fit_model(self.model_constructor, self.history, self.spec)
+            return fit_model(self.model_constructor, history, self.spec)
         except Exception:
             logger.exception("model fit failed.")
             return None
@@ -805,12 +869,12 @@ class Campaign:
         observed front as a fallback if the model-based pass yields nothing or errors.
         """
         try:
-            rec = recommend(self.history, self.spec, model, denoise=True)
+            rec = recommend(self.scored_history(), self.spec, model, denoise=True)
         except Exception:
             logger.exception("recommend failed; using the observed front.")
             rec = []
         if not rec:
-            rec = observed_front(self.history, self.spec)
+            rec = observed_front(self.scored_history(), self.spec)
         return rec
 
     def _after_ingest(self) -> None:

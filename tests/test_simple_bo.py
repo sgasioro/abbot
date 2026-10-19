@@ -70,9 +70,10 @@ def test_resume_from_store(tmp_path):
         "store": DataStore(tmp_path),
     }
     run_campaign(n_shots=4, **kw)
-    result = run_campaign(n_shots=3, **kw)
-    # Resume picks up the 7 prior records and adds 3 more.
-    assert len(result.history) == 7 + 3
+    # The budget is a total: resuming with a larger one picks up the 7 prior
+    # records and runs only the difference.
+    result = run_campaign(n_shots=6, **kw)
+    assert len(result.history) == 3 + 6
 
 
 def test_uq_pairing_guardrail():

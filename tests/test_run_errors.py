@@ -111,3 +111,39 @@ def test_evaluate_errors_propagate():
 
     with pytest.raises(ValueError, match="analysis bug"):
         c.step(_Flaky(n_failures=0), bad_evaluate)
+
+
+def test_run_campaign_budget_is_a_total_that_counts_failures(tmp_path):
+    store = DataStore(tmp_path / "run")
+    seeds = torch.tensor([[30.0], [50.0]], dtype=torch.double)
+    kw = {"initial_designs": seeds, "store": store, "n_shots": 2}
+    # Every run fails; "continue" spends the budget on retries and failures alike.
+    exp = _Flaky(n_failures=100)
+    result = run_campaign(_spec(), exp, on_persistent_fault="continue", **kw)
+    assert len(result.history) == 2 + 2
+    assert len(exp.calls) == 4
+    # Rerunning the same call finds the budget spent and runs nothing.
+    exp2 = _Flaky(n_failures=0)
+    assert len(run_campaign(_spec(), exp2, **kw).history) == 4
+    assert exp2.calls == []
+
+
+def test_halted_run_resumes_the_remainder(tmp_path):
+    store = DataStore(tmp_path / "run")
+    seeds = torch.tensor([[30.0], [50.0]], dtype=torch.double)
+    kw = {"initial_designs": seeds, "store": store, "n_shots": 2}
+    with pytest.raises(PersistentFaultError, match="2 of 4 shots"):
+        run_campaign(_spec(), _Flaky(n_failures=2), **kw)
+    exp = _Flaky(n_failures=0)
+    result = run_campaign(_spec(), exp, **kw)
+    assert len(result.history) == 4 and len(exp.calls) == 2
+
+
+def test_blocked_run_raises_even_when_continuing():
+    # A pre_run block records nothing; "continue" would retry it forever.
+    with pytest.raises(PersistentFaultError, match="too hot"):
+        run_campaign(
+            _spec(), _Flaky(n_failures=0), n_shots=3,
+            initial_designs=torch.tensor([[70.0]], dtype=torch.double),
+            pre_run=lambda d: "too hot", on_persistent_fault="continue",
+        )

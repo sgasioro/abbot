@@ -78,7 +78,7 @@ src/abbot/
   policy.py       # Policy (ask/tell) + SimpleBO, ParetoBO, UncertaintySampling, BAXPolicy; uq_requirement
   session.py      # Campaign — the step-based ask/tell session (suggest/ingest/step/state/
                   #   recommend), resume, on_step hook; shared engine helpers; CampaignResult
-  loop.py         # run_campaign(...) -> CampaignResult — thin blocking driver over a Campaign
+  loop.py         # run_campaign / drive — thin blocking drivers over a Campaign
   analysis.py     # live-analysis built-ins (convergence, hypervolume, recommended_set)
   history.py      # Record{candidate, observation, outputs, aux, fault} + History + DataStore
   experiment.py   # Experiment / PosteriorSampler / Supervisor protocols, Verdict, ManualExperiment
@@ -86,7 +86,7 @@ src/abbot/
   goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
                   #   FunctionGoal (arbitrary fn(f, X) -> indices — nn-bax-style flexibility)
   reduce.py       # ObjectiveReducer + BoxMembershipReducer (composite SBI, M2)
-  sbi.py          # sbi_evaluate (F, theta) seam; rescore; RescoredBO; TrainedPosterior [sbi]
+  sbi.py          # sbi_evaluate (F, theta) seam; rescore; Rescore targets; TrainedPosterior
   supervision.py  # per-shot detectors + stall / drift / consecutive-fault monitors
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
@@ -101,19 +101,23 @@ Each observation → posterior samples over θ → a scalar objective F via an
 `ObjectiveReducer` (`BoxMembershipReducer` ports sbido's `selection_score`); the
 GP sees `(xi, F)` and the θ samples are cached on `Record.aux` so an annealed
 reducer can `rescore` without re-sampling. `sbi_evaluate(sampler, reducer, spec)`
-builds the loop's `evaluate` callback. `RescoredBO(reducer, schedule)` is sbido's
-SBIdO designer made generic: it re-scores every clean shot's cached θ with the
-application's reducer at the current schedule step (e.g. an annealed indicator)
-and runs noisy log-EI on the result. `TrainedPosterior` wraps a trained `sbi`
-posterior (`abbot[sbi]`) with the application's observation preprocessing. sbido
-is a thin application on top: its loop is a `Campaign`, and its targets, scores and
-theta-distribution goals plug into these seams.
+builds the loop's `evaluate` callback. For an objective that changes during the
+run, `Campaign(..., targets=Rescore(reducer, schedule))` re-scores every clean
+shot's cached θ at the current schedule step (e.g. an annealed indicator), and the
+model, the policy and the hand-over all see the re-scored values — so any policy
+(`SimpleBO`, BAX, ...) can anneal. `targets=` itself is general: any
+`(history, spec) -> outputs` function redefines what the surrogate trains on.
+`TrainedPosterior` wraps a loaded `sbi` posterior (`abbot[sbi]`) with the
+application's observation preprocessing. sbido is a thin application on top: its
+loop is a `Campaign`, and its targets, scores and theta-distribution goals plug
+into these seams.
 
 ### Session API & frontend
 The optimization engine is exposed as a headless, step-based `Campaign`
 (`suggest` / `ingest` / `step` / `state` / `recommend`) — the same ask/tell surface
 a web UI, a notebook, or an agent drives. `run_campaign` is a thin blocking driver
-over it. Only a spec and an experiment are required — `run_campaign(spec, experiment)`
+over it (`drive(campaign, ...)` for a campaign you built yourself); its budget is a
+total, so rerunning the same call after a halt finishes the remainder. Only a spec and an experiment are required — `run_campaign(spec, experiment)`
 or `Campaign(spec)`; the policy, model, and space-filling seed designs default from
 the spec (`default_policy` / `default_constructor` / `default_initial_designs`), and
 each is an overridable keyword. The **NiceGUI** web client (`abbot[ui]`, `python -m abbot.ui`) is a thin

@@ -1,7 +1,6 @@
 """Run history and a resumable DataStore.
 
-Generalizes ``~/sbido/src/sbido/interfaces.py::History`` and the step-file resume
-in ``optimizer.py``. Each ``Record`` carries an optional opaque ``aux`` payload
+Each ``Record`` carries an optional opaque ``aux`` payload
 (e.g. cached theta posterior samples) so an annealed/re-scorable reducer re-runs
 without re-sampling. The ``aux`` payload is the one piece that is NOT trivially
 JSON-serializable; keeping run state round-trippable with no live-object
@@ -103,12 +102,20 @@ class ResumeMismatchError(Exception):
     """A store's saved fingerprint disagrees with the problem being resumed."""
 
 
+_MISSING = object()
+
+
 def _diff(old: Any, new: Any, path: str = "") -> list[tuple[str, Any, Any]]:
-    """Leaf-level differences between two JSON values, as (path, old, new)."""
+    """Leaf-level differences between two JSON values, as (path, old, new).
+
+    A key absent on one side shows up with ``_MISSING`` on that side.
+    """
     if isinstance(old, dict) and isinstance(new, dict):
         out = []
         for k in sorted(set(old) | set(new), key=str):
-            out += _diff(old.get(k), new.get(k), f"{path}.{k}" if path else str(k))
+            out += _diff(
+                old.get(k, _MISSING), new.get(k, _MISSING), f"{path}.{k}" if path else str(k)
+            )
         return out
     if isinstance(old, list) and isinstance(new, list) and len(old) == len(new):
         out = []
@@ -119,7 +126,7 @@ def _diff(old: Any, new: Any, path: str = "") -> list[tuple[str, Any, Any]]:
 
 
 class DataStore:
-    """Persist/resume a run as per-step files (sbido ``step_NNN.pt`` pattern).
+    """Persist/resume a run as per-step files (``steps/step_NNN.pt``).
 
     Minimal M1 implementation: ``torch.save`` each Record to
     ``<root>/steps/step_NNN.pt`` and reload them in order. A JSON sidecar for the
@@ -141,7 +148,9 @@ class DataStore:
 
         ``fingerprint`` is a JSON-able dict of whatever defines "the same problem"
         (a ``Campaign`` passes its spec plus any caller extras). The first call
-        writes it; later calls compare. A mismatch raises
+        writes it; later calls compare. Keys the saved fingerprint lacks (fields a
+        newer version added) are ignored, as is any mismatch while the store has no
+        steps yet. A mismatch raises
         :class:`ResumeMismatchError` naming the differing keys, unless
         ``allow_mismatch`` (then it logs, keeps the old steps as valid history,
         and records the new fingerprint). Loading a foreign run's steps into a
@@ -155,9 +164,15 @@ class DataStore:
         old = json.loads(self.fingerprint_path.read_text())
         if old == new:
             return
-        diffs = _diff(old, new)
         n = len(list(self.steps_dir.glob("step_*.pt"))) if self.steps_dir.exists() else 0
-        lines = "\n".join(f"  {k}: {a!r} -> {b!r}" for k, a, b in diffs)
+        # Keys the saved fingerprint never had (a field added by a newer version)
+        # can't distinguish the problems; nor can anything when no step was saved.
+        diffs = [d for d in _diff(old, new) if d[1] is not _MISSING]
+        if not diffs or n == 0:
+            self.fingerprint_path.write_text(json.dumps(new, indent=1))
+            return
+        show = lambda v: "<absent>" if v is _MISSING else repr(v)
+        lines = "\n".join(f"  {k}: {show(a)} -> {show(b)}" for k, a, b in diffs)
         if allow_mismatch:
             logger.warning(
                 "Resuming %s (%d steps) despite a different problem; existing steps "

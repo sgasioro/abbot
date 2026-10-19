@@ -149,7 +149,7 @@ def _condition(
 class SimpleBO:
     """Single-objective BO: noisy log-EI + a CandidateOptimizer.
 
-    Mirrors ``SBIdODesigner.step`` acquisition (qLogNoisyEI, X_baseline=history).
+    The acquisition is qLogNoisyEI with the clean history as ``X_baseline``.
     Always maximizes: the loop fits the model in maximize-canonical space (it
     applies ``spec.output_signs``), so a MINIMIZE objective is handled upstream and
     the caller never pre-negates. When the model has extra OBSERVE outputs, a
@@ -427,7 +427,7 @@ class BAXPolicy:
         self.n_posterior_samples = n_posterior_samples
         self.candidate_seed = candidate_seed
         self.uq_requirement: UQRequirement = _BAX_UQ[strategy]
-        # A caller-supplied candidate set (e.g. sbido's own design grid) replaces
+        # A caller-supplied candidate set (e.g. an application's own design grid) replaces
         # the Sobol grid; n_candidates / candidate_seed are then unused.
         self._grid: torch.Tensor | None = (
             None if candidates is None else candidates.double().reshape(len(candidates), -1)
@@ -624,7 +624,7 @@ def _grid_matches(grid: torch.Tensor, X: torch.Tensor) -> list[int]:
     """Indices of ``grid`` rows that equal some row of ``X``.
 
     Equal up to float32 round-off: callers that store designs in single precision
-    (sbido does) must still match the double grid point they came from.
+    must still match the double grid point they came from.
     """
     X = X.reshape(X.shape[0], -1).to(grid)
     close = torch.isclose(grid.unsqueeze(1), X.unsqueeze(0), rtol=1e-6, atol=1e-9)

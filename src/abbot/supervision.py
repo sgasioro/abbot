@@ -1,4 +1,4 @@
-"""Supervisors: per-shot fault detectors and trajectory monitors (from sbido).
+"""Supervisors: per-shot fault detectors and trajectory monitors.
 
 A :class:`~abbot.experiment.Supervisor` is called with the full ``History`` after
 every result and returns a :class:`~abbot.experiment.Verdict`: ``retry`` marks the
@@ -15,8 +15,8 @@ observation if it is numeric, else the record's outputs. Pass ``signal=`` to poi
 them at something else (e.g. ``lambda r: r.observation["obs"]``). Records without a
 signal (a run that raised, a result ingested with no observation) are skipped.
 
-The default thresholds were calibrated on sbido's scattering benchmark; treat them as
-starting points. Calibrate once, offline, on held-out faulted and clean runs — tuning
+The default thresholds were calibrated on one benchmark (sbido's small-angle
+scattering problem); treat them as starting points for your apparatus. Calibrate once, offline, on held-out faulted and clean runs — tuning
 a threshold on the run it is scored on reports a detection rate the lab can't get.
 """
 
