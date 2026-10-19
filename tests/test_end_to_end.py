@@ -132,9 +132,10 @@ def test_sbi_aux_payload_persisted_and_resumed(tmp_path):
         assert r.aux is not None
         assert r.aux.shape == (16, 2)
 
-    # And a resumed run sees them.
-    result = run_campaign(n_shots=2, **kw)
-    assert len(result.history) == 6 + 2
+    # Rerunning the same call finds the budget spent; a bigger one resumes onto it.
+    assert len(run_campaign(n_shots=3, **kw).history) == 6
+    result = run_campaign(n_shots=5, **kw)
+    assert len(result.history) == 3 + 5
     assert result.history.records[0].aux is not None
 
 

@@ -11,8 +11,7 @@ construction (correlated ``MultiTaskGP``/LCM, per-shot posterior variance via
 loop or the policy. NN surrogates are botorch ``EnsembleModel`` subclasses (see
 ``abbot.models.ensemble``), not a parallel interface.
 
-Basis: ``~/sbido/src/sbido/methods/sbido.py::SBIdODesigner.step`` GP build, and
-Xopt's ``ModelConstructor`` ABC.
+Modelled on Xopt's ``ModelConstructor`` ABC.
 """
 
 from __future__ import annotations
@@ -42,7 +41,7 @@ class ModelConstructor(Protocol):
     X:    (n, d) design inputs
     Y:    (n, m) observed outputs (m=1 for scalar objectives)
     Yvar: (n, m) optional observation-noise variances (-> train_Yvar). When None
-          the model infers the noise level (sbido's choice: F is genuinely noisy).
+          the model infers the noise level (e.g. a score from one noisy observation).
 
     ``provides_uq`` declares the UQ quality the built model's posterior supplies, so
     the loop can refuse a policy that needs more than the surrogate can give.
@@ -73,8 +72,8 @@ def _covar_module(kernel: Kernel, d: int):
 class SingleTaskGPConstructor:
     """Scalar / independent-output GP with input normalization and MLL fit.
 
-    Mirrors ``SBIdODesigner.step``: let the GP infer the noise level unless Yvar
-    is supplied, normalize inputs to the problem bounds. A GP posterior is a full
+    The GP infers the noise level unless Yvar is supplied, and inputs are
+    normalized to the problem bounds. A GP posterior is a full
     Gaussian, so it provides calibrated variance (the strongest UQ tier).
     """
 

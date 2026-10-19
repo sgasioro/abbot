@@ -2,8 +2,8 @@
 
 This is the "who triggers the step" layer the core deliberately omits. It drives a
 :class:`abbot.session.Campaign` either manually (the caller invokes ``suggest`` /
-``submit`` per step) or automatically (``run`` fires ``Campaign.step`` repeatedly
-until paused/stopped/halted). It contains NO optimization logic — only sequencing
+``submit`` per step) or automatically (``run`` hands the campaign to :func:`abbot.loop.drive`,
+the same blocking loop ``run_campaign`` uses, until paused/stopped/halted). It contains NO optimization logic — only sequencing
 and the controls (run / pause / step / stop) — so it is unit-testable without a
 browser and reused unchanged by the NiceGUI app.
 
@@ -18,7 +18,8 @@ from collections.abc import Callable
 from enum import Enum
 
 from abbot.experiment import Experiment
-from abbot.session import Campaign, CampaignState
+from abbot.loop import drive
+from abbot.session import Campaign, CampaignState, PersistentFaultError
 
 
 class RunMode(str, Enum):
@@ -95,15 +96,20 @@ class RunController:
         if not self.can_auto:
             raise RuntimeError("run() requires auto mode (experiment + evaluate).")
         self.status = RunStatus.RUNNING
-        while self.status == RunStatus.RUNNING:
-            if self.max_steps is not None and len(self.campaign.history) >= self.max_steps:
-                self.status = RunStatus.DONE
-                break
-            if should_continue is not None and not should_continue():
-                self.status = RunStatus.PAUSED
-                break
-            self.campaign.step(self.experiment, self.evaluate)
-            self._sync_status()
+        try:
+            # The shared blocking loop; a halt ends it as a status, not an error.
+            drive(
+                self.campaign,
+                self.experiment,
+                self.evaluate,
+                n_total=self.max_steps,
+                should_continue=should_continue,
+            )
+        except PersistentFaultError:
+            pass
+        self._sync_status()
+        if self.status == RunStatus.RUNNING:  # neither halted nor out of budget
+            self.status = RunStatus.PAUSED
         return self.campaign.state()
 
     # -- timer-driven auto mode: the controller owns run-state --

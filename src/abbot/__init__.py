@@ -7,10 +7,14 @@ Model/Posterior layer, the BO/US loop primitives, async/batch, and
 serialization). If it drifts into "framework", stop.
 """
 
+from abbot.composite import (
+    ObjectiveReducer,
+    Rescore,
+    composite_evaluate,
+)
 from abbot.experiment import (
     Experiment,
     ManualExperiment,
-    PosteriorSampler,
     Supervisor,
     SyntheticExperiment,
     TensorExperiment,
@@ -26,8 +30,9 @@ from abbot.goal import (
     Wishlist,
     goals_from_spec,
 )
-from abbot.history import DataStore, History, Record
-from abbot.loop import run_campaign
+from abbot.history import DataStore, History, Record, ResumeMismatchError
+from abbot.interop.sbi import PosteriorSampler, TrainedPosterior, sbi_evaluate
+from abbot.loop import drive, run_campaign
 from abbot.model import (
     EnsembleConstructor,
     ModelConstructor,
@@ -53,13 +58,14 @@ from abbot.problem import (
     ProblemSpec,
     StructuredDomain,
 )
-from abbot.reduce import BoxMembershipReducer, ObjectiveReducer
-from abbot.sbi import sbi_evaluate
 from abbot.session import (
     Campaign,
     CampaignResult,
     CampaignState,
     Candidate,
+    PersistentFaultError,
+    Targets,
+    apply_targets,
     default_initial_designs,
 )
 
@@ -69,7 +75,6 @@ __all__ = [
     "BAXPolicy",
     "BandIntersection",
     "Box",
-    "BoxMembershipReducer",
     "Campaign",
     "CampaignResult",
     "CampaignState",
@@ -92,24 +97,32 @@ __all__ = [
     "OutputSpec",
     "ParetoBO",
     "PercentileSet",
+    "PersistentFaultError",
     "Policy",
     "PosteriorSampler",
     "ProblemSpec",
     "Record",
+    "Rescore",
+    "ResumeMismatchError",
     "SimpleBO",
     "SingleTaskGPConstructor",
     "StructuredDomain",
     "Supervisor",
     "SyntheticExperiment",
+    "Targets",
     "TensorExperiment",
     "TopK",
+    "TrainedPosterior",
     "UncertaintySampling",
     "Verdict",
     "Wishlist",
     "__version__",
+    "apply_targets",
+    "composite_evaluate",
     "default_constructor",
     "default_initial_designs",
     "default_policy",
+    "drive",
     "goals_from_spec",
     "run_campaign",
     "sbi_evaluate",

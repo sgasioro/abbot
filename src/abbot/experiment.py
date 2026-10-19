@@ -1,9 +1,8 @@
 """Experiment-side protocols: how the world is probed and supervised.
 
-Basis: ``~/sbido/src/sbido/interfaces.py`` (verbatim where sensible). These are
-the seams the lab-experiment orchestration layer plugs into — one of the two
+These are the seams the lab-experiment orchestration layer plugs into — one of the two
 genuinely-novel surfaces abbot owns on top of botorch (the other is the
-composite-SBI objective + aux layer).
+composite objective + aux layer, :mod:`abbot.composite`).
 
 ``Experiment`` is deliberately a plain callable contract: a GUI action, an HTTP
 reactor call, a simulator, or (later) an agent driving an instrument all satisfy
@@ -33,7 +32,7 @@ class Experiment(Protocol):
     value}`` dict) or a raw observation (a spectrum, an image, ...) that the
     ``evaluate`` callable reduces to outputs.
 
-    An experiment written against vectors (a vectorized simulator, sbido) can be
+    An experiment written against vectors (a vectorized simulator) can be
     wrapped in :class:`TensorExperiment`.
     """
 
@@ -42,31 +41,22 @@ class Experiment(Protocol):
 
 class TensorExperiment:
     """Adapt a vector-input experiment (``run(x: Tensor)``) to the design-dict
-    contract. ``x`` is the ``(d,)`` double tensor in ``spec.variable_names`` order.
+    contract. ``x`` is the ``(d,)`` tensor in ``spec.variable_names`` order, in
+    ``dtype`` (double by default).
     """
 
-    def __init__(self, experiment: Any) -> None:
+    def __init__(self, experiment: Any, dtype: torch.dtype = torch.double) -> None:
         self.experiment = experiment
+        self.dtype = dtype
 
     def run(self, design: Design) -> Any:
-        x = torch.tensor(list(design.values()), dtype=torch.double)
+        x = torch.tensor(list(design.values()), dtype=self.dtype)
         return self.experiment.run(x)
-
-
-@runtime_checkable
-class PosteriorSampler(Protocol):
-    """Optional (SBI): map an observation to posterior samples over theta.
-
-    Returns (n_samples, d_theta). The composite-SBI app caches these on the
-    Record ``aux`` payload so a re-scorable reducer avoids re-sampling.
-    """
-
-    def sample(self, observation: Any, n: int) -> torch.Tensor: ...
 
 
 @dataclass
 class Verdict:
-    """What a ``Supervisor`` decided about the run so far (from sbido)."""
+    """What a ``Supervisor`` decided about the run so far."""
 
     retry: bool = False  # this observation is unusable; re-run the same candidate
     halt: str | None = None  # apparatus is broken; human-readable reason

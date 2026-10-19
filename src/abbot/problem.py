@@ -109,7 +109,7 @@ ObjectiveSpec = OutputSpec
 
 
 class Box(BaseModel):
-    """An sbido-style target band in output/theta space.
+    """A target band (per-dimension lower/upper) in output or theta space.
 
     A list of boxes drives a BoxMembershipGoal (see goal.py). ``lower``/``upper``
     are per-dimension vectors of equal length.
@@ -306,18 +306,33 @@ class ProblemSpec(BaseModel):
         ]
 
     def sample_designs(self, n: int, *, seed: int | None = None):
-        """Draw ``n`` space-filling designs (scrambled Sobol) as an (n, d) tensor.
+        """Draw ``n`` designs as an (n, d) tensor.
 
-        Continuous axes span their bounds; enumerated axes land on their allowed
-        values; inequality constraints are met by rejection. ``seed=None`` draws
-        the scramble seed from torch's global RNG, so ``torch.manual_seed``
-        reproduces it.
+        Unconstrained, they are space-filling (scrambled Sobol): continuous axes
+        span their bounds, enumerated axes land on their allowed values. With
+        inequality constraints on an all-continuous space the draw is uniform over
+        the feasible polytope by hit-and-run (botorch's ``get_polytope_samples``),
+        which cannot fail on a thin feasible region but is random rather than
+        low-discrepancy. With constraints and enumerated axes, Sobol draws are
+        filtered by rejection.
+
+        ``seed=None`` draws the seed from torch's global RNG, so
+        ``torch.manual_seed`` reproduces it.
         """
         import torch
         from torch.quasirandom import SobolEngine
 
         if seed is None:
             seed = int(torch.randint(2**31 - 1, (1,)))
+        if self.constraints and all(isinstance(d, ContinuousDomain) for d in self.domain):
+            from botorch.utils.sampling import get_polytope_samples
+
+            return get_polytope_samples(
+                n,
+                self.bounds_tensor(),
+                inequality_constraints=self.inequality_constraints(),
+                seed=seed,
+            )
         engine = SobolEngine(dimension=len(self.domain), scramble=True, seed=seed)
         if not self.constraints:
             return self._from_unit(engine.draw(n).double())

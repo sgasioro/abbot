@@ -1,10 +1,11 @@
-"""``run_campaign`` — a thin blocking driver over a :class:`abbot.session.Campaign`.
+"""``run_campaign`` / ``drive`` — thin blocking drivers over a :class:`abbot.session.Campaign`.
 
-Merge basis: ``~/sbido/src/sbido/optimizer.py::measure_and_optimize``. The actual
-engine logic (fit, propose, canonical-Y, recommendation, resume, retry/halt) now
+The engine logic (fit, propose, canonical-Y, recommendation, resume, retry/halt)
 lives in ``abbot.session`` so the web UI, a notebook, and an agent share it with
-this loop. ``run_campaign`` just owns the for-loop and calls ``Campaign.step`` —
-it is the "who triggers the step = this blocking loop" caller.
+this loop. ``drive`` just owns the loop and calls ``Campaign.step`` — it is the
+"who triggers the step = this blocking loop" caller; ``run_campaign`` builds the
+campaign and drives it. An application that builds its own ``Campaign`` (custom
+hooks, a wrapped experiment) calls ``drive`` directly.
 
 The engine is natively multi-objective and maximize-canonical: ``evaluate``
 returns RAW physical measurements (one column per objective, in ``spec.objectives``
@@ -33,6 +34,7 @@ from abbot.session import (  # noqa: F401
     ModelUQ,
     PersistentFaultError,
     PreRunCheck,
+    Targets,
     canonical_Y,
     check_uq_pairing,
     default_initial_designs,
@@ -46,6 +48,57 @@ logger = logging.getLogger(__name__)
 
 def _identity(observation: object) -> object:
     return observation
+
+
+def drive(
+    campaign: Campaign,
+    experiment: Experiment,
+    evaluate: Callable[[object], object],
+    *,
+    n_total: int | None = None,
+    on_persistent_fault: str = "halt",
+    should_continue: Callable[[], bool] | None = None,
+) -> Campaign:
+    """Step ``campaign`` until its history holds ``n_total`` records — the one
+    blocking loop, for a campaign you built yourself (``run_campaign`` and the UI's
+    ``RunController`` both run on it).
+
+    The budget is a total, not "this many more": a rerun after a halt or a crash
+    finishes the remainder instead of spending the whole budget again, and every
+    record counts against it — seeds, retries and failed runs alike. ``None`` runs
+    until a halt or the gate stops it.
+
+    ``should_continue`` is checked before each step; returning False stops the loop
+    early (a UI's pause/stop). Read why it stopped off the campaign: ``halted``, or
+    ``len(history)`` against the budget.
+
+    On a persistent fault (the supervisor halted, or a run kept failing),
+    ``on_persistent_fault="halt"`` raises :class:`PersistentFaultError` (the store
+    keeps everything, rerun to resume); ``"continue"`` logs it and spends the rest
+    of the budget. A halt that recorded nothing (``pre_run`` blocked the design)
+    always raises, since continuing would retry the same blocked design forever.
+    """
+    if on_persistent_fault not in ("halt", "continue"):
+        raise ValueError(
+            f"on_persistent_fault must be 'halt' or 'continue', got {on_persistent_fault!r}"
+        )
+    while n_total is None or len(campaign.history) < n_total:
+        if should_continue is not None and not should_continue():
+            break
+        before = len(campaign.history)
+        campaign.step(experiment, evaluate)
+        if not campaign.halted:
+            continue
+        if on_persistent_fault == "halt" or len(campaign.history) == before:
+            done = len(campaign.history)
+            of = f" of {n_total}" if n_total is not None else ""
+            raise PersistentFaultError(
+                f"{campaign.halted}\n{done}{of} shots completed. Fix the cause and "
+                "rerun to resume."
+            )
+        logger.warning("Persistent fault (%s); continuing as configured.", campaign.halted)
+        campaign.halted = None
+    return campaign
 
 
 def run_campaign(
@@ -62,13 +115,19 @@ def run_campaign(
     max_retries: int = 1,
     on_persistent_fault: str = "halt",
     pre_run: PreRunCheck | None = None,
+    on_step=None,
+    fingerprint: dict | None = None,
+    allow_resume_mismatch: bool = False,
+    targets: Targets | None = None,
 ) -> CampaignResult:
     """Run the propose -> evaluate -> retrain loop to completion.
 
-    Builds a :class:`abbot.session.Campaign`, seeds it, and drives ``n_shots`` steps
-    plus any seed/retry steps. ``evaluate`` maps a raw observation to RAW physical
-    objective value(s) (a tensor, or an ``(outputs, aux)`` tuple for the SBI seam);
-    objective direction is applied internally (no caller pre-negation). Returns a
+    Builds a :class:`abbot.session.Campaign`, seeds it, and runs :func:`drive` to
+    ``len(initial_designs) + n_shots`` records in total — retries and failed runs
+    included, so rerunning the same call after a halt resumes and finishes the
+    remainder. ``evaluate`` maps a raw observation to RAW physical objective
+    value(s) (a tensor, or an ``(outputs, aux)`` tuple for the SBI seam); objective
+    direction is applied internally (no caller pre-negation). Returns a
     ``CampaignResult`` whose ``recommended`` holds the handover index/indices.
 
     Only ``spec`` and ``experiment`` are required. ``policy`` and
@@ -88,35 +147,17 @@ def run_campaign(
         supervisor=supervisor,
         max_retries=max_retries,
         pre_run=pre_run,
+        on_step=on_step,
+        fingerprint=fingerprint,
+        allow_resume_mismatch=allow_resume_mismatch,
+        targets=targets,
     )
     campaign.seed(initial_designs)
-
-    # Total steps = queued seeds (0 if resumed) + the requested shots. Retries add
-    # themselves to the queue and are consumed by subsequent suggest() calls, so we
-    # drive until the shot budget and all pending retries are exhausted.
-    # (+ anything left outstanding by an interrupted run, which step() finishes first)
-    n_seeds = campaign.pending_count() + len(campaign.outstanding())
-    n_total = n_seeds + n_shots
-    for _ in range(n_total):
-        if campaign.halted:
-            if on_persistent_fault == "halt":
-                raise PersistentFaultError(
-                    f"{campaign.halted}\n{len(campaign.history)} shots completed. Fix "
-                    "the hardware and rerun to resume."
-                )
-            # "continue": spend the remaining budget anyway.
-            logger.warning("Persistent fault (%s); continuing as configured.", campaign.halted)
-            campaign.halted = None
-        campaign.step(experiment, evaluate)
-
-    # Drain any outstanding retries queued by the supervisor on the final steps.
-    while campaign.pending_count() and not campaign.halted:
-        campaign.step(experiment, evaluate)
-
-    if campaign.halted and on_persistent_fault == "halt":
-        raise PersistentFaultError(
-            f"{campaign.halted}\n{len(campaign.history)} shots completed. Fix the "
-            "hardware and rerun to resume."
-        )
-
+    drive(
+        campaign,
+        experiment,
+        evaluate,
+        n_total=len(initial_designs) + n_shots,
+        on_persistent_fault=on_persistent_fault,
+    )
     return campaign.result()
