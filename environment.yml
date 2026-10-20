@@ -14,12 +14,14 @@ channels:
 dependencies:
   - python=3.12
   - pytorch>=2.7
-  - botorch>=0.12
   - numpy>=1.26
   - pydantic>=2
   - pip
   - pip:
       # gest-api is on PyPI (not conda); the UI/dev extras pull nicegui, plotly,
       # pytest, ruff. Installing the project editable brings its core deps too.
+      # botorch comes from PyPI: conda-forge's 0.18.x needs ninja-python, which
+      # conda-forge doesn't provide on every platform (e.g. osx-arm64).
+      - botorch>=0.18
       - gest-api
       - --editable .[ui,dev]

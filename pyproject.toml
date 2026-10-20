@@ -11,7 +11,7 @@ readme = "README.md"
 # standard for interop. torch/numpy/pydantic are the shared primitives.
 dependencies = [
     "torch>=2.7",
-    "botorch>=0.12",
+    "botorch>=0.18",
     "numpy>=1.26",
     "pydantic>=2",
     "gest-api",

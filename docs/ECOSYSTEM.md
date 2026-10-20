@@ -95,6 +95,6 @@ and resume; and a UI that needs no EPICS, Bluesky or Badger.
 | Neighbour | Status |
 |---|---|
 | Xopt | `abbot.interop.xopt` (`abbot[xopt]`) |
-| blop | Planned: a `Campaign`-backed blop `Optimizer`. Needs abbot on BoTorch 0.18 (blop and Ax require 0.18.x; abbot is on 0.17) |
+| blop | Planned: a `Campaign`-backed blop `Optimizer`. abbot requires BoTorch 0.18, the same line as blop and Ax |
 | Ax | None planned; complementary rather than integrated |
 | bluesky-adaptive | Not planned unless blop doesn't cover a need |

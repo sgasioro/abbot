@@ -260,8 +260,8 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   `measure_and_optimize` *(done; sbido cutover PR in review, BAXstics port on a
   branch)*.
 - **Now**, in order:
-  1. **BoTorch 0.18.** The baseline blop and Ax require; do it before new
-     model/acquisition code.
+  1. **BoTorch 0.18** *(done)*: abbot now requires it, the same line as blop and
+     Ax.
   2. **Multi-fidelity, cost-aware BO** (pilot: calibrating an expensive
      simulation; fidelity is system size and other knobs; runs 30 s to 1 h):
      fidelity variables in the spec (integer / continuous, with targets;
