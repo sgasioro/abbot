@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
-from abbot.experiment import Experiment, Supervisor, Verdict
+from abbot.experiment import BatchExperiment, Experiment, Supervisor, Verdict
 from abbot.history import DataStore, History, Record
 from abbot.model import ModelConstructor, default_constructor
 from abbot.policy import Policy, default_policy
@@ -585,7 +585,7 @@ class Campaign:
 
     def step(
         self,
-        experiment: Experiment,
+        experiment: Experiment | BatchExperiment,
         evaluate: Callable[[object], object],
         n: int = 1,
     ) -> CampaignState:
@@ -596,11 +596,11 @@ class Campaign:
         mid-experiment), the oldest are run before any new one is suggested.
 
         ``n`` > 1 runs a synchronous batch of ``n`` designs (a plate, several
-        reactors). An experiment that defines ``run_batch(designs)`` gets every
-        step through it, batches of one included, so one code path runs whatever
-        ``n`` is; otherwise ``experiment.run`` is called once per design.
-        ``run_batch`` returns one observation per design; an exception object in a
-        slot fails just that design, and raising fails the whole batch.
+        reactors). A :class:`BatchExperiment` gets every step in one
+        ``run_batch(designs)`` call, batches of one included; an
+        :class:`Experiment` gets ``run`` once per design. ``run_batch`` returns one
+        observation per design; an exception object in a slot fails just that
+        design, and raising fails the whole batch.
 
         Before running, ``pre_run`` (if set) sees each named candidate; a returned
         reason halts the campaign with the batch left outstanding and NOT run. A
@@ -613,6 +613,11 @@ class Campaign:
             raise RuntimeError(f"campaign is halted: {self.halted}")
         if n < 1:
             raise ValueError(f"n must be at least 1, got {n}")
+        if not hasattr(experiment, "run_batch") and not hasattr(experiment, "run"):
+            raise TypeError(
+                f"{type(experiment).__name__} has neither run(design) nor "
+                "run_batch(designs)"
+            )
         if len(self._inflight) < n:
             self.suggest(n - len(self._inflight))
         items = list(self._inflight.values())[:n]
@@ -635,7 +640,9 @@ class Campaign:
         return self.state()
 
     @staticmethod
-    def _run_designs(experiment: Experiment, designs: list[dict]) -> list[object]:
+    def _run_designs(
+        experiment: Experiment | BatchExperiment, designs: list[dict]
+    ) -> list[object]:
         """One observation per design, or the exception its run raised."""
         run_batch = getattr(experiment, "run_batch", None)
         if run_batch is not None:

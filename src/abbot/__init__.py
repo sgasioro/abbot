@@ -13,6 +13,7 @@ from abbot.composite import (
     composite_evaluate,
 )
 from abbot.experiment import (
+    BatchExperiment,
     Experiment,
     ManualExperiment,
     MockAnalyticExperiment,
@@ -75,6 +76,7 @@ __version__ = "0.1.0"
 __all__ = [
     "BAXPolicy",
     "BandIntersection",
+    "BatchExperiment",
     "Box",
     "Campaign",
     "CampaignResult",

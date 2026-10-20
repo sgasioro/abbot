@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 
-from abbot.experiment import Experiment
+from abbot.experiment import BatchExperiment, Experiment
 from abbot.loop import drive
 from abbot.session import Campaign, CampaignState, PersistentFaultError
 
@@ -42,7 +42,7 @@ class RunController:
         self,
         campaign: Campaign,
         *,
-        experiment: Experiment | None = None,
+        experiment: Experiment | BatchExperiment | None = None,
         evaluate: Callable[[object], object] | None = None,
         max_steps: int | None = None,
     ) -> None:

@@ -4,8 +4,10 @@ import pytest
 import torch
 
 from abbot import (
+    BatchExperiment,
     Campaign,
     ContinuousDomain,
+    Experiment,
     OutputSpec,
     ProblemSpec,
     TensorExperiment,
@@ -36,15 +38,12 @@ class _OneAtATime:
 
 
 class _Plate:
-    """``run_batch``: the whole batch in one call. ``fail_slot`` returns an
+    """A BatchExperiment: the whole batch in one call. ``fail_slot`` returns an
     exception for that design; ``raise_all`` makes the call itself fail."""
 
     def __init__(self, fail_slot=None, raise_all=False, short=False) -> None:
         self.batches: list[int] = []
         self.fail_slot, self.raise_all, self.short = fail_slot, raise_all, short
-
-    def run(self, design):
-        raise AssertionError("an experiment with run_batch is never run one at a time")
 
     def run_batch(self, designs):
         self.batches.append(len(designs))
@@ -89,9 +88,6 @@ class _VectorPlate:
     def __init__(self) -> None:
         self.shapes: list[tuple[int, ...]] = []
 
-    def run(self, x):
-        raise AssertionError("run_batch is defined")
-
     def run_batch(self, X):
         self.shapes.append(tuple(X.shape))
         return list(X / 10.0)
@@ -101,7 +97,23 @@ def test_tensor_experiment_forwards_run_batch():
     c, inner = _seeded(), _VectorPlate()
     c.step(TensorExperiment(inner), _identity, n=3)
     assert inner.shapes == [(3, 1)] and len(c.history) == 3
-    assert not hasattr(TensorExperiment(_OneAtATime()), "run_batch")
+    assert isinstance(TensorExperiment(inner), BatchExperiment)
+    assert not isinstance(TensorExperiment(inner), Experiment)
+    assert not isinstance(TensorExperiment(_OneAtATime()), BatchExperiment)
+
+
+def test_the_protocols_tell_the_two_kinds_apart():
+    assert isinstance(_OneAtATime(), Experiment)
+    assert not isinstance(_OneAtATime(), BatchExperiment)
+    assert isinstance(_Plate(), BatchExperiment)
+    assert not isinstance(_Plate(), Experiment)
+
+
+def test_an_object_with_neither_method_is_rejected_before_suggesting():
+    c = _seeded()
+    with pytest.raises(TypeError, match="neither run"):
+        c.step(object(), _identity)
+    assert len(c.history) == 0
 
 
 def test_a_failed_slot_fails_only_that_design():

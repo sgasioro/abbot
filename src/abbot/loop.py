@@ -20,7 +20,7 @@ from collections.abc import Callable
 
 import torch
 
-from abbot.experiment import Experiment, Supervisor
+from abbot.experiment import BatchExperiment, Experiment, Supervisor
 from abbot.history import DataStore
 from abbot.model import ModelConstructor
 from abbot.policy import Policy
@@ -52,7 +52,7 @@ def _identity(observation: object) -> object:
 
 def drive(
     campaign: Campaign,
-    experiment: Experiment,
+    experiment: Experiment | BatchExperiment,
     evaluate: Callable[[object], object],
     *,
     n_total: int | None = None,
@@ -108,7 +108,7 @@ def drive(
 
 def run_campaign(
     spec: ProblemSpec,
-    experiment: Experiment,
+    experiment: Experiment | BatchExperiment,
     *,
     n_shots: int = 40,
     batch_size: int = 1,

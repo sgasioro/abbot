@@ -249,7 +249,7 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   composite-SBI + BAX paper on sbido):
   - Batch / async: candidate ids and a persisted outstanding queue, and
     pending-aware policies (`pending=`; kriging believer for BAX), synchronous
-    batches in the blocking loop (`batch_size=`, optional `Experiment.run_batch`)
+    batches in the blocking loop (`batch_size=`, `BatchExperiment`)
     *(done)*; an outstanding-candidates list in the UI.
   - Composite SBI + BAX on sbido: the sbido cutover PR, then whatever the paper
     benchmark needs (mat_finder regret-parity, continuous BAX).

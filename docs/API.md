@@ -24,7 +24,7 @@ without a deprecation period.
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
-| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `run_batch(designs)`), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
+| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
 | Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
@@ -220,9 +220,9 @@ explicitly if you need it pinned.
 - **Synchronous batches.** `Campaign.step(experiment, evaluate, n=k)` runs `k`
   designs per step; `run_campaign(..., batch_size=k)` / `drive(..., batch_size=k)`
   step that way, shrinking the last batch so the budget (still counted in designs)
-  isn't overshot. An experiment that defines `run_batch(designs)` gets every
-  step through it, batches of one included (`TensorExperiment` forwards it);
-  otherwise `run` is called once per design. A slot of `run_batch`'s result that is an
+  isn't overshot. A `BatchExperiment` gets every step in one `run_batch(designs)`
+  call, batches of one included (`TensorExperiment` forwards it); an `Experiment`
+  gets `run` once per design. A slot of `run_batch`'s result that is an
   exception fails just that design; `run_batch` raising fails the whole batch.
   Failed designs retry as above, the batch's other results are recorded, and
   `pre_run` must pass every design before any runs. Picks within a batch are

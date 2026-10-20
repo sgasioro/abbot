@@ -35,21 +35,33 @@ class Experiment(Protocol):
     An experiment written against vectors (a vectorized simulator) can be
     wrapped in :class:`TensorExperiment`.
 
-    Optionally, ``run_batch(designs) -> list`` runs several designs at once (a
-    plate, several reactors) and returns one observation per design, or an
-    exception object for a design that failed. When it is defined, the loop
-    sends every step through it, batches of one included, and never calls
-    ``run``; without it, ``run`` is called once per design.
+    Hardware that runs several designs at once implements
+    :class:`BatchExperiment` instead.
     """
 
     def run(self, design: Design) -> Any: ...
 
 
+@runtime_checkable
+class BatchExperiment(Protocol):
+    """Run several designs at once (a plate, several reactors).
+
+    ``designs`` is a list of design dicts (as for :class:`Experiment`); return one
+    observation per design, in order, or an exception object for a design that
+    failed (raising fails them all). The loop sends every step through
+    ``run_batch``, batches of one included, so there is one code path whatever
+    the batch size. An object defining both ``run`` and ``run_batch`` is treated
+    as a ``BatchExperiment``.
+    """
+
+    def run_batch(self, designs: list[Design]) -> list[Any]: ...
+
+
 class TensorExperiment:
     """Adapt a vector-input experiment (``run(x: Tensor)``) to the design-dict
     contract. ``x`` is the ``(d,)`` tensor in ``spec.variable_names`` order, in
-    ``dtype`` (double by default). If the wrapped experiment has
-    ``run_batch(X)``, it gets the ``(q, d)`` tensor and so does this wrapper.
+    ``dtype`` (double by default). A wrapped ``run_batch(X)`` gets the ``(q, d)``
+    tensor instead, and the wrapper is then a :class:`BatchExperiment`.
     """
 
     def __init__(self, experiment: Any, dtype: torch.dtype = torch.double) -> None:
@@ -57,8 +69,10 @@ class TensorExperiment:
         self.dtype = dtype
         if hasattr(experiment, "run_batch"):
             self.run_batch = self._run_batch
+        else:
+            self.run = self._run
 
-    def run(self, design: Design) -> Any:
+    def _run(self, design: Design) -> Any:
         x = torch.tensor(list(design.values()), dtype=self.dtype)
         return self.experiment.run(x)
 
