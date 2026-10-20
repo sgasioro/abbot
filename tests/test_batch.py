@@ -3,7 +3,14 @@
 import pytest
 import torch
 
-from abbot import Campaign, ContinuousDomain, OutputSpec, ProblemSpec, run_campaign
+from abbot import (
+    Campaign,
+    ContinuousDomain,
+    OutputSpec,
+    ProblemSpec,
+    TensorExperiment,
+    run_campaign,
+)
 
 
 def _spec() -> ProblemSpec:
@@ -36,8 +43,8 @@ class _Plate:
         self.batches: list[int] = []
         self.fail_slot, self.raise_all, self.short = fail_slot, raise_all, short
 
-    def run(self, design):  # a batch of one
-        return torch.tensor([design["temp"] / 10.0])
+    def run(self, design):
+        raise AssertionError("an experiment with run_batch is never run one at a time")
 
     def run_batch(self, designs):
         self.batches.append(len(designs))
@@ -72,10 +79,29 @@ def test_step_uses_run_batch_when_defined():
     assert len(c.history) == 3
 
 
-def test_a_single_design_goes_to_run_even_with_run_batch():
+def test_a_single_design_still_goes_to_run_batch():
     c, exp = _seeded(), _Plate()
     c.step(exp, _identity)
-    assert exp.batches == [] and len(c.history) == 1
+    assert exp.batches == [1] and len(c.history) == 1
+
+
+class _VectorPlate:
+    def __init__(self) -> None:
+        self.shapes: list[tuple[int, ...]] = []
+
+    def run(self, x):
+        raise AssertionError("run_batch is defined")
+
+    def run_batch(self, X):
+        self.shapes.append(tuple(X.shape))
+        return list(X / 10.0)
+
+
+def test_tensor_experiment_forwards_run_batch():
+    c, inner = _seeded(), _VectorPlate()
+    c.step(TensorExperiment(inner), _identity, n=3)
+    assert inner.shapes == [(3, 1)] and len(c.history) == 3
+    assert not hasattr(TensorExperiment(_OneAtATime()), "run_batch")
 
 
 def test_a_failed_slot_fails_only_that_design():
@@ -125,4 +151,4 @@ def test_run_campaign_batches_without_overshooting_the_budget():
     seeds = torch.tensor([[25.0], [50.0], [75.0]], dtype=torch.double)
     result = run_campaign(_spec(), exp, n_shots=7, batch_size=3, initial_designs=seeds)
     assert len(result.history) == 10
-    assert exp.batches == [3, 3, 3]  # 9 designs in batches; the 10th is a single run
+    assert exp.batches == [3, 3, 3, 1]  # the budget's last design is a batch of one

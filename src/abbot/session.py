@@ -596,8 +596,9 @@ class Campaign:
         mid-experiment), the oldest are run before any new one is suggested.
 
         ``n`` > 1 runs a synchronous batch of ``n`` designs (a plate, several
-        reactors). The batch goes to ``experiment.run_batch(designs)`` when the
-        experiment defines it, else to ``experiment.run`` one design at a time.
+        reactors). An experiment that defines ``run_batch(designs)`` gets every
+        step through it, batches of one included, so one code path runs whatever
+        ``n`` is; otherwise ``experiment.run`` is called once per design.
         ``run_batch`` returns one observation per design; an exception object in a
         slot fails just that design, and raising fails the whole batch.
 
@@ -637,7 +638,7 @@ class Campaign:
     def _run_designs(experiment: Experiment, designs: list[dict]) -> list[object]:
         """One observation per design, or the exception its run raised."""
         run_batch = getattr(experiment, "run_batch", None)
-        if run_batch is not None and len(designs) > 1:
+        if run_batch is not None:
             try:
                 observations = list(run_batch(designs))
             except Exception as exc:

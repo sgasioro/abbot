@@ -37,8 +37,9 @@ class Experiment(Protocol):
 
     Optionally, ``run_batch(designs) -> list`` runs several designs at once (a
     plate, several reactors) and returns one observation per design, or an
-    exception object for a design that failed. ``Campaign.step(n=...)`` uses it
-    when present and otherwise calls ``run`` once per design.
+    exception object for a design that failed. When it is defined, the loop
+    sends every step through it, batches of one included, and never calls
+    ``run``; without it, ``run`` is called once per design.
     """
 
     def run(self, design: Design) -> Any: ...
@@ -47,16 +48,23 @@ class Experiment(Protocol):
 class TensorExperiment:
     """Adapt a vector-input experiment (``run(x: Tensor)``) to the design-dict
     contract. ``x`` is the ``(d,)`` tensor in ``spec.variable_names`` order, in
-    ``dtype`` (double by default).
+    ``dtype`` (double by default). If the wrapped experiment has
+    ``run_batch(X)``, it gets the ``(q, d)`` tensor and so does this wrapper.
     """
 
     def __init__(self, experiment: Any, dtype: torch.dtype = torch.double) -> None:
         self.experiment = experiment
         self.dtype = dtype
+        if hasattr(experiment, "run_batch"):
+            self.run_batch = self._run_batch
 
     def run(self, design: Design) -> Any:
         x = torch.tensor(list(design.values()), dtype=self.dtype)
         return self.experiment.run(x)
+
+    def _run_batch(self, designs: list[Design]) -> Any:
+        X = torch.tensor([list(d.values()) for d in designs], dtype=self.dtype)
+        return self.experiment.run_batch(X)
 
 
 @dataclass

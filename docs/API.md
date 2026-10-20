@@ -220,8 +220,9 @@ explicitly if you need it pinned.
 - **Synchronous batches.** `Campaign.step(experiment, evaluate, n=k)` runs `k`
   designs per step; `run_campaign(..., batch_size=k)` / `drive(..., batch_size=k)`
   step that way, shrinking the last batch so the budget (still counted in designs)
-  isn't overshot. The batch goes to `experiment.run_batch(designs)` if defined,
-  else to `run` once per design. A slot of `run_batch`'s result that is an
+  isn't overshot. An experiment that defines `run_batch(designs)` gets every
+  step through it, batches of one included (`TensorExperiment` forwards it);
+  otherwise `run` is called once per design. A slot of `run_batch`'s result that is an
   exception fails just that design; `run_batch` raising fails the whole batch.
   Failed designs retry as above, the batch's other results are recorded, and
   `pre_run` must pass every design before any runs. Picks within a batch are
