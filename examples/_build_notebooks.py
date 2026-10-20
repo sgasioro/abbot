@@ -51,7 +51,7 @@ BO tool" case — a non-expert describes the knobs and the goal, nothing more.
     code("""
 import torch
 from abbot import (
-    ProblemSpec, ContinuousDomain, OutputSpec, run_campaign, SyntheticExperiment,
+    ProblemSpec, ContinuousDomain, OutputSpec, run_campaign, MockAnalyticExperiment,
 )
 torch.manual_seed(0)
 """),
@@ -73,14 +73,14 @@ spec.variable_names
 """),
     md("""
 ### A stand-in experiment
-`SyntheticExperiment` is a seeded, smooth virtual lab — it stands in for a real
+`MockAnalyticExperiment` is a seeded, smooth virtual lab — it stands in for a real
 bench measurement so the notebook is self-contained. In practice you'd pass a
 `ManualExperiment` (a human enters the measured value) or any object with a
 `run(design) -> value` method, where `design` is a `{variable name: value}` dict
 like `{"temp": 54.2, "conc": 0.31}`.
 """),
     code("""
-experiment = SyntheticExperiment(spec, seed=1)
+experiment = MockAnalyticExperiment(spec, seed=1)
 """),
     md("""
 ### Run the campaign
@@ -163,7 +163,7 @@ everything to one number.
 import torch, warnings
 warnings.filterwarnings("ignore")
 from abbot import (
-    ProblemSpec, ContinuousDomain, OutputSpec, run_campaign, SyntheticExperiment,
+    ProblemSpec, ContinuousDomain, OutputSpec, run_campaign, MockAnalyticExperiment,
 )
 torch.manual_seed(0)
 """),
@@ -184,7 +184,7 @@ spec = ProblemSpec(
         OutputSpec(name="f2", direction="MAXIMIZE"),
     ],
 )
-experiment = SyntheticExperiment(spec, seed=5)  # two bumps peaking in different places
+experiment = MockAnalyticExperiment(spec, seed=5)  # two bumps peaking in different places
 """),
     md("""
 Two objectives, so `run_campaign` picks `ParetoBO` and an independent GP per

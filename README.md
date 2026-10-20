@@ -129,7 +129,7 @@ layer over `Campaign`, laid out as a **single dashboard**: left column = a
 **type-polymorphic variable editor** (Continuous | Enumerated — the Badger
 differentiator) + run controls; right column = live visualization. Two run modes
 share one `RunController`: **manual** (suggest → enter measurement → ingest) and
-**mock auto-run** (a `SyntheticExperiment` drives `Campaign.step` on a timer with
+**mock auto-run** (a `MockAnalyticExperiment` drives `Campaign.step` on a timer with
 run/pause/step/stop). Manual vs. auto is a UI-driver concern, kept out of the core.
 
 Live visualization (via `abbot/analysis.py`, computed from history + the fitted
@@ -204,7 +204,7 @@ python -m abbot.ui --no-show       # headless (e.g. on a cluster) — tunnel the
 Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`.
 
 **Mock mode:** on the Define tab, toggle *Mock mode* before creating the campaign
-to attach a spec-adaptive `SyntheticExperiment` (smooth, seeded landscape over
+to attach a spec-adaptive `MockAnalyticExperiment` (smooth, seeded landscape over
 whatever variables/objectives you defined). This enables **auto-run**
 (run / pause / step / stop) on the Run tab, so a whole campaign drives itself
 with no typed measurements — the quickest way to see the loop and plots working.
@@ -248,8 +248,9 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 - **Now** (pilot campaigns: one simulation, one human-in-the-loop; and a
   composite-SBI + BAX paper on sbido):
   - Batch / async: candidate ids and a persisted outstanding queue, and
-    pending-aware policies (`pending=`; kriging believer for BAX) *(done)*;
-    optional `Experiment.run_batch` and an outstanding-candidates list in the UI.
+    pending-aware policies (`pending=`; kriging believer for BAX), synchronous
+    batches in the blocking loop (`batch_size=`, `BatchExperiment`)
+    *(done)*; an outstanding-candidates list in the UI.
   - Composite SBI + BAX on sbido: the sbido cutover PR, then whatever the paper
     benchmark needs (mat_finder regret-parity, continuous BAX).
   - Layering: abbot is the general-purpose engine (what multibax-sklearn was to

@@ -34,24 +34,51 @@ class Experiment(Protocol):
 
     An experiment written against vectors (a vectorized simulator) can be
     wrapped in :class:`TensorExperiment`.
+
+    Hardware that runs several designs at once implements
+    :class:`BatchExperiment` instead.
     """
 
     def run(self, design: Design) -> Any: ...
 
 
+@runtime_checkable
+class BatchExperiment(Protocol):
+    """Run several designs at once (a plate, several reactors).
+
+    ``designs`` is a list of design dicts (as for :class:`Experiment`); return one
+    observation per design, in order, or an exception object for a design that
+    failed (raising fails them all). The loop sends every step through
+    ``run_batch``, batches of one included, so there is one code path whatever
+    the batch size. An object defining both ``run`` and ``run_batch`` is treated
+    as a ``BatchExperiment``.
+    """
+
+    def run_batch(self, designs: list[Design]) -> list[Any]: ...
+
+
 class TensorExperiment:
     """Adapt a vector-input experiment (``run(x: Tensor)``) to the design-dict
     contract. ``x`` is the ``(d,)`` tensor in ``spec.variable_names`` order, in
-    ``dtype`` (double by default).
+    ``dtype`` (double by default). A wrapped ``run_batch(X)`` gets the ``(q, d)``
+    tensor instead, and the wrapper is then a :class:`BatchExperiment`.
     """
 
     def __init__(self, experiment: Any, dtype: torch.dtype = torch.double) -> None:
         self.experiment = experiment
         self.dtype = dtype
+        if hasattr(experiment, "run_batch"):
+            self.run_batch = self._run_batch
+        else:
+            self.run = self._run
 
-    def run(self, design: Design) -> Any:
+    def _run(self, design: Design) -> Any:
         x = torch.tensor(list(design.values()), dtype=self.dtype)
         return self.experiment.run(x)
+
+    def _run_batch(self, designs: list[Design]) -> Any:
+        X = torch.tensor([list(d.values()) for d in designs], dtype=self.dtype)
+        return self.experiment.run_batch(X)
 
 
 @dataclass
@@ -113,8 +140,10 @@ class ManualExperiment:
         return torch.tensor(measured, dtype=torch.double)
 
 
-class SyntheticExperiment:
-    """A spec-adaptive virtual experiment for mock / offline runs.
+class MockAnalyticExperiment:
+    """A mock experiment whose answers come from a closed-form formula, for
+    offline runs and demos. (For answers that already exist, a measured or
+    simulated grid, see :class:`MockDatasetExperiment`.)
 
     Produces smooth, deterministic (seeded) RAW-physical outputs for WHATEVER
     ``ProblemSpec`` you built — any number of variables, any number of outputs
@@ -162,3 +191,58 @@ class SyntheticExperiment:
             gn = torch.Generator().manual_seed(key)
             vals = vals + self.noise * torch.randn(vals.shape, generator=gn, dtype=torch.double)
         return vals
+
+
+class MockDatasetExperiment:
+    """A mock experiment over a fixed set of designs whose outputs are already
+    known: a measured dataset or a simulated grid, replayed as if run.
+
+    ``X`` ``(N, d)`` holds the designs (columns in ``spec.variable_names`` order)
+    and ``Y`` ``(N, m)`` their raw outputs (columns in ``spec.outputs`` order).
+    ``run(design)`` returns that design's row of ``Y``; a design not in the set
+    raises ``ValueError``, so pair it with a policy that proposes only from
+    :attr:`candidates` (``BAXPolicy(candidates=...)``,
+    ``DiscreteArgmax(choices=...)``). A design listed more than once (repeat
+    measurements) returns its first row.
+    """
+
+    def __init__(self, spec: Any, X: torch.Tensor, Y: torch.Tensor) -> None:
+        X = torch.as_tensor(X, dtype=torch.double)
+        Y = torch.as_tensor(Y, dtype=torch.double)
+        Y = Y.reshape(len(Y), -1)
+        if X.ndim != 2 or X.shape[1] != len(spec.variable_names):
+            raise ValueError(
+                f"X must be (N, {len(spec.variable_names)}) for variables "
+                f"{spec.variable_names}, got {tuple(X.shape)}"
+            )
+        if Y.shape != (X.shape[0], spec.n_outputs):
+            raise ValueError(
+                f"Y must be ({X.shape[0]}, {spec.n_outputs}) for outputs "
+                f"{spec.output_names}, got {tuple(Y.shape)}"
+            )
+        self.spec = spec
+        self._X = X
+        self._Y = Y
+
+    @classmethod
+    def from_history(cls, history: Any, spec: Any) -> MockDatasetExperiment:
+        """Replay the clean, measured records of ``history`` (e.g. a dataset loaded
+        with :func:`abbot.io.history_from_csv`)."""
+        records = [r for r in history.clean.records if r.outputs is not None]
+        if not records:
+            raise ValueError("history has no clean records with outputs")
+        X = torch.stack([r.candidate.double().reshape(-1) for r in records])
+        Y = torch.stack([r.outputs.double().reshape(-1) for r in records])
+        return cls(spec, X, Y)
+
+    @property
+    def candidates(self) -> torch.Tensor:
+        """The ``(N, d)`` designs this experiment can run."""
+        return self._X
+
+    def run(self, design: Design) -> torch.Tensor:
+        x = torch.tensor([float(design[name]) for name in self.spec.variable_names], dtype=torch.double)
+        hits = torch.isclose(self._X, x.unsqueeze(0)).all(dim=-1).nonzero()
+        if len(hits) == 0:
+            raise ValueError(f"design {dict(design)} is not in this dataset")
+        return self._Y[int(hits[0, 0])].clone()

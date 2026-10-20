@@ -19,7 +19,7 @@ import logging
 import torch
 from nicegui import run, ui
 
-from abbot.experiment import SyntheticExperiment
+from abbot.experiment import MockAnalyticExperiment
 from abbot.policy import BAXPolicy, default_policy
 from abbot.session import Campaign, default_initial_designs
 from abbot.ui import figures
@@ -88,7 +88,7 @@ class UIState:
         self.viz_vx = 0
         self.viz_vy = 1 if len(spec.domain) > 1 else 0
         if self.mock:
-            exp = SyntheticExperiment(spec, seed=0, noise=0.0)
+            exp = MockAnalyticExperiment(spec, seed=0, noise=0.0)
             self.controller = RunController(campaign, experiment=exp, evaluate=lambda o: o)
         else:
             self.controller = RunController(campaign)

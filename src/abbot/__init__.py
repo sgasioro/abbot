@@ -13,10 +13,12 @@ from abbot.composite import (
     composite_evaluate,
 )
 from abbot.experiment import (
+    BatchExperiment,
     Experiment,
     ManualExperiment,
+    MockAnalyticExperiment,
+    MockDatasetExperiment,
     Supervisor,
-    SyntheticExperiment,
     TensorExperiment,
     Verdict,
 )
@@ -74,6 +76,7 @@ __version__ = "0.1.0"
 __all__ = [
     "BAXPolicy",
     "BandIntersection",
+    "BatchExperiment",
     "Box",
     "Campaign",
     "CampaignResult",
@@ -90,6 +93,8 @@ __all__ = [
     "InequalitySpec",
     "LevelSet",
     "ManualExperiment",
+    "MockAnalyticExperiment",
+    "MockDatasetExperiment",
     "ModelConstructor",
     "ModelListConstructor",
     "ObjectiveReducer",
@@ -108,7 +113,6 @@ __all__ = [
     "SingleTaskGPConstructor",
     "StructuredDomain",
     "Supervisor",
-    "SyntheticExperiment",
     "Targets",
     "TensorExperiment",
     "TopK",

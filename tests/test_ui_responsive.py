@@ -27,13 +27,13 @@ def anyio_backend():
 
 @pytest.mark.anyio
 async def test_auto_run_does_not_block_event_loop(monkeypatch):
-    orig = app.SyntheticExperiment.run
+    orig = app.MockAnalyticExperiment.run
 
     def slow_run(self, candidate):
         time.sleep(1.5)  # a blocking instrument call
         return orig(self, candidate)
 
-    monkeypatch.setattr(app.SyntheticExperiment, "run", slow_run)
+    monkeypatch.setattr(app.MockAnalyticExperiment, "run", slow_run)
     async with user_simulation(root=app._build_page) as user:
         await user.open("/")
         user.find("Mock mode").click()

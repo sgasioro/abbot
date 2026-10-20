@@ -20,7 +20,7 @@ from collections.abc import Callable
 
 import torch
 
-from abbot.experiment import Experiment, Supervisor
+from abbot.experiment import BatchExperiment, Experiment, Supervisor
 from abbot.history import DataStore
 from abbot.model import ModelConstructor
 from abbot.policy import Policy
@@ -52,10 +52,11 @@ def _identity(observation: object) -> object:
 
 def drive(
     campaign: Campaign,
-    experiment: Experiment,
+    experiment: Experiment | BatchExperiment,
     evaluate: Callable[[object], object],
     *,
     n_total: int | None = None,
+    batch_size: int = 1,
     on_persistent_fault: str = "halt",
     should_continue: Callable[[], bool] | None = None,
 ) -> Campaign:
@@ -67,6 +68,9 @@ def drive(
     finishes the remainder instead of spending the whole budget again, and every
     record counts against it — seeds, retries and failed runs alike. ``None`` runs
     until a halt or the gate stops it.
+
+    ``batch_size`` designs are run per step (``Campaign.step(n=...)``); the last
+    batch shrinks so the budget isn't overshot.
 
     ``should_continue`` is checked before each step; returning False stops the loop
     early (a UI's pause/stop). Read why it stopped off the campaign: ``halted``, or
@@ -86,7 +90,8 @@ def drive(
         if should_continue is not None and not should_continue():
             break
         before = len(campaign.history)
-        campaign.step(experiment, evaluate)
+        n = batch_size if n_total is None else min(batch_size, n_total - before)
+        campaign.step(experiment, evaluate, n=n)
         if not campaign.halted:
             continue
         if on_persistent_fault == "halt" or len(campaign.history) == before:
@@ -103,9 +108,10 @@ def drive(
 
 def run_campaign(
     spec: ProblemSpec,
-    experiment: Experiment,
+    experiment: Experiment | BatchExperiment,
     *,
     n_shots: int = 40,
+    batch_size: int = 1,
     policy: Policy | None = None,
     model_constructor: ModelConstructor | None = None,
     evaluate: Callable[[object], object] | None = None,
@@ -125,7 +131,8 @@ def run_campaign(
     Builds a :class:`abbot.session.Campaign`, seeds it, and runs :func:`drive` to
     ``len(initial_designs) + n_shots`` records in total — retries and failed runs
     included, so rerunning the same call after a halt resumes and finishes the
-    remainder. ``evaluate`` maps a raw observation to RAW physical objective
+    remainder. ``batch_size`` designs are run per step (see ``Campaign.step``);
+    ``n_shots`` still counts designs, not batches. ``evaluate`` maps a raw observation to RAW physical objective
     value(s) (a tensor, or an ``(outputs, aux)`` tuple for the SBI seam); objective
     direction is applied internally (no caller pre-negation). Returns a
     ``CampaignResult`` whose ``recommended`` holds the handover index/indices.
@@ -158,6 +165,7 @@ def run_campaign(
         experiment,
         evaluate,
         n_total=len(initial_designs) + n_shots,
+        batch_size=batch_size,
         on_persistent_fault=on_persistent_fault,
     )
     return campaign.result()
