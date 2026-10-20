@@ -36,8 +36,10 @@ composite measurements on top.
 **Ax.** The closest overlap. Its `Client` covers experiment setup, trials,
 failure marking, early stopping, JSON/database snapshots and Pareto fronts, with
 a large team behind it. For single- or multi-objective optimization of scalar
-measurements, Ax is a good answer, and abbot's standard BO (`SimpleBO`,
-`ParetoBO`) exists only so a lab doesn't need a second tool. Ax's model is
+measurements, Ax is a good answer. abbot still covers standard BO (`SimpleBO`,
+`ParetoBO`, and multi-fidelity as it lands) so a lab never has to leave it: the
+overhead of switching tools pushes people to a hand-rolled BoTorch script, not
+to Ax. Ax's model is
 objectives and trials; BAX goals, posterior-sample algorithm execution and raw
 observations do not fit it without fighting the framework.
 
@@ -78,8 +80,13 @@ and resume; and a UI that needs no EPICS, Bluesky or Badger.
 - **Algorithms are written to travel**: policies and acquisitions stay plain
   BoTorch where possible, so an adapter or an upstream port is cheap.
 - **The loop, its semantics and the UI are abbot's.**
-- **Not ours to build**: SQL storage, multi-fidelity, automatic model selection
-  (Ax); hardware orchestration and device control (Bluesky, Xopt evaluators).
+- **Cover what a user would otherwise leave for**: where BoTorch has the
+  numerics (standard, multi-objective, multi-fidelity and cost-aware BO), abbot
+  supplies the spec, wiring and safe defaults, so a campaign never needs a second
+  tool or a hand-rolled script.
+- **Not ours to build**: heavy infrastructure with little BO in it: SQL storage
+  and automatic model selection (Ax); hardware orchestration and device control
+  (Bluesky, Xopt evaluators).
 - **Adapters stay thin** and live in `abbot.interop`, one per neighbour, each
   behind an optional extra.
 
