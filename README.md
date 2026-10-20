@@ -65,6 +65,9 @@ model_constructor)` to choose your own. A few variations:
 See [`docs/API.md`](docs/API.md) for the stability contract (what's safe to build
 on) and [`examples/`](examples/) for a runnable notebook per capability.
 
+See [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) for where abbot sits next to BoTorch,
+Ax, Xopt and Bluesky/blop.
+
 ## Status: M1 core + M3 lab frontend
 
 ```
@@ -271,5 +274,6 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
     the spec / goal. The UI stays the run console and the human-in-the-loop
     entry point.
 - **Later** — mixed continuous + categorical spaces (`optimize_acqf_mixed`), output
-  constraints, BAXstics goals on abbot, nn-bax productionization + upstreaming to
-  Xopt, Xopt/Badger and Bluesky interop.
+  constraints, nn-bax productionization (upstream to Xopt where it fits),
+  BoTorch 0.18 and a blop backend for Bluesky beamlines (see
+  [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)).
