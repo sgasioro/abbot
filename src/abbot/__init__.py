@@ -15,8 +15,9 @@ from abbot.composite import (
 from abbot.experiment import (
     Experiment,
     ManualExperiment,
+    MockAnalyticExperiment,
+    MockDatasetExperiment,
     Supervisor,
-    SyntheticExperiment,
     TensorExperiment,
     Verdict,
 )
@@ -90,6 +91,8 @@ __all__ = [
     "InequalitySpec",
     "LevelSet",
     "ManualExperiment",
+    "MockAnalyticExperiment",
+    "MockDatasetExperiment",
     "ModelConstructor",
     "ModelListConstructor",
     "ObjectiveReducer",
@@ -108,7 +111,6 @@ __all__ = [
     "SingleTaskGPConstructor",
     "StructuredDomain",
     "Supervisor",
-    "SyntheticExperiment",
     "Targets",
     "TensorExperiment",
     "TopK",

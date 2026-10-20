@@ -584,40 +584,79 @@ class Campaign:
         return self.state()
 
     def step(
-        self, experiment: Experiment, evaluate: Callable[[object], object]
+        self,
+        experiment: Experiment,
+        evaluate: Callable[[object], object],
+        n: int = 1,
     ) -> CampaignState:
         """One full cycle: suggest -> experiment.run -> evaluate -> ingest.
 
         The single primitive both ``run_campaign`` and the UI auto-runner call.
         If candidates are already outstanding (e.g. resumed after a crash
-        mid-experiment), the oldest is run instead of suggesting a new one.
+        mid-experiment), the oldest are run before any new one is suggested.
 
-        Before running, ``pre_run`` (if set) sees the named candidate; a returned
-        reason halts the campaign with the candidate left outstanding and NOT run. If
-        ``experiment.run`` raises, the shot is recorded as a fault (with the error
-        text, no outputs) and retried up to ``max_retries`` times, then the
-        campaign halts. Errors from ``evaluate`` propagate (they are analysis bugs,
-        and re-running the experiment would not fix them).
+        ``n`` > 1 runs a synchronous batch of ``n`` designs (a plate, several
+        reactors). The batch goes to ``experiment.run_batch(designs)`` when the
+        experiment defines it, else to ``experiment.run`` one design at a time.
+        ``run_batch`` returns one observation per design; an exception object in a
+        slot fails just that design, and raising fails the whole batch.
+
+        Before running, ``pre_run`` (if set) sees each named candidate; a returned
+        reason halts the campaign with the batch left outstanding and NOT run. A
+        failed run is recorded as a fault (with the error text, no outputs) and
+        retried up to ``max_retries`` times, then the campaign halts; the batch's
+        other results are still recorded. Errors from ``evaluate`` propagate (they
+        are analysis bugs, and re-running the experiment would not fix them).
         """
         if self.halted:
             raise RuntimeError(f"campaign is halted: {self.halted}")
-        if not self._inflight:
-            self.suggest(1)
-        item = next(iter(self._inflight.values()))
-        design = self._to_dict(item.x)
+        if n < 1:
+            raise ValueError(f"n must be at least 1, got {n}")
+        if len(self._inflight) < n:
+            self.suggest(n - len(self._inflight))
+        items = list(self._inflight.values())[:n]
+        designs = [self._to_dict(item.x) for item in items]
         if self.pre_run is not None:
-            reason = self.pre_run(dict(design))
-            if reason:
-                self.halted = f"pre-run check blocked {design}: {reason}"
-                logger.warning("%s", self.halted)
-                return self.state()
-        try:
-            observation = experiment.run(design)
-        except Exception as exc:
-            logger.exception("experiment.run failed at %s", design)
-            return self._record_run_error(item, exc)
-        out = evaluate(observation)
-        return self.ingest(out, observations=observation, id=item.id)
+            for design in designs:
+                reason = self.pre_run(dict(design))
+                if reason:
+                    self.halted = f"pre-run check blocked {design}: {reason}"
+                    logger.warning("%s", self.halted)
+                    return self.state()
+        observations = self._run_designs(experiment, designs)
+        for item, design, observation in zip(items, designs, observations, strict=True):
+            if isinstance(observation, BaseException):
+                logger.error("experiment.run failed at %s", design, exc_info=observation)
+                self._record_run_error(item, observation)
+                continue
+            out = evaluate(observation)
+            self.ingest(out, observations=observation, id=item.id)
+        return self.state()
+
+    @staticmethod
+    def _run_designs(experiment: Experiment, designs: list[dict]) -> list[object]:
+        """One observation per design, or the exception its run raised."""
+        run_batch = getattr(experiment, "run_batch", None)
+        if run_batch is not None and len(designs) > 1:
+            try:
+                observations = list(run_batch(designs))
+            except Exception as exc:
+                logger.exception("experiment.run_batch failed")
+                return [exc] * len(designs)
+            if len(observations) != len(designs):
+                err = RuntimeError(
+                    f"run_batch returned {len(observations)} observation(s) for "
+                    f"{len(designs)} design(s)"
+                )
+                return [err] * len(designs)
+            return observations
+        observations: list[object] = []
+        for design in designs:
+            try:
+                observations.append(experiment.run(design))
+            except Exception as exc:  # noqa: BLE001 - recorded as a faulted shot
+                observations.append(exc)
+        return observations
 
     def _record_run_error(
         self, item: _InFlight, exc: str | BaseException
