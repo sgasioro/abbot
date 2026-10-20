@@ -297,3 +297,40 @@ def test_fantasy_points_are_conditioned_nearly_exactly():
         cond = _condition(model, P, model.posterior(P).mean.reshape(1, -1),
                           noise=_FANTASY_JITTER)
         assert (cond.posterior(P).variance < 1e-5).all()
+
+
+# --- batches -----------------------------------------------------------------
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "make",
+    [
+        UncertaintySampling,
+        lambda: BAXPolicy(PercentileSet(70.0), strategy="US", n_candidates=128),
+        lambda: BAXPolicy(PercentileSet(70.0), strategy="MeanBAX", n_candidates=128),
+    ],
+    ids=["us", "bax-us", "meanbax"],
+)
+def test_batch_is_built_greedily_with_a_kriging_believer(make):
+    # suggest(n=2) == pick one, then pick again with the first pending.
+    spec = _spec(direction="OBSERVE")
+    model, h = _fit(n=4)
+    torch.manual_seed(0)
+    batch = make().suggest(h, spec, model, n=2)
+    torch.manual_seed(0)
+    pol = make()
+    first = pol.suggest(h, spec, model, n=1)
+    second = pol.suggest(h, spec, model, n=1, pending=first)
+    assert batch.shape == (2, 1)
+    assert torch.allclose(batch, torch.cat([first, second]), atol=1e-6)
+    assert abs(float(batch[1] - batch[0])) > 0.05  # conditioning spreads the batch
+
+
+def test_bax_batch_counts_every_pick_as_collected():
+    spec = _spec(direction="OBSERVE")
+    model, h = _fit()
+    pol = BAXPolicy(PercentileSet(70.0), strategy="US", n_candidates=64)
+    batch = pol.suggest(h, spec, model, n=3)
+    assert len({float(x) for x in batch}) == 3
+    assert pol.collected_count == 3  # the history isn't on the Sobol grid
