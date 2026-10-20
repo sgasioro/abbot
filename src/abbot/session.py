@@ -368,7 +368,8 @@ class _InFlight:
     attempt: int = 0
 
 
-# A hook is called after each ingest with (state, fitted_model_or_None).
+# A hook is called after each ingest with (state, fitted_model_or_None); a batched
+# ``step`` calls it once, after the whole batch.
 StepHook = Callable[[CampaignState, Any], None]
 
 # Called by ``step`` with the named candidate before the experiment runs. Return
@@ -418,6 +419,7 @@ class Campaign:
         self.targets = targets
         self._scored: History | None = None
         self._hooks: list[StepHook] = []
+        self._hooks_deferred = False
         if on_step is not None:
             self._hooks.extend(on_step if isinstance(on_step, list) else [on_step])
 
@@ -606,7 +608,8 @@ class Campaign:
         reason halts the campaign with the batch left outstanding and NOT run. A
         failed run is recorded as a fault (with the error text, no outputs) and
         retried up to ``max_retries`` times, then the campaign halts; the batch's
-        other results are still recorded. Errors from ``evaluate`` propagate (they
+        other results are still recorded. ``on_step`` hooks run once per step,
+        after the whole batch is recorded. Errors from ``evaluate`` propagate (they
         are analysis bugs, and re-running the experiment would not fix them).
         """
         if self.halted:
@@ -630,13 +633,19 @@ class Campaign:
                     logger.warning("%s", self.halted)
                     return self.state()
         observations = self._run_designs(experiment, designs)
-        for item, design, observation in zip(items, designs, observations, strict=True):
-            if isinstance(observation, BaseException):
-                logger.error("experiment.run failed at %s", design, exc_info=observation)
-                self._record_run_error(item, observation)
-                continue
-            out = evaluate(observation)
-            self.ingest(out, observations=observation, id=item.id)
+        # Hooks see the batch once it is all recorded, not each partial state.
+        self._hooks_deferred = True
+        try:
+            for item, design, observation in zip(items, designs, observations, strict=True):
+                if isinstance(observation, BaseException):
+                    logger.error("experiment.run failed at %s", design, exc_info=observation)
+                    self._record_run_error(item, observation)
+                    continue
+                out = evaluate(observation)
+                self.ingest(out, observations=observation, id=item.id)
+        finally:
+            self._hooks_deferred = False
+            self._after_ingest()
         return self.state()
 
     @staticmethod
@@ -927,6 +936,9 @@ class Campaign:
     def _after_ingest(self) -> None:
         # Only pay for a per-step fit + recommend + hooks when someone is listening
         # (the UI registers hooks; run_campaign does not and recommends once at end).
+        # Inside a batch, ``step`` defers this until the whole batch is recorded.
+        if self._hooks_deferred:
+            return
         if not self._hooks:
             self._recommended = []
             return

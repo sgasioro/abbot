@@ -164,3 +164,12 @@ def test_run_campaign_batches_without_overshooting_the_budget():
     result = run_campaign(_spec(), exp, n_shots=7, batch_size=3, initial_designs=seeds)
     assert len(result.history) == 10
     assert exp.batches == [3, 3, 3, 1]  # the budget's last design is a batch of one
+
+
+def test_hooks_fire_once_per_batch():
+    seen = []
+    c = Campaign(_spec(), on_step=lambda state, model: seen.append(state.n_steps))
+    c.seed(torch.linspace(25.0, 75.0, 4, dtype=torch.double).reshape(-1, 1))
+    c.step(_Plate(fail_slot=1), _identity, n=3)
+    c.step(_OneAtATime(), _identity, n=1)
+    assert seen == [3, 4]

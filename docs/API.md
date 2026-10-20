@@ -225,7 +225,8 @@ explicitly if you need it pinned.
   gets `run` once per design. A slot of `run_batch`'s result that is an
   exception fails just that design; `run_batch` raising fails the whole batch.
   Failed designs retry as above, the batch's other results are recorded, and
-  `pre_run` must pass every design before any runs. Picks within a batch are
+  `pre_run` must pass every design before any runs. `on_step` hooks fire once per
+  step, after the whole batch is recorded. Picks within a batch are
   pending-aware (BO: joint q-batch; BAX / US: greedy kriging believer).
 - **Transient numerical hiccups self-heal.** A one-off GP/acquisition failure mid-run
   falls back to a single random probe and records a message on
