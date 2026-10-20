@@ -248,32 +248,44 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   `Xopt(generator=...)` on Xopt's parallel evaluator — the "never the spine" proof
   (`abbot[xopt]`) *(done)*. This is also the path for expensive-parallel/DFT
   campaigns: abbot defines the problem, Xopt orchestrates evaluation.
-- **Now** (pilot campaigns: one simulation, one human-in-the-loop; and a
-  composite-SBI + BAX paper on sbido):
-  - Batch / async: candidate ids and a persisted outstanding queue, and
-    pending-aware policies (`pending=`; kriging believer for BAX), synchronous
-    batches in the blocking loop (`batch_size=`, `BatchExperiment`)
-    *(done)*; an outstanding-candidates list in the UI.
-  - Composite SBI + BAX on sbido: the sbido cutover PR, then whatever the paper
-    benchmark needs (mat_finder regret-parity, continuous BAX).
-  - Layering: abbot is the general-purpose engine (what multibax-sklearn was to
-    sbido, and more), including general SBI-for-guidance machinery; sbido is a
-    thin application that imports abbot. Problem-specific targets stay
-    user-defined and plug into abbot's seams (`ObjectiveReducer` for composite
-    scores over posterior samples, `Goal` for BAX). abbot already covers the loop
-    (seeds, retries, `Supervisor`/`Verdict`, step hooks, proposal fallback,
-    `(outputs, aux)` caching, resume, denoised `recommend`), so sbido's
-    `measure_and_optimize` is replaced by `Campaign`, not moved. Genuinely new
-    to abbot: concrete supervisor monitors (stall / drift / consecutive-fault /
-    `any_of`), a config fingerprint that refuses a mismatched resume, a `targets=` hook
-    with `Rescore` (SBIdO becomes `SimpleBO` + a re-scoring hook), and the
-    trained-`sbi`-posterior sampler (`abbot[sbi]`). Stays in sbido: its scores and theta-distribution goals, the
-    mat_finder simulator and beamtime experiment, trained posteriors,
-    benchmarks, configs, paper runs. The `interop/sbido.py` adapter is removed.
-  - Agent setup: an MCP server over `Campaign`, then a setup copilot that writes
-    the spec / goal. The UI stays the run console and the human-in-the-loop
-    entry point.
+- **Batch / async** — candidate ids and a persisted outstanding queue,
+  pending-aware policies (BoTorch q-batches for BO; greedy kriging believer for
+  BAX / US), synchronous batches in the blocking loop (`batch_size=`,
+  `BatchExperiment`), hooks once per batch, `MockAnalyticExperiment` /
+  `MockDatasetExperiment` *(done)*.
+- **Layering** — abbot is the general engine; sbido and BAXstics are thin
+  applications on it. Problem-specific targets stay in the applications and plug
+  into abbot's seams (`ObjectiveReducer`, `Goal`, `targets=` / `Rescore`); the
+  loop (`Campaign`, supervisors, resume, fingerprints) replaces sbido's
+  `measure_and_optimize` *(done; sbido cutover PR in review, BAXstics port on a
+  branch)*.
+- **Now**, in order:
+  1. **BoTorch 0.18.** The baseline blop and Ax require; do it before new
+     model/acquisition code.
+  2. **Multi-fidelity, cost-aware BO** (pilot: calibrating an expensive
+     simulation; fidelity is system size and other knobs; runs 30 s to 1 h):
+     fidelity variables in the spec (integer / continuous, with targets;
+     designed together with the multitask task / source variable), run time on
+     each record and a fitted power-law cost model, a multi-fidelity GP
+     constructor, a pending-aware `MultiFidelityBO` (cost-weighted max-value
+     entropy search), recommendation at target fidelity with uncertainty, a
+     cost-aware stopping supervisor and cumulative cost in the state, and a
+     synthetic benchmark first. Later: a BAX-shaped goal (every setting that
+     matches the data).
+  3. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
+     related tasks / data sources, sharing the spec design from 2.
+  4. **sbido:** Sam's review of the cutover PR; port master's BAX fallback
+     option (e6a5d77) into abbot or sbido; bump the abbot pin; then what the
+     paper benchmark needs (mat_finder regret-parity, continuous BAX).
+  5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` (it fails
+     to fit sparse, partly zero data; check sbido's kernel option), flagged-shot
+     handling, an outstanding-candidates list in the UI, and reporting
+     multibax's shared random draws across outputs upstream.
+  6. **blop backend:** a `Campaign`-backed blop `Optimizer` for Bluesky
+     beamlines (`abbot[blop]`; see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)).
+  7. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that
+     writes the spec / goal. The UI stays the run console and the
+     human-in-the-loop entry point.
 - **Later** — mixed continuous + categorical spaces (`optimize_acqf_mixed`), output
-  constraints, nn-bax productionization (upstream to Xopt where it fits),
-  BoTorch 0.18 and a blop backend for Bluesky beamlines (see
-  [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)).
+  constraints, nn-bax productionization (upstream to Xopt where it fits). BAXstics
+  merges to its main once abbot is public.

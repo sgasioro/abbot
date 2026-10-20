@@ -248,8 +248,9 @@ Named here so you don't design around their absence as if permanent:
 output-constraint enforcement for BO (feasibility-weighted acquisition over an
 `OBSERVE` column), a run-level JSON serializer including the SBI `aux` payload, a
 `TARGET` objective direction, mixed-space proposal (`optimize_acqf_mixed`),
-continuous BAX (pathwise / seeded-ascent), the full `sbi`-backed benchmark, and
-Bluesky interop.
+continuous BAX (pathwise / seeded-ascent), the full `sbi`-backed benchmark,
+multi-fidelity / cost-aware BO (fidelity variables, cost models, cost-aware
+stopping), and a blop backend for Bluesky.
 
 - **Correlated multi-output `MultiTaskGP` — near-term, needs an ADR first.** The
   `ModelConstructor` seam is the right home, but it hinges on two decisions: where
