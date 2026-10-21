@@ -6,7 +6,8 @@ money). A :class:`CostModel` predicts that cost for designs not yet run, so a po
 can trade value against expense (``SimpleBO(cost_model=...)``) and a supervisor can
 stop at a budget (:func:`abbot.supervision.cost_cap`). Use :class:`CallableCost` for a cost
 you already know, :class:`FittedCost` for a formula whose parameters should be
-learned from the records (:class:`PowerLawCost` is one).
+learned from the records (:class:`PowerLawCost` is one). :class:`SourceCost` is what
+a source-aware policy learns when it isn't given a cost model.
 
 Costs are positive and in the units the records use. Models take designs in raw
 (physical) units, the same ``(..., d)`` layout as ``Record.candidate``, and must be
@@ -15,6 +16,7 @@ differentiable in ``X`` so a continuous acquisition optimizer can use them.
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol, runtime_checkable
@@ -22,6 +24,8 @@ from typing import Protocol, runtime_checkable
 import torch
 
 from abbot.history import History
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -187,3 +191,75 @@ class PowerLawCost(FittedCost):
     @property
     def prefactor(self) -> float:
         return float(self.params["log_a"].exp())
+
+
+class SourceCost(FittedCost):
+    """The default cost of a run as a function of its sources, learned from the
+    recorded costs (run times, unless the caller reports costs).
+
+    ``log cost = log_a + sum over sources``, where each source contributes:
+      - a power law ``p_<name> * log x`` for an ordered source with positive values
+        (system size, sample count);
+      - ``k_<name> * u`` otherwise, with ``u`` the source scaled to [0, 1]
+        (an exponential in the source);
+      - ``f_<name>_<level>`` per level of an unordered source, other than the target
+        (a factor relative to the target level).
+
+    The design variables don't enter it, which keeps it stable on few records; pass
+    your own cost model when cost depends on them too. Until there are enough costed
+    records it predicts the same cost everywhere, so a source-aware policy runs at
+    the target until the seed runs have shown what each source costs.
+    """
+
+    def __init__(self, spec) -> None:
+        if not spec.sources:
+            raise ValueError("SourceCost needs a spec with sources")
+        terms = []
+        params: dict[str, float] = {"log_a": 0.0}
+        source_bounds = spec.bounds_tensor()[:, spec.source_indices()].T.tolist()
+        for source, (low, high) in zip(spec.sources, source_bounds):
+            name = source.name
+            if not source.is_ordered:
+                levels = [v for v in source.domain.values if v != source.target]
+                for v in levels:
+                    params[f"f_{name}_{int(v)}"] = 0.0
+                terms.append(("level", name, levels))
+            elif low > 0:
+                params[f"p_{name}"] = 0.0
+                terms.append(("power", name, None))
+            else:
+                params[f"k_{name}"] = 0.0
+                terms.append(("exp", name, (low, max(high - low, 1e-12))))
+        self._terms = terms
+        self._warned = False
+
+        def source_cost(x, p):
+            log_cost = p["log_a"]
+            for kind, name, extra in self._terms:
+                if kind == "power":
+                    log_cost = log_cost + p[f"p_{name}"] * x[name].clamp_min(1e-12).log()
+                elif kind == "exp":
+                    low, span = extra
+                    log_cost = log_cost + p[f"k_{name}"] * (x[name] - low) / span
+                else:
+                    for v in extra:
+                        log_cost = log_cost + p[f"f_{name}_{int(v)}"] * (x[name] == v).to(
+                            x[name]
+                        )
+            return log_cost.exp()
+
+        super().__init__(source_cost, params)
+
+    def fit(self, history: History, spec) -> None:
+        if (
+            not self._warned
+            and history.records
+            and not any(r.cost is not None and r.cost > 0 for r in history.records)
+        ):
+            logger.warning(
+                "No run has a recorded cost, so every source looks equally expensive "
+                "and a source-aware policy will stay at the target. Use Campaign.step "
+                "(which times runs) or pass costs to ingest/record."
+            )
+            self._warned = True
+        super().fit(history, spec)

@@ -211,16 +211,32 @@ class SimpleBO:
     the caller never pre-negates. When the model has extra OBSERVE outputs, a
     ``ScalarizedPosteriorTransform`` selects the single objective column. Refuses a
     multi-objective spec (use ParetoBO).
+
+    **With sources** it chooses them too: multi-fidelity max-value entropy search,
+    the information a run gives about the best value *at the target*, per unit of
+    cost. The cost is ``cost_model`` if given, else a :class:`abbot.cost.SourceCost`
+    learned from the recorded run times. A batch is built one pick at a time, each
+    accounting for the earlier ones. ``choose_sources=False`` keeps every proposal
+    at the target instead (cheap runs then only inform the model).
+    ``n_candidates`` sets how many target designs sample the best value.
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
 
     def __init__(
-        self, optimizer: CandidateOptimizer | None = None, *, cost_model=None
+        self,
+        optimizer: CandidateOptimizer | None = None,
+        *,
+        cost_model=None,
+        choose_sources: bool = True,
+        n_candidates: int = 1000,
     ) -> None:
         self.optimizer = optimizer or Continuous()
         self.cost_model = cost_model
-        self.last_acquisition_value: float | None = None
+        self.choose_sources = choose_sources
+        self.n_candidates = n_candidates
+        self._source_cost = None
+        self.last_acquisition_value: float | torch.Tensor | None = None
 
     def suggest(
         self,
@@ -236,6 +252,8 @@ class SimpleBO:
                 f"SimpleBO is single-objective but the spec has {spec.n_objectives} "
                 "objective(s); use ParetoBO for multi-objective optimization."
             )
+        if spec.sources and self.choose_sources:
+            return self._suggest_with_sources(history, spec, model, n, pending)
         # Improvement is judged at the target: a lucky cheap-source run must not set
         # the bar. Without sources this is the clean designs unchanged.
         X = spec.at_target(history.clean.designs.double()).unique(dim=0)
@@ -249,6 +267,44 @@ class SimpleBO:
         picks = optimize(self.optimizer, acq, spec, n, spec.target_features())
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
+
+    def _suggest_with_sources(self, history, spec, model, n, pending):
+        from botorch.acquisition import qMultiFidelityMaxValueEntropy
+        from botorch.acquisition.cost_aware import InverseCostWeightedUtility
+        from botorch.models.deterministic import GenericDeterministicModel
+
+        cost_model = self.cost_model
+        if cost_model is None:
+            from abbot.cost import SourceCost
+
+            if self._source_cost is None:
+                self._source_cost = SourceCost(spec)
+            cost_model = self._source_cost
+        cost_model.fit(history, spec)
+        candidates = spec.at_target(spec.sample_designs(self.n_candidates))
+        # Costs relative to a typical target run, so the values read as information
+        # per target-run-equivalent.
+        scale = cost_model(candidates).mean().clamp_min(1e-300)
+        utility = InverseCostWeightedUtility(
+            GenericDeterministicModel(
+                lambda X: (cost_model(X) / scale).clamp_min(1e-12).unsqueeze(-1)
+            )
+        )
+        picks, values = [], []
+        for _ in range(n):  # entropy search proposes one design per call
+            acq = qMultiFidelityMaxValueEntropy(
+                model,
+                candidates,
+                posterior_transform=_objective_transform(spec),
+                X_pending=_extend_pending(_pending_or_none(pending), picks),
+                cost_aware_utility=utility,
+                project=spec.at_target,
+            )
+            x = optimize(self.optimizer, acq, spec, 1, {})
+            picks.append(x)
+            values.append(_acq_value(acq, x))
+        self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
+        return torch.cat(picks)
 
     def ingest(self, results) -> None:  # stateless: history carries the state
         return None
@@ -714,6 +770,7 @@ class BAXPolicy:
             samples = post.rsample(torch.Size([self.n_posterior_samples]))
         term2 = torch.zeros_like(term1)
         n = self.n_posterior_samples
+        conditioned = failed = 0
         for i in range(n):
             f_canon = samples[i].reshape(grid.shape[0], -1)
             f_raw = spec.to_raw(f_canon)  # BAX reads ALL outputs raw (goal consumes them)
@@ -721,6 +778,7 @@ class BAXPolicy:
             if not target:
                 term2 += term1  # no execution info -> entropy unchanged
                 continue
+            conditioned += 1
             try:
                 fant = _condition(
                     model, grid[target].double(), f_canon[target], noise=_FANTASY_JITTER
@@ -729,7 +787,15 @@ class BAXPolicy:
                 term2 += _entropy((fstd**2 + noise).sqrt())
             except Exception:
                 logger.exception("InfoBAX fantasy conditioning failed for a sample.")
+                failed += 1
                 term2 += term1
+        if conditioned and failed == conditioned:
+            # Every fantasy failed, so the information gain is zero everywhere and
+            # the pick would be arbitrary. Say so instead.
+            raise RuntimeError(
+                f"InfoBAX: conditioning {type(model).__name__} failed for every "
+                "posterior sample, so there is no information gain to rank by"
+            )
         term2 = term2 / n
         eig = (term1 - term2).mean(dim=-1)  # (N,) averaged over outputs
         return eig

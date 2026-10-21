@@ -279,9 +279,12 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        spec concept (`Source`: ordered or not, with a target), `IntegerDomain`,
        mixed-space proposal (`optimize_acqf_mixed`), policies pinned at the
        target, recommendation scored at the target.
-     - Phase C: a multi-fidelity model constructor; `SimpleBO` becomes
-       source-aware (cost-weighted max-value entropy search, no separate policy);
-       multi-fidelity InfoBAX.
+     - Phase C1 *(done)*: `MultiFidelityGPConstructor` (picked by default with
+       sources) and `Source(accurate=)`; `SimpleBO` chooses sources (cost-weighted
+       multi-fidelity max-value entropy search, no separate policy) with a learned
+       default cost, `SourceCost`.
+     - Phase C2: multi-fidelity InfoBAX (source levels on the candidate grid,
+       information per unit cost).
      - Phase D: a synthetic benchmark and an example. Later: a BAX-shaped goal
        (every setting that matches the data); UI support.
   3. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then

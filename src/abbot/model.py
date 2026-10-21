@@ -5,7 +5,8 @@ surrogate-agnostic layer, so abbot does NOT define a bespoke Posterior protocol 
 a constructor just builds a botorch ``Model`` and every policy composes over its
 ``.posterior(X)`` unchanged.
 
-Builtins cover single-output GP and multi-output ``ModelListGP``. Involved SBI
+Builtins cover single-output GP, multi-output ``ModelListGP``, and a
+multi-fidelity GP for specs with source variables. Involved SBI
 construction (correlated ``MultiTaskGP``/LCM, per-shot posterior variance via
 ``train_Yvar``, custom GPyTorch likelihoods) plugs in here WITHOUT touching the
 loop or the policy. NN surrogates are botorch ``EnsembleModel`` subclasses (see
@@ -214,14 +215,152 @@ class EnsembleConstructor:
         return ToyEnsembleModel(members, num_outputs=m)
 
 
+class MultiFidelityGPConstructor:
+    """A GP over designs and sources, so cheap runs inform the target: the model for
+    a spec with source variables.
+
+    - **Ordered sources** (fidelity knobs): BoTorch's ``SingleTaskMultiFidelityGP``.
+      Each source is mapped to [0, 1] with its accurate end (``Source.accurate``) at
+      1, on a log scale for ``log=True`` sources. The default linear-truncated kernel
+      models a run as the accurate result plus a bias that vanishes at the accurate
+      end and varies with the design. ``linear_truncated=False`` instead multiplies
+      the design kernel by a per-source kernel, with ``iteration`` naming a source
+      whose results settle towards a limit along it (an exponential-decay kernel;
+      iteration counts, epochs).
+    - **One unordered source** (different codes, simulation vs experiment): a
+      ``MultiTaskGP`` that learns how the sources correlate. The noise level is
+      shared across sources unless ``Yvar`` is given. (BoTorch's per-source noise
+      likelihood fails in conditioning and in entropy search as of 0.18.)
+
+    Ordered and unordered sources together, or several unordered sources, aren't
+    supported yet. A multi-output spec gets one model per output where needed.
+    """
+
+    provides_uq = "calibrated_variance"
+
+    def __init__(
+        self, spec, *, linear_truncated: bool = True, iteration: str | None = None
+    ) -> None:
+        sources = list(spec.sources or [])
+        if not sources:
+            raise ValueError("MultiFidelityGPConstructor needs a spec with sources")
+        ordered = [s for s in sources if s.is_ordered]
+        unordered = [s for s in sources if not s.is_ordered]
+        if ordered and unordered:
+            raise ValueError(
+                "MultiFidelityGPConstructor doesn't yet model ordered and unordered "
+                f"sources together (ordered: {[s.name for s in ordered]}, unordered: "
+                f"{[s.name for s in unordered]})"
+            )
+        if len(unordered) > 1:
+            raise ValueError(
+                "MultiFidelityGPConstructor models one unordered source; got "
+                f"{[s.name for s in unordered]}"
+            )
+        if iteration is not None and iteration not in [s.name for s in ordered]:
+            raise ValueError(
+                f"iteration={iteration!r} is not an ordered source "
+                f"({[s.name for s in ordered]})"
+            )
+        self.spec = spec
+        self.linear_truncated = linear_truncated
+        self.iteration = iteration
+        self.bounds = spec.bounds_tensor()
+
+    def build(self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None):
+        X, Y = X.double(), Y.double()
+        Yvar = Yvar.double() if Yvar is not None else None
+        if all(s.is_ordered for s in self.spec.sources):
+            return self._fidelity_gp(X, Y, Yvar)
+        return self._multitask_gp(X, Y, Yvar)
+
+    def _fidelity_gp(self, X, Y, Yvar):
+        from botorch.models import SingleTaskMultiFidelityGP
+
+        spec = self.spec
+        positions = dict(zip(spec.source_names, spec.source_indices()))
+        iteration = positions[self.iteration] if self.iteration is not None else None
+        gp = SingleTaskMultiFidelityGP(
+            X,
+            Y,
+            train_Yvar=Yvar,
+            iteration_fidelity=iteration,
+            data_fidelities=[i for i in positions.values() if i != iteration] or None,
+            linear_truncated=self.linear_truncated,
+            input_transform=_fidelity_transform(spec, self.bounds),
+        )
+        fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
+        return gp
+
+    def _multitask_gp(self, X, Y, Yvar):
+        from botorch.models import MultiTaskGP
+        from botorch.models.utils.gpytorch_modules import (
+            get_gaussian_likelihood_with_lognormal_prior,
+        )
+
+        (source,) = self.spec.sources
+        (t,) = self.spec.source_indices()
+        d = X.shape[-1]
+        design = [i for i in range(d) if i != t]
+        gps = []
+        for j in range(Y.shape[-1]):
+            gp = MultiTaskGP(
+                X,
+                Y[..., j : j + 1],
+                train_Yvar=Yvar[..., j : j + 1] if Yvar is not None else None,
+                task_feature=t,
+                output_tasks=[int(source.target)],
+                all_tasks=sorted(int(v) for v in source.domain.values),
+                likelihood=get_gaussian_likelihood_with_lognormal_prior()
+                if Yvar is None
+                else None,
+                input_transform=Normalize(d=d, indices=design, bounds=self.bounds.double()),
+            )
+            fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
+            gps.append(gp)
+        return gps[0] if len(gps) == 1 else ModelListGP(*gps)
+
+
+def _fidelity_transform(spec, bounds: torch.Tensor):
+    """Inputs to the unit cube, with each ordered source's accurate end at 1 (on a
+    log scale for ``log=True`` sources), as BoTorch's fidelity kernels expect."""
+    from botorch.models.transforms.input import (
+        AffineInputTransform,
+        ChainedInputTransform,
+        Log10,
+    )
+
+    lower, upper = bounds.double().clone()
+    flip = torch.zeros_like(lower, dtype=torch.bool)
+    logged = []
+    for i, source in zip(spec.source_indices(), spec.sources):
+        if source.log:
+            logged.append(i)
+            lower[i], upper[i] = lower[i].log10(), upper[i].log10()
+        flip[i] = source.accurate == "low"
+    span = (upper - lower).where(upper > lower, torch.ones_like(lower))
+    # (x - offset) / coefficient: lower -> 0 and upper -> 1, or reversed when flipped.
+    affine = AffineInputTransform(
+        d=len(lower),
+        coefficient=torch.where(flip, -span, span),
+        offset=torch.where(flip, upper, lower),
+    )
+    if not logged:
+        return affine
+    return ChainedInputTransform(log=Log10(indices=logged), scale=affine)
+
+
 def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstructor:
-    """Pick a sensible builtin: single-output GP for one OUTPUT, else ModelList.
+    """Pick a sensible builtin: single-output GP for one OUTPUT, else ModelList, and
+    a :class:`MultiFidelityGPConstructor` when the spec has sources.
 
     Keyed on ``n_outputs`` (every output is modeled, incl. OBSERVE), not objective
     count — a single-objective spec with an extra OBSERVE output needs a ModelList.
     Callers may still pass their own ``ModelConstructor`` (e.g. a correlated
     MultiTaskGP for SBI). ``bounds`` defaults to the spec's design bounds.
     """
+    if spec.sources:
+        return MultiFidelityGPConstructor(spec)
     if bounds is None:
         bounds = spec.bounds_tensor()
     if spec.n_outputs == 1:
