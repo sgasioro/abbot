@@ -73,8 +73,10 @@ def drive(
     batch shrinks so the budget isn't overshot.
 
     ``should_continue`` is checked before each step; returning False stops the loop
-    early (a UI's pause/stop). Read why it stopped off the campaign: ``halted``, or
-    ``len(history)`` against the budget.
+    early (a UI's pause/stop). A supervisor's ``stop`` (a cost budget spent, the
+    search converged: ``cost_cap``, ``acquisition_monitor``) ends the loop normally;
+    clear ``campaign.stopped`` to keep going. Read why it stopped off the campaign:
+    ``stopped``, ``halted``, or ``len(history)`` against the budget.
 
     On a persistent fault (the supervisor halted, or a run kept failing),
     ``on_persistent_fault="halt"`` raises :class:`PersistentFaultError` (the store
@@ -87,7 +89,7 @@ def drive(
             f"on_persistent_fault must be 'halt' or 'continue', got {on_persistent_fault!r}"
         )
     while n_total is None or len(campaign.history) < n_total:
-        if should_continue is not None and not should_continue():
+        if campaign.stopped or (should_continue is not None and not should_continue()):
             break
         before = len(campaign.history)
         n = batch_size if n_total is None else min(batch_size, n_total - before)

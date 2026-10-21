@@ -3,7 +3,9 @@
 A :class:`~abbot.experiment.Supervisor` is called with the full ``History`` after
 every result and returns a :class:`~abbot.experiment.Verdict`: ``retry`` marks the
 latest shot unusable (it is kept out of the surrogate and re-run), ``halt`` says the
-apparatus needs a human (the campaign stops, resumable).
+apparatus needs a human (the campaign stops, resumable), and ``stop`` says the
+campaign is done without anything being wrong (a cost budget spent, the search
+converged: :func:`cost_cap`, :func:`acquisition_monitor`).
 
 Single-observation checks are written as ``detector(observation) -> bool`` and
 lifted with :func:`per_shot`, so their authors never touch the history and cannot
@@ -75,16 +77,19 @@ def per_shot(detector: Detector) -> Supervisor:
 
 
 def any_of(*supervisors: Supervisor) -> Supervisor:
-    """Merge supervisors: ``retry`` is an OR, the first non-None ``halt`` wins."""
+    """Merge supervisors: ``retry`` is an OR; the first non-None ``halt`` and the
+    first non-None ``stop`` win."""
 
     def supervisor(history: History) -> Verdict:
-        retry, halt = False, None
+        retry, halt, stop = False, None, None
         for s in supervisors:
             verdict = s(history)
             retry = retry or verdict.retry
             if halt is None:
                 halt = verdict.halt
-        return Verdict(retry=retry, halt=halt)
+            if stop is None:
+                stop = getattr(verdict, "stop", None)
+        return Verdict(retry=retry, halt=halt, stop=stop)
 
     return supervisor
 
@@ -245,3 +250,51 @@ def standard_supervisor(
         drift_monitor(bounds, signal=signal),
         consecutive_fault_monitor(detector),
     )
+
+
+def cost_cap(budget: float) -> Supervisor:
+    """Stop once the recorded cost reaches ``budget`` (``History.cost_spent``, in the
+    records' cost units; failed runs count, since they were paid for).
+
+    A stop, not a halt: nothing is wrong, the campaign is simply done. A run already
+    in flight when the cap is crossed still lands.
+    """
+    if budget <= 0:
+        raise ValueError(f"budget must be positive, got {budget}")
+
+    def supervisor(history: History) -> Verdict:
+        spent = history.cost_spent
+        if spent >= budget:
+            return Verdict(stop=f"cost budget reached (cost_cap): spent {spent:.4g} of {budget:.4g}.")
+        return Verdict()
+
+    return supervisor
+
+
+def acquisition_monitor(threshold: float, window: int = 3) -> Supervisor:
+    """Stop when the last ``window`` policy proposals all had an acquisition value
+    below ``threshold``: the policy no longer expects a run to be worth doing.
+
+    Reads ``Record.acquisition`` (set from the policy's ``last_acquisition_value``),
+    so it is in the policy's own units: log-EI for ``SimpleBO`` (log-EI minus log
+    cost with a ``cost_model``), information gain for InfoBAX, posterior std for
+    uncertainty sampling. Records without a value (seeds, random probes, retries)
+    are skipped. Pick ``threshold`` per campaign.
+    """
+    if window < 1:
+        raise ValueError(f"window must be at least 1, got {window}")
+
+    def supervisor(history: History) -> Verdict:
+        values = [r.acquisition for r in history.records if r.acquisition is not None]
+        recent = values[-window:]
+        if len(recent) == window and max(recent) < threshold:
+            return Verdict(
+                stop=(
+                    f"converged (acquisition_monitor): the last {window} proposal(s) "
+                    f"had acquisition values below {threshold:.4g} "
+                    f"(highest {max(recent):.4g})."
+                )
+            )
+        return Verdict()
+
+    return supervisor

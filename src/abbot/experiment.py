@@ -87,6 +87,7 @@ class Verdict:
 
     retry: bool = False  # this observation is unusable; re-run the same candidate
     halt: str | None = None  # apparatus is broken; human-readable reason
+    stop: str | None = None  # done (budget spent, converged); not a fault. Reason.
 
 
 @runtime_checkable

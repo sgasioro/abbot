@@ -35,6 +35,8 @@ class Record:
     retry_of: int | None = None  # index this shot re-runs, if any
     error: str | None = None  # experiment.run raised (then fault=True, outputs=None)
     id: str | None = None  # the Campaign candidate id this record closed (e.g. "c0007")
+    cost: float | None = None  # what the run cost: step's wall-clock seconds, or caller-given
+    acquisition: float | None = None  # the policy's acquisition value when it proposed this design
 
 
 @dataclass
@@ -78,6 +80,11 @@ class History:
                 "every evaluate() return must have the same number of columns."
             )
         return torch.stack([v.reshape(-1) for v in vals])
+
+    @property
+    def cost_spent(self) -> float:
+        """Total recorded cost, failed runs included (records without a cost count 0)."""
+        return float(sum(r.cost for r in self.records if r.cost is not None))
 
     @property
     def output_vars(self) -> torch.Tensor | None:

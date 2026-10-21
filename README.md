@@ -262,16 +262,19 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 - **Now**, in order:
   1. **BoTorch 0.18** *(done)*: abbot now requires it, the same line as blop and
      Ax.
-  2. **Multi-fidelity, cost-aware BO** (pilot: calibrating an expensive
-     simulation; fidelity is system size and other knobs; runs 30 s to 1 h):
-     fidelity variables in the spec (integer / continuous, with targets;
-     designed together with the multitask task / source variable), run time on
-     each record and a fitted power-law cost model, a multi-fidelity GP
-     constructor, a pending-aware `MultiFidelityBO` (cost-weighted max-value
-     entropy search), recommendation at target fidelity with uncertainty, a
-     cost-aware stopping supervisor and cumulative cost in the state, and a
-     synthetic benchmark first. Later: a BAX-shaped goal (every setting that
-     matches the data).
+  2. **Multi-fidelity, cost-aware BO** (pilot: calibrating an expensive simulation;
+     fidelity is system size and other knobs; runs 30 s to 1 h).
+     - Phase A, cost *(done)*: per-record cost (wall-clock or caller-given), cost
+       models (`FixedCost`, `CallableCost`, `PowerLawCost`), cost-aware `SimpleBO`
+       / `ParetoBO`, and `Verdict.stop` with `cost_cap` / `acquisition_monitor`.
+     - Phase B, source variables: fidelities and tasks / sources as one spec
+       concept (ordered or not, with a target), `IntegerDomain`, recommendation
+       scored at the target.
+     - Phase C: a multi-fidelity model constructor; `SimpleBO` becomes
+       source-aware (cost-weighted max-value entropy search, no separate policy);
+       multi-fidelity InfoBAX.
+     - Phase D: a synthetic benchmark and an example. Later: a BAX-shaped goal
+       (every setting that matches the data); UI support.
   3. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
   4. **sbido:** Sam's review of the cutover PR; port master's BAX fallback

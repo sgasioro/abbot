@@ -39,7 +39,14 @@ UQRequirement = Literal["point", "samples", "calibrated_variance"]
 
 @runtime_checkable
 class Policy(Protocol):
-    """ask/tell acquisition policy over a botorch Model (gest-api-aligned)."""
+    """ask/tell acquisition policy over a botorch Model (gest-api-aligned).
+
+    Optionally, a policy sets ``last_acquisition_value`` after each ``suggest``: its
+    acquisition value per pick, ``(n,)`` (or one value for a joint batch), in its
+    own units. The campaign stores it on each record (``Record.acquisition``), which
+    is what :func:`abbot.supervision.acquisition_monitor` stops on. Every built-in
+    policy sets it.
+    """
 
     uq_requirement: UQRequirement
 
@@ -67,6 +74,37 @@ class Policy(Protocol):
 
 # End-of-run handover ("which design do we recommend?") is NOT a policy concern:
 # every policy wanted the same rule, so it lives once in ``session.recommend``.
+
+
+def _acq_value(acq, X: torch.Tensor) -> float:
+    """The acquisition value of the joint batch ``X (q, d)``."""
+    with torch.no_grad():
+        return float(acq(X.double().unsqueeze(0)).reshape(-1)[0])
+
+
+class _CostWeighted(torch.nn.Module):
+    """A log-space acquisition per unit cost: ``acq(X) - log(cost of the batch)``.
+
+    For the log-valued acquisitions abbot uses (log-NEI, log-NEHVI), this is the
+    expected improvement per unit cost. ``cost_model`` sees raw designs.
+    """
+
+    def __init__(self, acq, cost_model) -> None:
+        super().__init__()
+        self.acq = acq
+        self.cost_model = cost_model
+        self.model = acq.model
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        cost = self.cost_model(X).reshape(X.shape[:-1]).sum(dim=-1)
+        return self.acq(X) - cost.clamp_min(1e-12).log()
+
+
+def _cost_weighted(acq, cost_model, history: History, spec: ProblemSpec):
+    if cost_model is None:
+        return acq
+    cost_model.fit(history, spec)
+    return _CostWeighted(acq, cost_model)
 
 
 def _objective_transform(spec: ProblemSpec):
@@ -157,7 +195,9 @@ def _condition(
 class SimpleBO:
     """Single-objective BO: noisy log-EI + a CandidateOptimizer.
 
-    The acquisition is qLogNoisyEI with the clean history as ``X_baseline``.
+    The acquisition is qLogNoisyEI with the clean history as ``X_baseline``. With a
+    ``cost_model`` (:mod:`abbot.cost`) it becomes log-EI minus log cost: expected
+    improvement per unit cost, refitted to the recorded costs each step.
     Always maximizes: the loop fits the model in maximize-canonical space (it
     applies ``spec.output_signs``), so a MINIMIZE objective is handled upstream and
     the caller never pre-negates. When the model has extra OBSERVE outputs, a
@@ -167,8 +207,12 @@ class SimpleBO:
 
     uq_requirement: UQRequirement = "calibrated_variance"
 
-    def __init__(self, optimizer: CandidateOptimizer | None = None) -> None:
+    def __init__(
+        self, optimizer: CandidateOptimizer | None = None, *, cost_model=None
+    ) -> None:
         self.optimizer = optimizer or Continuous()
+        self.cost_model = cost_model
+        self.last_acquisition_value: float | None = None
 
     def suggest(
         self,
@@ -191,7 +235,10 @@ class SimpleBO:
             posterior_transform=_objective_transform(spec),
             X_pending=_pending_or_none(pending),
         )
-        return self.optimizer.optimize(acq, spec, n)
+        acq = _cost_weighted(acq, self.cost_model, history, spec)
+        picks = self.optimizer.optimize(acq, spec, n)
+        self.last_acquisition_value = _acq_value(acq, picks)
+        return picks
 
     def ingest(self, results) -> None:  # stateless: history carries the state
         return None
@@ -210,6 +257,9 @@ class ParetoBO:
         sampling and logs that it did;
       - it logs the inferred ref point (and how to pin it);
       - it warns if the non-dominated set is empty / hypervolume is ~0.
+
+    ``cost_model`` (:mod:`abbot.cost`) makes it log-NEHVI minus log cost, as for
+    :class:`SimpleBO`.
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
@@ -219,8 +269,12 @@ class ParetoBO:
         optimizer: CandidateOptimizer | None = None,
         ref_point: torch.Tensor | list[float] | None = None,
         min_clean: int | None = None,
+        *,
+        cost_model=None,
     ) -> None:
         self.optimizer = optimizer or Continuous()
+        self.cost_model = cost_model
+        self.last_acquisition_value: float | torch.Tensor | None = None
         self.ref_point = (
             None if ref_point is None else torch.as_tensor(ref_point, dtype=torch.double)
         )
@@ -253,9 +307,7 @@ class ParetoBO:
                 Y.shape[0],
                 floor,
             )
-            return UncertaintySampling(self.optimizer).suggest(
-                history, spec, model, n, pending=pending
-            )
+            return self._explore(history, spec, model, n, pending)
 
         if self.ref_point is not None:
             ref_point = self.ref_point
@@ -304,7 +356,17 @@ class ParetoBO:
             objective=objective,
             X_pending=_pending_or_none(pending),
         )
-        return self.optimizer.optimize(acq, spec, n)
+        acq = _cost_weighted(acq, self.cost_model, history, spec)
+        picks = self.optimizer.optimize(acq, spec, n)
+        self.last_acquisition_value = _acq_value(acq, picks)
+        return picks
+
+    def _explore(self, history, spec, model, n, pending) -> torch.Tensor:
+        """Uncertainty sampling until the front can direct the search."""
+        us = UncertaintySampling(self.optimizer)
+        picks = us.suggest(history, spec, model, n, pending=pending)
+        self.last_acquisition_value = us.last_acquisition_value
+        return picks
 
     def ingest(self, results) -> None:
         return None
@@ -324,6 +386,7 @@ class UncertaintySampling:
 
     def __init__(self, optimizer: CandidateOptimizer | None = None) -> None:
         self.optimizer = optimizer or Continuous()
+        self.last_acquisition_value: torch.Tensor | None = None
 
     def suggest(
         self,
@@ -342,6 +405,7 @@ class UncertaintySampling:
         # the pending set the model is conditioned on before the next.
         pending = _pending_or_none(pending)
         picks: list[torch.Tensor] = []
+        values: list[float] = []
         for _ in range(n):
             cond = condition_on_pending(model, _extend_pending(pending, picks))
             if spec.n_outputs == 1:
@@ -349,6 +413,8 @@ class UncertaintySampling:
             else:
                 acq = _SumPosteriorStd(cond)
             picks.append(self.optimizer.optimize(acq, spec, 1))
+            values.append(_acq_value(acq, picks[-1]))
+        self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
         return torch.cat(picks)
 
     def ingest(self, results) -> None:
@@ -454,6 +520,7 @@ class BAXPolicy:
         # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
         self.switched: bool = False  # last suggest left MeanBAX for any pick (SwitchBAX -> InfoBAX, MeanBAX -> US)
+        self.last_acquisition_value: torch.Tensor | None = None  # per pick, last suggest
         # Optional ``noise_at(X) -> (N, m)`` measurement-noise variance (raw units) at
         # candidates, for InfoBAX; default: the model's own observation noise.
         self.noise_at = noise_at
@@ -527,6 +594,7 @@ class BAXPolicy:
         # designs, the model is conditioned on them at its own mean, and the
         # acquisition is recomputed before the next pick.
         picks: list[int] = []
+        values: list[float] = []
         switched = False
         for _ in range(min(n, grid.shape[0])):
             inflight = _extend_pending(pending, [grid[picks]] if picks else [])
@@ -540,8 +608,10 @@ class BAXPolicy:
             acq = acq.clone()
             acq[self._collected] = float("-inf")
             picks.append(int(acq.argmax()))
+            values.append(float(acq[picks[-1]]))
         self._collected.append(picks[-1])
         self.switched = switched
+        self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
         return grid[picks]
 
     def ingest(self, results) -> None:

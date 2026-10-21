@@ -21,7 +21,7 @@ without a deprecation period.
 | Training targets | `Campaign(..., targets=)` / `Targets` (`(history, spec) -> Y` or `(Y, Yvar)`), `apply_targets` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, batch_size, ...)`, `drive(campaign, experiment, evaluate, *, n_total, batch_size, on_persistent_fault, should_continue)` (the one blocking loop; `run_campaign` and the UI `RunController` run on it), `PersistentFaultError` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
-| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
+| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
@@ -40,8 +40,12 @@ on them.
   composite objectives; the reducer-mount API may grow
   (e.g. reducing inside the acquisition).
 - **`abbot.supervision`** — `per_shot`, `any_of`, `stall_monitor`, `drift_monitor`,
-  `consecutive_fault_monitor`, `standard_supervisor`. The default thresholds were
-  calibrated on sbido's scattering benchmark.
+  `consecutive_fault_monitor`, `standard_supervisor`, and the stopping supervisors
+  `cost_cap`, `acquisition_monitor` (`Verdict.stop`). The default fault thresholds
+  were calibrated on sbido's scattering benchmark.
+- **`abbot.cost`** (`CostModel`, `FixedCost`, `CallableCost`, `PowerLawCost`),
+  `Record.cost` / `Record.acquisition`, `SimpleBO` / `ParetoBO(cost_model=)` — new;
+  multi-fidelity (source variables) will build on them.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
   the engine through `Campaign`, not by importing UI internals.
 - **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`,
@@ -157,6 +161,19 @@ replicate measurements), stored on `Record.output_var`. When *every* clean recor
 carries it, the loop threads it to the surrogate's `train_Yvar` (a heteroskedastic
 fit); otherwise the model infers the noise level. Variance is sign-invariant, so it
 is never flipped by the canonical convention.
+
+**Cost and stopping (optional).** Every record carries a `cost`: the wall-clock
+seconds `step` measured (a batch's time split evenly), or what the caller passed
+(`ingest(..., costs=)`, `record(..., cost=)`, `fail(..., cost=)`: core-hours,
+money). `CampaignState` reports `costs` and `cost_spent`. `SimpleBO(cost_model=...)`
+and `ParetoBO(cost_model=...)` maximize log-acquisition minus log cost (improvement
+per unit cost), refitting the model to the recorded costs each step; `PowerLawCost`
+suits costs that scale steeply with a size-like variable. A supervisor's
+`Verdict.stop` marks the campaign done without a fault: `cost_cap(budget)` stops
+once `cost_spent` reaches the budget, and `acquisition_monitor(threshold, window)`
+once the policy's recent acquisition values (stored per record from its
+`last_acquisition_value`) all fall below `threshold`. `drive` ends normally on a
+stop; ask/tell callers read `campaign.stopped` and may carry on.
 
 **Swapping the surrogate.** The documented extension point is a custom
 `ModelConstructor`: `build(X, Y, Yvar) -> botorch.Model`, with `provides_uq` set to
