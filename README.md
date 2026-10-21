@@ -259,6 +259,14 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   loop (`Campaign`, supervisors, resume, fingerprints) replaces sbido's
   `measure_and_optimize` *(done; sbido cutover PR in review, BAXstics port on a
   branch)*.
+- **Standing: UX audits.** Ease of use is a deliberate priority. For each core
+  workflow (single- and multi-objective BO, BAX goals, batches and async
+  ask/tell, resume, cost and stopping, sources / multi-fidelity), periodically
+  set the same problem up in abbot, plain BoTorch, Ax and Xopt (and blop where
+  it applies), and compare lines of code, concepts a newcomer must learn, what
+  must be gotten right by hand, error messages on common mistakes, and how
+  quickly the docs answer "how do I...". The point is to find what to improve in
+  abbot; these are internal checks, not published claims.
 - **Now**, in order:
   1. **BoTorch 0.18** *(done)*: abbot now requires it, the same line as blop and
      Ax.

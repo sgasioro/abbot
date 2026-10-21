@@ -66,8 +66,8 @@ core install, so it is not a home for labs that don't run a RunEngine.
 - **Xopt**: composite measurements and per-shot supervision need changes to its
   data model, not a new generator, and its focus is accelerators and beamlines.
   Interop yes; housing every lab use case there is not its aim.
-- **Ax**: objective-and-trial centric, heavy, tightly pinned to a BoTorch
-  release; BAX goals sit awkwardly in it.
+- **Ax**: built around objectives and trials, which BAX goals and raw composite
+  observations don't map onto; it also pins a narrow BoTorch range.
 - **blop**: Bluesky-only by design.
 
 The BAX algorithms on their own are portable and could live elsewhere. What
@@ -89,6 +89,10 @@ and resume; and a UI that needs no EPICS, Bluesky or Badger.
   (Bluesky, Xopt evaluators).
 - **Adapters stay thin** and live in `abbot.interop`, one per neighbour, each
   behind an optional extra.
+- **UX is a priority, and gets checked.** abbot aims for specs a scientist can
+  read and safe behaviour by default, and periodically sets its workflows up
+  alongside the neighbours to find what's awkward in its own (see the README
+  roadmap).
 
 ## Interop status
 
