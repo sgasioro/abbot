@@ -1,10 +1,14 @@
 """The CandidateOptimizer seam: candidate proposal decoupled from the surrogate.
 
 Basis: nn-bax ``acq_opt.py`` (``SubsetOptimizer`` discrete-argmax vs
-``ContinuousOptimizer``). Day-one scope is **continuous** (``optimize_acqf``) +
-**enumerated-discrete** (``optimize_acqf_discrete``) — this covers all three
-source repos as they run today. True combinatorial (non-enumerable) search is an
-extension point, not solved speculatively.
+``ContinuousOptimizer``). ``Continuous`` covers any space with a continuous or
+integer axis (``optimize_acqf``; integer axes relaxed then rounded; enumerated axes
+alongside them enumerated by ``optimize_acqf_mixed``). ``DiscreteArgmax`` covers
+all-enumerated spaces (``optimize_acqf_discrete``). True combinatorial
+(non-enumerable) search is an extension point, not solved speculatively.
+
+``fixed_features={position: value}`` pins inputs, which is how a policy that doesn't
+choose sources proposes at their target (``spec.target_features()``).
 
 Decoupling proposal from the surrogate is what lets a discrete BAXstics problem
 and a continuous accelerator problem share one policy.
@@ -16,61 +20,109 @@ from typing import Protocol, runtime_checkable
 
 import torch
 from botorch.acquisition import AcquisitionFunction
-from botorch.optim import optimize_acqf, optimize_acqf_discrete
+from botorch.optim import optimize_acqf, optimize_acqf_discrete, optimize_acqf_mixed
 
-from abbot.problem import ProblemSpec
+from abbot.problem import ContinuousDomain, EnumeratedDomain, IntegerDomain, ProblemSpec
 
 
 @runtime_checkable
 class CandidateOptimizer(Protocol):
-    """Maximize an acquisition function over the design space, return (n, d)."""
+    """Maximize an acquisition function over the inputs, return (n, d).
+
+    ``fixed_features`` pins inputs ``{position: value}``; optimizers that predate it
+    may not accept it, and policies only pass it when the spec has sources.
+    """
 
     def optimize(
-        self, acq: AcquisitionFunction, spec: ProblemSpec, n: int
+        self,
+        acq: AcquisitionFunction,
+        spec: ProblemSpec,
+        n: int,
+        *,
+        fixed_features: dict[int, float] | None = None,
     ) -> torch.Tensor: ...
 
 
+# Above this many combinations of enumerated values, a mixed space is too big to
+# enumerate per proposal; pass the combinations you care about to DiscreteArgmax.
+MAX_MIXED_COMBINATIONS = 256
+
+
 class Continuous:
-    """Continuous proposal via botorch ``optimize_acqf``."""
+    """Proposal via botorch ``optimize_acqf`` for any space with a continuous or
+    integer input. Integer inputs are optimized as continuous and rounded;
+    enumerated inputs alongside them are enumerated (``optimize_acqf_mixed``, one
+    sub-problem per combination of their values, up to
+    ``MAX_MIXED_COMBINATIONS``)."""
 
     def __init__(self, num_restarts: int = 10, raw_samples: int = 256) -> None:
         self.num_restarts = num_restarts
         self.raw_samples = raw_samples
 
     def optimize(
-        self, acq: AcquisitionFunction, spec: ProblemSpec, n: int
+        self,
+        acq: AcquisitionFunction,
+        spec: ProblemSpec,
+        n: int,
+        *,
+        fixed_features: dict[int, float] | None = None,
     ) -> torch.Tensor:
-        from abbot.problem import ContinuousDomain
+        from itertools import product
 
-        # Day-one scope is a homogeneous continuous space. A mixed continuous +
-        # enumerated space needs optimize_acqf_mixed, which is NOT wired yet — fail
-        # loudly rather than silently relaxing the enumerated axis to a float range.
-        if any(not isinstance(d, ContinuousDomain) for d in spec.domain):
-            kinds = {type(d).__name__ for d in spec.domain}
+        inputs = spec.inputs
+        unsupported = [
+            d.name for d in inputs
+            if not isinstance(d, (ContinuousDomain, IntegerDomain, EnumeratedDomain))
+        ]
+        if unsupported:
             raise NotImplementedError(
-                "Continuous optimizer requires an all-continuous domain, but got "
-                f"{sorted(kinds)}. Mixed continuous+enumerated proposal "
-                "(optimize_acqf_mixed) is deferred; for an all-enumerated space use "
-                "DiscreteArgmax instead."
+                f"Continuous optimizer can't propose structured inputs {unsupported}."
             )
-        bounds = spec.bounds_tensor()
-        candidates, _ = optimize_acqf(
-            acq,
-            bounds=bounds,
-            q=n,
-            num_restarts=self.num_restarts,
-            raw_samples=self.raw_samples,
-            inequality_constraints=spec.inequality_constraints(),
-        )
+        fixed = dict(fixed_features or {})
+        integer = [j for j, d in enumerate(inputs) if isinstance(d, IntegerDomain)]
+
+        def round_integers(X: torch.Tensor) -> torch.Tensor:
+            if integer:
+                X = X.clone()
+                X[..., integer] = X[..., integer].round()
+            return X
+
+        enum = [
+            j for j, d in enumerate(inputs)
+            if isinstance(d, EnumeratedDomain) and j not in fixed
+        ]
+        kwargs = {
+            "acq_function": acq,
+            "bounds": spec.bounds_tensor(),
+            "q": n,
+            "num_restarts": self.num_restarts,
+            "raw_samples": self.raw_samples,
+            "inequality_constraints": spec.inequality_constraints(),
+            "post_processing_func": round_integers,
+        }
+        if not enum:
+            candidates, _ = optimize_acqf(fixed_features=fixed or None, **kwargs)
+            return candidates.detach()
+        combos = list(product(*(inputs[j].values for j in enum)))
+        if len(combos) > MAX_MIXED_COMBINATIONS:
+            raise ValueError(
+                f"{len(combos)} combinations of enumerated values "
+                f"({[inputs[j].name for j in enum]}) is too many to enumerate per "
+                f"proposal (limit {MAX_MIXED_COMBINATIONS}); make some of them "
+                "continuous or integer, or use DiscreteArgmax(choices=...)."
+            )
+        fixed_list = [{**fixed, **dict(zip(enum, map(float, c)))} for c in combos]
+        candidates, _ = optimize_acqf_mixed(fixed_features_list=fixed_list, **kwargs)
         return candidates.detach()
 
 
 class DiscreteArgmax:
     """Enumerated proposal via botorch ``optimize_acqf_discrete``.
 
-    ``choices`` is the (N, d) tensor of enumerable candidates. When omitted it is
-    built as the Cartesian product of each EnumeratedDomain's values (small spaces
-    only — large products should pass ``choices`` explicitly).
+    ``choices`` is the (N, d) tensor of enumerable candidates (every input). When
+    omitted it is built as the Cartesian product of each enumerated or integer
+    input's values (small spaces only — large products should pass ``choices``
+    explicitly). ``fixed_features`` keeps only the choices that match.
     """
 
     def __init__(self, choices: torch.Tensor | None = None) -> None:
@@ -79,42 +131,52 @@ class DiscreteArgmax:
     def _enumerate(self, spec: ProblemSpec) -> torch.Tensor:
         from itertools import product
 
-        from abbot.problem import EnumeratedDomain
-
         axes = []
-        for d in spec.domain:
+        for d in spec.inputs:
             if isinstance(d, EnumeratedDomain):
                 axes.append(d.values)
+            elif isinstance(d, IntegerDomain):
+                axes.append(list(range(d.lower, d.upper + 1)))
             else:
                 raise TypeError(
                     "DiscreteArgmax without explicit `choices` requires every "
-                    f"variable to be EnumeratedDomain; {d.name!r} is not."
+                    f"input to be enumerated or integer; {d.name!r} is not."
                 )
         return torch.tensor(list(product(*axes)), dtype=torch.double)
 
     def optimize(
-        self, acq: AcquisitionFunction, spec: ProblemSpec, n: int
+        self,
+        acq: AcquisitionFunction,
+        spec: ProblemSpec,
+        n: int,
+        *,
+        fixed_features: dict[int, float] | None = None,
     ) -> torch.Tensor:
         choices = self.choices if self.choices is not None else self._enumerate(spec)
-        candidates, _ = optimize_acqf_discrete(acq, q=n, choices=choices.double())
+        choices = choices.double()
+        for j, value in (fixed_features or {}).items():
+            choices = choices[torch.isclose(choices[:, j], torch.tensor(value).double())]
+        if not len(choices):
+            raise ValueError(f"no choices match the fixed inputs {fixed_features}")
+        candidates, _ = optimize_acqf_discrete(acq, q=n, choices=choices)
         return candidates.detach()
 
 
-def default_optimizer(spec: ProblemSpec) -> CandidateOptimizer:
-    """Pick the CandidateOptimizer the spec supports; surface the mixed-space limit.
+def optimize(optimizer, acq, spec: ProblemSpec, n: int, fixed_features=None) -> torch.Tensor:
+    """``optimizer.optimize``, passing ``fixed_features`` only when there are some,
+    so custom optimizers written before it existed keep working without sources."""
+    if fixed_features:
+        return optimizer.optimize(acq, spec, n, fixed_features=fixed_features)
+    return optimizer.optimize(acq, spec, n)
 
-    - all-continuous  -> ``Continuous`` (``optimize_acqf``)
-    - all-enumerated  -> ``DiscreteArgmax`` (``optimize_acqf_discrete``)
-    - mixed           -> ``ValueError`` (optimize_acqf_mixed is deferred). Raised up
-      front rather than silently relaxing the enumerated axis at proposal time.
+
+def default_optimizer(spec: ProblemSpec) -> CandidateOptimizer:
+    """Pick the CandidateOptimizer the spec supports.
+
+    - all-enumerated inputs -> ``DiscreteArgmax`` (``optimize_acqf_discrete``)
+    - otherwise             -> ``Continuous`` (``optimize_acqf``; integers rounded,
+      enumerated inputs alongside continuous ones enumerated)
     """
-    kinds = {type(d).__name__ for d in spec.domain}
-    if kinds == {"ContinuousDomain"}:
-        return Continuous()
-    if kinds == {"EnumeratedDomain"}:
+    if all(isinstance(d, EnumeratedDomain) for d in spec.inputs):
         return DiscreteArgmax()
-    raise ValueError(
-        "Mixed continuous + enumerated design spaces are not yet supported for "
-        "proposal (optimize_acqf_mixed is deferred). Use all-continuous or "
-        "all-enumerated variables for now."
-    )
+    return Continuous()

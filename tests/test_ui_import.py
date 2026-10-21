@@ -76,7 +76,7 @@ def test_uistate_bax_mode_runs_a_campaign():
     assert state.controller.campaign.recommend() == []
 
 
-def test_uistate_surfaces_mixed_space_error():
+def test_uistate_starts_a_mixed_space_campaign():
     from abbot.ui.app import UIState
 
     state = UIState()
@@ -84,8 +84,8 @@ def test_uistate_surfaces_mixed_space_error():
         {"kind": "continuous", "name": "x", "lower": 0.0, "upper": 1.0},
         {"kind": "enumerated", "name": "c", "values": "0, 1, 2"},
     ]
-    with pytest.raises(ValueError, match="Mixed"):
-        state.start_campaign()
+    state.start_campaign()
+    assert state.spec.variable_names == ["x", "c"]
 
 
 def test_free_port_falls_back_when_busy():

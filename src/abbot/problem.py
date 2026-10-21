@@ -6,8 +6,8 @@ the (future) web frontend, and any agent driver. It is pydantic so that
 ``vocs <-> spec`` interop adapter is a field map against gest-api's typed VOCS
 rather than a format bridge.
 
-Design spaces are **type-polymorphic from day one** (Continuous | Enumerated |
-Structured) — the exact axis Badger is rigid on, and hence a differentiator.
+Design spaces are **type-polymorphic from day one** (Continuous | Integer |
+Enumerated | Structured) — the exact axis Badger is rigid on, and hence a differentiator.
 Each Domain maps onto a gest-api variable type for interop (see interop/xopt.py).
 
 NB: this is the frontend/interop-facing spec. The in-memory numeric bounds that
@@ -18,6 +18,7 @@ by registry key + config, never embedded here.
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -40,6 +41,26 @@ class ContinuousDomain(BaseModel):
         if self.upper <= self.lower:
             raise ValueError(
                 f"ContinuousDomain {self.name!r}: upper ({self.upper}) must exceed "
+                f"lower ({self.lower})"
+            )
+        return self
+
+
+class IntegerDomain(BaseModel):
+    """Whole numbers from ``lower`` to ``upper`` inclusive (atom counts, replicates,
+    grid sizes). The surrogate treats it as continuous; proposals are rounded.
+    """
+
+    kind: Literal["integer"] = "integer"
+    name: str
+    lower: int
+    upper: int
+
+    @model_validator(mode="after")
+    def _check_bounds(self) -> IntegerDomain:
+        if self.upper <= self.lower:
+            raise ValueError(
+                f"IntegerDomain {self.name!r}: upper ({self.upper}) must exceed "
                 f"lower ({self.lower})"
             )
         return self
@@ -77,9 +98,65 @@ class StructuredDomain(BaseModel):
 
 
 Domain = Annotated[
-    ContinuousDomain | EnumeratedDomain | StructuredDomain,
+    ContinuousDomain | IntegerDomain | EnumeratedDomain | StructuredDomain,
     Field(discriminator="kind"),
 ]
+
+SourceDomain = Annotated[
+    ContinuousDomain | IntegerDomain | EnumeratedDomain,
+    Field(discriminator="kind"),
+]
+
+
+class Source(BaseModel):
+    """A source variable: an input the experiment needs that isn't itself a design
+    choice to recommend. Fidelity knobs (system size, mesh, convergence settings)
+    and information sources (two codes, simulation vs experiment) are both sources.
+
+    The experiment receives it like any variable, and a source-aware policy chooses
+    it, trading cost against information. Recommendations, goals and policies that
+    don't know about sources all work *at the target*: the source you trust
+    (the fidelity you're happy with, the real experiment).
+
+    ``ordered`` says whether nearby values are related (fidelity levels) or not
+    (different codes); it defaults to True for continuous and integer domains and
+    False for enumerated ones. ``log=True`` asks the model to see the source on a
+    log scale (size-like knobs). ``target`` is a recommendation-time setting: it may
+    change between runs without invalidating a resumed store.
+    """
+
+    domain: SourceDomain
+    target: float
+    ordered: bool | None = None
+    log: bool = False
+
+    @property
+    def name(self) -> str:
+        return self.domain.name
+
+    @property
+    def is_ordered(self) -> bool:
+        if self.ordered is not None:
+            return self.ordered
+        return not isinstance(self.domain, EnumeratedDomain)
+
+    @model_validator(mode="after")
+    def _check(self) -> Source:
+        d, t = self.domain, self.target
+        if isinstance(d, EnumeratedDomain):
+            if t not in d.values:
+                raise ValueError(f"Source {d.name!r}: target {t} is not one of {d.values}")
+        elif not d.lower <= t <= d.upper:
+            raise ValueError(
+                f"Source {d.name!r}: target {t} is outside [{d.lower}, {d.upper}]"
+            )
+        if isinstance(d, IntegerDomain) and t != int(t):
+            raise ValueError(f"Source {d.name!r}: target {t} must be a whole number")
+        if self.log:
+            low = min(d.values) if isinstance(d, EnumeratedDomain) else d.lower
+            if low <= 0:
+                raise ValueError(f"Source {d.name!r}: log=True needs positive values")
+        return self
 
 
 # --- Objectives / constraints ------------------------------------------------
@@ -157,6 +234,7 @@ class ProblemSpec(BaseModel):
     outputs: list[OutputSpec]
     boxes: list[Box] | None = None
     constraints: list[InequalitySpec] | None = None
+    sources: list[Source] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -180,9 +258,9 @@ class ProblemSpec(BaseModel):
             raise ValueError("ProblemSpec needs at least one design variable")
         if not self.outputs:
             raise ValueError("ProblemSpec needs at least one output")
-        names = [d.name for d in self.domain]
+        names = [d.name for d in self.inputs]
         if len(names) != len(set(names)):
-            raise ValueError(f"Duplicate variable names in domain: {names}")
+            raise ValueError(f"Duplicate variable names across domain and sources: {names}")
         onames = [o.name for o in self.outputs]
         if len(onames) != len(set(onames)):
             raise ValueError(f"Duplicate output names: {onames}")
@@ -194,9 +272,53 @@ class ProblemSpec(BaseModel):
     # with a non-OBSERVE direction (the ones BO/MO optimize); they may be a
     # non-contiguous view, selected by ``objective_indices()``.
 
+    # --- inputs: design variables then sources --------------------------------
+    # A design vector (``Record.candidate``, ``suggest``'s dicts, the model's input,
+    # ``bounds_tensor``) holds every INPUT: the design variables in ``domain`` order,
+    # then the sources. ``design_names`` is the design-only view, for what gets
+    # recommended. Without sources the two coincide.
+
+    @property
+    def inputs(self) -> list:
+        """Every input's domain: ``domain`` then each source's domain."""
+        return [*self.domain, *(s.domain for s in self.sources or [])]
+
     @property
     def variable_names(self) -> list[str]:
+        """Names of every input (design variables, then sources)."""
+        return [d.name for d in self.inputs]
+
+    @property
+    def design_names(self) -> list[str]:
         return [d.name for d in self.domain]
+
+    @property
+    def source_names(self) -> list[str]:
+        return [s.name for s in self.sources or []]
+
+    def source_indices(self) -> list[int]:
+        """Positions of the sources in a design vector."""
+        n = len(self.domain)
+        return list(range(n, n + len(self.sources or [])))
+
+    def target_features(self) -> dict[int, float]:
+        """``{position: target}`` for every source; empty without sources."""
+        return {i: float(s.target) for i, s in zip(self.source_indices(), self.sources or [])}
+
+    def at_target(self, X):
+        """``X (..., d)`` with every source column set to its target (a copy)."""
+        X = X.clone()
+        for i, t in self.target_features().items():
+            X[..., i] = t
+        return X
+
+    def fingerprint(self) -> dict:
+        """The spec as JSON for a store's resume check, minus source targets (a
+        target is a recommendation-time setting and may change between runs)."""
+        data = self.model_dump(mode="json")
+        for s in data.get("sources") or []:
+            s.pop("target", None)
+        return data
 
     @property
     def output_names(self) -> list[str]:
@@ -276,8 +398,8 @@ class ProblemSpec(BaseModel):
 
         lowers: list[float] = []
         uppers: list[float] = []
-        for d in self.domain:
-            if isinstance(d, ContinuousDomain):
+        for d in self.inputs:
+            if isinstance(d, (ContinuousDomain, IntegerDomain)):
                 lowers.append(d.lower)
                 uppers.append(d.upper)
             elif isinstance(d, EnumeratedDomain):
@@ -324,7 +446,7 @@ class ProblemSpec(BaseModel):
 
         if seed is None:
             seed = int(torch.randint(2**31 - 1, (1,)))
-        if self.constraints and all(isinstance(d, ContinuousDomain) for d in self.domain):
+        if self.constraints and all(isinstance(d, ContinuousDomain) for d in self.inputs):
             from botorch.utils.sampling import get_polytope_samples
 
             return get_polytope_samples(
@@ -333,7 +455,7 @@ class ProblemSpec(BaseModel):
                 inequality_constraints=self.inequality_constraints(),
                 seed=seed,
             )
-        engine = SobolEngine(dimension=len(self.domain), scramble=True, seed=seed)
+        engine = SobolEngine(dimension=len(self.inputs), scramble=True, seed=seed)
         if not self.constraints:
             return self._from_unit(engine.draw(n).double())
 
@@ -356,9 +478,18 @@ class ProblemSpec(BaseModel):
         """Map (n, d) points in [0, 1]^d onto the design space."""
         import torch
 
+        log_cols = {i for i, s in zip(self.source_indices(), self.sources or []) if s.log}
         cols = []
-        for j, d in enumerate(self.domain):
-            if isinstance(d, ContinuousDomain):
+        for j, d in enumerate(self.inputs):
+            if isinstance(d, (ContinuousDomain, IntegerDomain)) and j in log_cols:
+                # log-uniform: a size-like source spends its draws across scales
+                lo, hi = math.log(d.lower), math.log(d.upper)
+                col = torch.exp(lo + u[:, j] * (hi - lo))
+                cols.append(col.round().clamp(d.lower, d.upper) if isinstance(d, IntegerDomain) else col)
+            elif isinstance(d, IntegerDomain):
+                span = d.upper - d.lower + 1
+                cols.append((d.lower + (u[:, j] * span).floor()).clamp(max=d.upper))
+            elif isinstance(d, ContinuousDomain):
                 cols.append(d.lower + u[:, j] * (d.upper - d.lower))
             elif isinstance(d, EnumeratedDomain):
                 values = torch.tensor(d.values, dtype=torch.double)

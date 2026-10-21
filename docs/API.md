@@ -16,7 +16,7 @@ without a deprecation period.
 
 | Area | Public surface |
 | --- | --- |
-| Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec` |
+| Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `IntegerDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec`, `Source` (provisional, see below) |
 | Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `fail`, `cancel`, `outstanding`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `scored_history`, `pending_count`, `add_hook`), `Candidate`, `CampaignResult`, `CampaignState` |
 | Training targets | `Campaign(..., targets=)` / `Targets` (`(history, spec) -> Y` or `(Y, Yvar)`), `apply_targets` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, batch_size, ...)`, `drive(campaign, experiment, evaluate, *, n_total, batch_size, on_persistent_fault, should_continue)` (the one blocking loop; `run_campaign` and the UI `RunController` run on it), `PersistentFaultError` |
@@ -50,9 +50,14 @@ on them.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
   the engine through `Campaign`, not by importing UI internals.
 - **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`,
-  `default_optimizer`) — the
-  seam is stable; the mixed-space story (`optimize_acqf_mixed`) is not yet wired, so
-  signatures here may extend.
+  `default_optimizer`) — the seam is stable. `Continuous` now covers mixed spaces
+  (integer inputs relaxed then rounded; enumerated inputs alongside continuous ones
+  enumerated via `optimize_acqf_mixed`, up to 256 combinations), and `optimize` takes
+  an optional `fixed_features={position: value}`.
+- **Source variables** (`Source`, `ProblemSpec.sources`, `spec.design_names` /
+  `source_names` / `target_features` / `at_target`, `CampaignResult.run_at_target` /
+  `target_std`) — new; the source-aware model and policies (multi-fidelity) are
+  still to come.
 
 ### Private — do not touch
 Anything with a leading underscore is internal and may change without notice,
@@ -186,6 +191,30 @@ once the policy's recent acquisition values (stored per record from its
 `last_acquisition_value`) all fall below `threshold`. `drive` ends normally on a
 stop; ask/tell callers read `campaign.stopped` and may carry on.
 
+**Source variables (fidelities, information sources).** `ProblemSpec(sources=[
+Source(domain=IntegerDomain(name="atoms", lower=32, upper=512), target=256,
+log=True)])` declares an input the experiment needs that isn't itself a design
+choice: a fidelity knob (system size, mesh, convergence settings) or an information
+source (two codes, simulation vs experiment; an unordered `EnumeratedDomain`).
+Sources are inputs like any other: they follow the design variables in every design
+vector, `suggest` hands them to the experiment in the design dict, and
+`spec.variable_names` lists them (`spec.design_names` is the design-only view).
+Everything that doesn't choose sources works *at the target*:
+- policies that aren't source-aware (`SimpleBO`, `ParetoBO`, `UncertaintySampling`,
+  `BAXPolicy`) propose with the sources pinned at the target, and improvement is
+  judged against the target;
+- `recommend` scores each evaluated design at the target, counts a design run at
+  several sources once (under its at-target record if any), and the observed
+  fallback ranks only at-target runs; `result()` adds `run_at_target` and the
+  model's `target_std`;
+- default seeds are space-filling over every input, with two moved to the target.
+
+`target` is a recommendation-time setting: it's left out of the resume fingerprint,
+so it can change between runs. `ordered` (default: continuous / integer yes,
+enumerated no) and `log` are read by the source-aware models still to come. The
+self-describing CSV, VOCS and the UI editor refuse specs with sources; use the JSON
+spec.
+
 **Swapping the surrogate.** The documented extension point is a custom
 `ModelConstructor`: `build(X, Y, Yvar) -> botorch.Model`, with `provides_uq` set to
 what the posterior actually supplies (`"calibrated_variance"` for a GP, `"samples"`
@@ -202,7 +231,7 @@ are derived from the spec:
 
 | Omitted | Default |
 | --- | --- |
-| `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the domain supports. No objectives (all `OBSERVE`) or a mixed space raises — pass a policy. |
+| `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the inputs support (`DiscreteArgmax` if all enumerated, else `Continuous`). No objectives (all `OBSERVE`) raises — pass a policy. |
 | `model_constructor` | `default_constructor(spec)`: `SingleTaskGPConstructor` for 1 output, `ModelListConstructor` otherwise, normalized to the spec bounds. |
 | `initial_designs` (`run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and inequality constraints. Ignored on resume. |
 | `evaluate` (`run_campaign`) | identity — the experiment returns the outputs directly. |
@@ -225,8 +254,8 @@ explicitly if you need it pinned.
 ## Failure behavior
 
 - **Misconfiguration fails loud.** A policy that can't serve the spec (e.g.
-  `ParetoBO` on a single-objective spec, a mixed continuous+enumerated space,
-  a model whose uncertainty is too weak for the policy) raises immediately — it
+  `ParetoBO` on a single-objective spec, too many enumerated combinations to
+  enumerate, a model whose uncertainty is too weak for the policy) raises immediately — it
   will not silently do something else. The UQ guardrail reads the capability off
   the actual `ModelConstructor` (`provides_uq`), so it can't be bypassed by a
   mismatched argument — `Campaign` has no `model_uq` parameter.
@@ -275,10 +304,9 @@ explicitly if you need it pinned.
 Named here so you don't design around their absence as if permanent:
 output-constraint enforcement for BO (feasibility-weighted acquisition over an
 `OBSERVE` column), a run-level JSON serializer including the SBI `aux` payload, a
-`TARGET` objective direction, mixed-space proposal (`optimize_acqf_mixed`),
-continuous BAX (pathwise / seeded-ascent), the full `sbi`-backed benchmark,
-multi-fidelity / cost-aware BO (fidelity variables, cost models, cost-aware
-stopping), and a blop backend for Bluesky.
+`TARGET` objective direction, continuous BAX (pathwise / seeded-ascent), the full
+`sbi`-backed benchmark, source-aware multi-fidelity models and policies (the spec
+side, `Source`, is in), and a blop backend for Bluesky.
 
 - **Correlated multi-output `MultiTaskGP` — near-term, needs an ADR first.** The
   `ModelConstructor` seam is the right home, but it hinges on two decisions: where

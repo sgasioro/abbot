@@ -49,11 +49,16 @@ _SATISFIES: dict[str, set[str]] = {
 
 
 def default_initial_designs(spec: ProblemSpec, *, seed: int | None = None) -> torch.Tensor:
-    """Space-filling seed designs for a fresh campaign: ``2d + 1`` Sobol points
-    (at least ``2m`` for ``m`` objectives, ParetoBO's cold-start floor).
+    """Space-filling seed designs for a fresh campaign: ``2d + 1`` Sobol points over
+    every input (at least ``2m`` for ``m`` objectives, ParetoBO's cold-start floor).
+    With sources, the last two are moved to the target so the model sees it from the
+    start.
     """
-    n = max(2 * len(spec.domain) + 1, 2 * spec.n_objectives)
-    return spec.sample_designs(n, seed=seed)
+    n = max(2 * len(spec.inputs) + 1, 2 * spec.n_objectives)
+    X = spec.sample_designs(n, seed=seed)
+    if spec.sources:
+        X[-2:] = spec.at_target(X[-2:])
+    return X
 
 
 class PersistentFaultError(RuntimeError):
@@ -184,6 +189,26 @@ def _front_indices(Y: torch.Tensor, keep: list[int]) -> list[int]:
     return [keep[i] for i in range(len(keep)) if bool(nd[i])]
 
 
+def _one_per_design(
+    history: History, spec: ProblemSpec, keep: list[int], *, observed: bool
+) -> list[int]:
+    """One record index per distinct design (design columns only), preferring the
+    record run at the target. ``observed`` keeps only at-target records, since
+    outputs measured at other sources aren't comparable."""
+    n = len(spec.design_names)
+    target = spec.at_target
+    chosen: dict[tuple, int] = {}
+    for i in keep:
+        x = history.records[i].candidate.double().reshape(-1)
+        at_target = torch.equal(x, target(x))
+        if observed and not at_target:
+            continue
+        key = tuple(x[:n].tolist())
+        if key not in chosen or at_target:
+            chosen[key] = i
+    return sorted(chosen.values())
+
+
 def recommend(
     history: History, spec: ProblemSpec, model=None, *, denoise: bool = True
 ) -> list[int]:
@@ -199,6 +224,11 @@ def recommend(
     - ``denoise=False`` (or no model) ranks the OBSERVED (noisy) values directly;
       this is also the loop's model-free fallback.
 
+    With sources, every design is judged at the target: the model scores it with
+    its source columns set to the target, a design run at several sources counts
+    once (under its at-target record if it has one), and the observed fallback
+    ranks only records run at the target.
+
     Returns ``[]`` for a pure-BAX spec (no objectives — handover is the goal's job)
     or when there are no clean records.
     """
@@ -206,10 +236,12 @@ def recommend(
     if not idx:
         return []
     keep = [i for i, r in enumerate(history.records) if not r.fault]
+    if spec.sources:
+        keep = _one_per_design(history, spec, keep, observed=not (denoise and model is not None))
     if not keep:
         return []
     if denoise and model is not None:
-        X = torch.stack([history.records[i].candidate for i in keep]).double()
+        X = spec.at_target(torch.stack([history.records[i].candidate for i in keep]).double())
         with torch.no_grad():
             # Model is full-width & canonical; select objective columns (already
             # canonical, so no sign flip — unlike raw observed values).
@@ -326,6 +358,10 @@ class CampaignResult:
 
     history: History
     recommended: list[int] = field(default_factory=list)
+    # With sources: per recommended design, whether it was run at the target, and the
+    # model's posterior std of each objective there (raw units). Empty without.
+    run_at_target: list[bool] = field(default_factory=list)
+    target_std: list[list[float]] = field(default_factory=list)
 
     @property
     def designs(self) -> torch.Tensor:
@@ -464,7 +500,7 @@ class Campaign:
         # problem: the spec plus any caller ``fingerprint`` must match what the
         # store was written with (``allow_resume_mismatch`` overrides).
         if store is not None:
-            fp = {"spec": spec.model_dump(mode="json")}
+            fp = {"spec": spec.fingerprint()}
             if fingerprint:
                 fp["extra"] = fingerprint
             store.check_fingerprint(fp, allow_mismatch=allow_resume_mismatch)
@@ -876,8 +912,22 @@ class Campaign:
         return self._safe_recommend(model)
 
     def result(self) -> CampaignResult:
-        """A ``CampaignResult`` with the end-of-run recommendation."""
-        return CampaignResult(history=self.history, recommended=self.recommend())
+        """A ``CampaignResult`` with the end-of-run recommendation (with sources,
+        also whether each recommended design was run at the target, and the model's
+        uncertainty there)."""
+        recommended = self.recommend()
+        result = CampaignResult(history=self.history, recommended=recommended)
+        if not (self.spec.sources and recommended):
+            return result
+        X = torch.stack([self.history.records[i].candidate.double().reshape(-1) for i in recommended])
+        X_target = self.spec.at_target(X)
+        result.run_at_target = [torch.equal(x, xt) for x, xt in zip(X, X_target)]
+        model = self.current_model()
+        if model is not None:
+            with torch.no_grad():
+                var = model.posterior(X_target).variance.reshape(len(X), -1)
+            result.target_std = var[:, self.spec.objective_indices()].clamp_min(0).sqrt().tolist()
+        return result
 
     def scored_history(self) -> History:
         """The history the surrogate, the policy and the hand-over see: the stored

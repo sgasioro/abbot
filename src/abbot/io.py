@@ -89,12 +89,13 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 # types (continuous/enumerated) + boxes. Row grammar (each ``# key,value...``):
 #   # version,1
 #   # continuous,<name>,<lower>,<upper>
+#   # integer,<name>,<lower>,<upper>
 #   # enumerated,<name>,<v1>,<v2>,...
 #   # output,<name>,MINIMIZE|MAXIMIZE|OBSERVE   (OBSERVE = modeled, not optimized)
 #   # box,<lo1>,<lo2>,...,|,<hi1>,<hi2>,...     (lower vector | upper vector)
 # Legacy ``# objective,<name>,<DIR>`` rows are still READ (mapped to an output).
 # NOT representable here (raises on write): StructuredDomain, inequality
-# constraints, cached aux. Use the JSON spec / DataStore for those.
+# constraints, source variables, cached aux. Use the JSON spec / DataStore for those.
 
 CSV_FORMAT_VERSION = 1
 
@@ -106,8 +107,13 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
     inequality constraints) — be honest rather than silently dropping them; use the
     JSON spec for those campaigns.
     """
-    from abbot.problem import ContinuousDomain, EnumeratedDomain
+    from abbot.problem import ContinuousDomain, EnumeratedDomain, IntegerDomain
 
+    if spec.sources:
+        raise ValueError(
+            "self-describing CSV cannot represent source variables "
+            f"{spec.source_names}; use the JSON spec (spec_to_json) for this campaign."
+        )
     if spec.constraints:
         raise ValueError(
             "self-describing CSV cannot represent inequality constraints; use the "
@@ -119,6 +125,8 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
     for d in spec.domain:
         if isinstance(d, ContinuousDomain):
             w.writerow(["# continuous", d.name, d.lower, d.upper])
+        elif isinstance(d, IntegerDomain):
+            w.writerow(["# integer", d.name, d.lower, d.upper])
         elif isinstance(d, EnumeratedDomain):
             w.writerow(["# enumerated", d.name, *d.values])
         else:
@@ -148,6 +156,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
         Box,
         ContinuousDomain,
         EnumeratedDomain,
+        IntegerDomain,
         OutputSpec,
     )
 
@@ -169,6 +178,13 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
                     "expected `# continuous,<name>,<lower>,<upper>`."
                 )
             domain.append(ContinuousDomain(name=cells[1], lower=float(cells[2]), upper=float(cells[3])))
+        elif key == "integer":
+            if len(cells) < 4:
+                raise ValueError(
+                    f"self-describing CSV: malformed `# integer` row {raw!r}; "
+                    "expected `# integer,<name>,<lower>,<upper>`."
+                )
+            domain.append(IntegerDomain(name=cells[1], lower=int(cells[2]), upper=int(cells[3])))
         elif key == "enumerated":
             if len(cells) < 3:
                 raise ValueError(
@@ -193,7 +209,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
         # version / unknown keys: ignored (comments)
     if not domain or not outputs:
         raise ValueError(
-            "self-describing CSV missing `# continuous`/`# enumerated` and/or "
+            "self-describing CSV missing `# continuous`/`# integer`/`# enumerated` and/or "
             "`# output` config rows; cannot rebuild the ProblemSpec."
         )
     spec = ProblemSpec(domain=domain, outputs=outputs, boxes=boxes or None)

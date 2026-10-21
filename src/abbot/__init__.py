@@ -56,9 +56,11 @@ from abbot.problem import (
     ContinuousDomain,
     EnumeratedDomain,
     InequalitySpec,
+    IntegerDomain,
     ObjectiveSpec,
     OutputSpec,
     ProblemSpec,
+    Source,
     StructuredDomain,
 )
 from abbot.session import (
@@ -96,6 +98,7 @@ __all__ = [
     "Goal",
     "History",
     "InequalitySpec",
+    "IntegerDomain",
     "LevelSet",
     "ManualExperiment",
     "MockAnalyticExperiment",
@@ -117,6 +120,7 @@ __all__ = [
     "ResumeMismatchError",
     "SimpleBO",
     "SingleTaskGPConstructor",
+    "Source",
     "StructuredDomain",
     "Supervisor",
     "Targets",

@@ -28,7 +28,7 @@ from botorch.acquisition import qLogNoisyExpectedImprovement
 from botorch.models.model import Model
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
-from abbot.acq_opt import CandidateOptimizer, Continuous
+from abbot.acq_opt import CandidateOptimizer, Continuous, optimize
 from abbot.history import History
 from abbot.problem import ProblemSpec
 
@@ -98,6 +98,14 @@ class _CostWeighted(torch.nn.Module):
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         cost = self.cost_model(X).reshape(X.shape[:-1]).sum(dim=-1)
         return self.acq(X) - cost.clamp_min(1e-12).log()
+
+    # Sequential batch builders (``optimize_acqf_mixed``) set pending points.
+    @property
+    def X_pending(self):
+        return self.acq.X_pending
+
+    def set_X_pending(self, X_pending=None) -> None:
+        self.acq.set_X_pending(X_pending)
 
 
 def _cost_weighted(acq, cost_model, history: History, spec: ProblemSpec):
@@ -228,7 +236,9 @@ class SimpleBO:
                 f"SimpleBO is single-objective but the spec has {spec.n_objectives} "
                 "objective(s); use ParetoBO for multi-objective optimization."
             )
-        X = history.clean.designs.double()
+        # Improvement is judged at the target: a lucky cheap-source run must not set
+        # the bar. Without sources this is the clean designs unchanged.
+        X = spec.at_target(history.clean.designs.double()).unique(dim=0)
         acq = qLogNoisyExpectedImprovement(
             model,
             X_baseline=X,
@@ -236,7 +246,7 @@ class SimpleBO:
             X_pending=_pending_or_none(pending),
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
-        picks = self.optimizer.optimize(acq, spec, n)
+        picks = optimize(self.optimizer, acq, spec, n, spec.target_features())
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
 
@@ -339,7 +349,7 @@ class ParetoBO:
             qLogNoisyExpectedHypervolumeImprovement,
         )
 
-        X = history.clean.designs.double()
+        X = spec.at_target(history.clean.designs.double()).unique(dim=0)
         # Model is full-width over all outputs; select the objective columns so
         # NEHVI's hypervolume is over objectives only (OBSERVE columns ignored).
         objective = None
@@ -357,7 +367,7 @@ class ParetoBO:
             X_pending=_pending_or_none(pending),
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
-        picks = self.optimizer.optimize(acq, spec, n)
+        picks = optimize(self.optimizer, acq, spec, n, spec.target_features())
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
 
@@ -412,7 +422,7 @@ class UncertaintySampling:
                 acq = PosteriorStandardDeviation(cond)
             else:
                 acq = _SumPosteriorStd(cond)
-            picks.append(self.optimizer.optimize(acq, spec, 1))
+            picks.append(optimize(self.optimizer, acq, spec, 1, spec.target_features()))
             values.append(_acq_value(acq, picks[-1]))
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
         return torch.cat(picks)
@@ -438,7 +448,7 @@ def default_policy(spec: ProblemSpec) -> Policy:
             "default policy. Pass one explicitly, e.g. BAXPolicy(goal) or "
             "UncertaintySampling()."
         )
-    optimizer = default_optimizer(spec)  # may raise on mixed spaces
+    optimizer = default_optimizer(spec)
     return SimpleBO(optimizer) if m == 1 else ParetoBO(optimizer)
 
 
@@ -513,9 +523,10 @@ class BAXPolicy:
         self.uq_requirement: UQRequirement = _BAX_UQ[strategy]
         # A caller-supplied candidate set (e.g. an application's own design grid) replaces
         # the Sobol grid; n_candidates / candidate_seed are then unused.
-        self._grid: torch.Tensor | None = (
+        self._candidates: torch.Tensor | None = (
             None if candidates is None else candidates.double().reshape(len(candidates), -1)
         )
+        self._grid: torch.Tensor | None = None  # built from the spec on first use
         # Grid indices measured or pending at the last suggest, plus its picks.
         # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
@@ -532,18 +543,23 @@ class BAXPolicy:
         """The candidate grid ``(N, d)`` this policy proposes over.
 
         The ``candidates`` passed at construction, else a Sobol grid built once from
-        the spec and cached (honoring sparse inequality constraints).
+        the spec and cached (honoring sparse inequality constraints). With sources,
+        candidates are proposed at the target: a grid over the design variables only
+        gets the target columns appended, and a full-width one is moved to the target
+        (MeanBAX / SwitchBAX / US don't choose sources).
         Exposed because callers legitimately seed a campaign from the same grid the
         policy searches, so fits and proposals share one candidate set.
         """
+        if self._grid is None and self._candidates is not None:
+            self._grid = self._at_target(spec, self._candidates)
         if self._grid is None:
             from torch.quasirandom import SobolEngine
 
-            bounds = spec.bounds_tensor()
-            d = bounds.shape[-1]
-            sobol = SobolEngine(dimension=d, scramble=True, seed=self.candidate_seed)
+            n_design = len(spec.design_names)
+            bounds = spec.bounds_tensor()[:, :n_design]
+            sobol = SobolEngine(dimension=n_design, scramble=True, seed=self.candidate_seed)
             draw = sobol.draw(self.n_candidates).double()
-            grid = bounds[0] + draw * (bounds[1] - bounds[0])
+            grid = self._at_target(spec, bounds[0] + draw * (bounds[1] - bounds[0]))
             # Respect sparse inequality constraints (sum(coef*x[idx]) >= rhs).
             cons = spec.inequality_constraints()
             if cons:
@@ -553,6 +569,23 @@ class BAXPolicy:
                 grid = grid[keep]
             self._grid = grid
         return self._grid
+
+    @staticmethod
+    def _at_target(spec: ProblemSpec, grid: torch.Tensor) -> torch.Tensor:
+        """A design-only or full-width grid as full-width rows at the target."""
+        if not spec.sources:
+            return grid
+        n_design = len(spec.design_names)
+        if grid.shape[-1] == n_design:
+            target = torch.tensor(list(spec.target_features().values()), dtype=grid.dtype)
+            grid = torch.cat([grid, target.expand(grid.shape[0], -1)], dim=-1)
+        elif grid.shape[-1] != len(spec.variable_names):
+            raise ValueError(
+                f"candidates have {grid.shape[-1]} column(s); expected {n_design} "
+                f"(design variables {spec.design_names}) or {len(spec.variable_names)} "
+                f"(with sources {spec.source_names})"
+            )
+        return spec.at_target(grid).unique(dim=0)
 
     def _ensure_grid(self, spec: ProblemSpec) -> torch.Tensor:
         """Deprecated alias for :meth:`candidate_grid` (kept for one release)."""

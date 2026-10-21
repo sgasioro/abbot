@@ -56,7 +56,7 @@ def test_default_policy_picks_optimizer_from_domain():
     assert isinstance(default_policy(_enum()).optimizer, DiscreteArgmax)
 
 
-def test_default_policy_refuses_mixed_space_and_no_objectives():
+def test_default_policy_takes_mixed_spaces_and_refuses_no_objectives():
     mixed = ProblemSpec(
         domain=[
             ContinuousDomain(name="x", lower=0.0, upper=1.0),
@@ -64,8 +64,7 @@ def test_default_policy_refuses_mixed_space_and_no_objectives():
         ],
         objectives=[ObjectiveSpec(name="f")],
     )
-    with pytest.raises(ValueError, match="Mixed"):
-        default_policy(mixed)
+    assert isinstance(default_policy(mixed).optimizer, Continuous)
     observe_only = ProblemSpec(
         domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],
         outputs=[OutputSpec(name="y", direction="OBSERVE")],

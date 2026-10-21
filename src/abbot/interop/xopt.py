@@ -50,6 +50,11 @@ def spec_to_vocs(spec: ProblemSpec):
         MinimizeObjective,
     )
 
+    if spec.sources:
+        raise NotImplementedError(
+            f"spec_to_vocs: VOCS has no source variables {spec.source_names} (no "
+            "target); use the JSON spec for this campaign."
+        )
     variables: dict[str, Any] = {}
     for d in spec.domain:
         if isinstance(d, ContinuousDomain):
