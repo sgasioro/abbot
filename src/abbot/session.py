@@ -18,6 +18,7 @@ the caller chooses how to react.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -302,6 +303,9 @@ class CampaignState:
     recommended: list[int]
     halted: str | None
     pending_ids: list[str] = field(default_factory=list)  # ids aligned with pending
+    costs: list[float | None] = field(default_factory=list)  # per record, aligned with designs
+    cost_spent: float = 0.0  # total recorded cost, failed runs included
+    stopped: str | None = None  # a supervisor's stop reason (done, not a fault)
 
     def to_json(self) -> str:
         import json
@@ -342,6 +346,33 @@ class CampaignResult:
         return self.history.records[self.recommended[0]]
 
 
+def _timing(item: _InFlight) -> dict:
+    """Record fields carried over from an outstanding item, closing it now."""
+    return {
+        "acquisition": item.acquisition,
+        "issued_at": item.issued_at,
+        "started_at": item.started_at,
+        "finished_at": item.finished_at if item.finished_at is not None else time.time(),
+        "fit_seconds": item.fit_seconds,
+        "acquisition_seconds": item.acquisition_seconds,
+    }
+
+
+def _acquisition_values(policy: Policy, n: int) -> list[float | None]:
+    """The policy's ``last_acquisition_value`` as ``n`` floats, or Nones if it has
+    none (it is optional on the protocol) or the shape doesn't match."""
+    value = getattr(policy, "last_acquisition_value", None)
+    if value is None:
+        return [None] * n
+    flat = torch.as_tensor(value, dtype=torch.double).reshape(-1)
+    if flat.numel() == 1:
+        flat = flat.expand(n)
+    if flat.numel() != n:
+        logger.debug("last_acquisition_value has %d value(s) for %d pick(s); ignored.", flat.numel(), n)
+        return [None] * n
+    return [float(v) for v in flat]
+
+
 # --- the session --------------------------------------------------------------
 
 
@@ -366,6 +397,12 @@ class _InFlight:
     x: torch.Tensor
     retry_of: int | None = None
     attempt: int = 0
+    acquisition: float | None = None  # the policy's value for this pick, if it proposed it
+    issued_at: float | None = None  # epoch seconds suggest handed it out
+    fit_seconds: float | None = None  # fit time of the model its proposal used
+    acquisition_seconds: float | None = None  # time computing its proposal (shared by a batch)
+    started_at: float | None = None  # set by step around the experiment run
+    finished_at: float | None = None
 
 
 # A hook is called after each ingest with (state, fitted_model_or_None); a batched
@@ -442,6 +479,14 @@ class Campaign:
         self._next_id = 0
         self._recommended: list[int] = []
         self.halted: str | None = None
+        # Set when a supervisor says the campaign is done (Verdict.stop): ``drive``
+        # ends there; ask/tell callers may read it and carry on regardless.
+        self.stopped: str | None = None
+        # The policy's acquisition values for the last proposal, aligned with it, and
+        # (fit seconds of the model it used, seconds computing it).
+        self._proposal_acq: list[float | None] = []
+        self._proposal_seconds: tuple[float | None, float | None] = (None, None)
+        self._model_fit_seconds: float | None = None
         # The last non-fatal warning surfaced to a caller (e.g. a transient
         # proposal fallback). A UI reads this after suggest/step and shows a toast.
         self.last_warning: str | None = None
@@ -509,7 +554,14 @@ class Campaign:
             xs = self._propose(rem, in_flight)
         issued = [self._issue(*self._retry_queue.pop(0)) for _ in range(n_retry)]
         issued += [self._issue(self._seed_queue.pop(0)) for _ in range(n_seed)]
-        issued += [self._issue(xs[i]) for i in range(rem)]
+        fit_s, acq_s = self._proposal_seconds
+        issued += [
+            self._issue(
+                xs[i], acquisition=self._proposal_acq[i], fit_seconds=fit_s,
+                acquisition_seconds=acq_s,
+            )
+            for i in range(rem)
+        ]
         self._save_queue()
         return [self._candidate(item) for item in issued]
 
@@ -521,6 +573,7 @@ class Campaign:
         *,
         id: str | None = None,
         ids: list[str] | None = None,
+        costs: object | None = None,
     ) -> CampaignState:
         """Fold measured results for outstanding candidates back in.
 
@@ -538,6 +591,8 @@ class Campaign:
         ``output_vars`` optionally supplies per-output noise VARIANCE ``(m,)`` per
         candidate (e.g. from replicate measurements) — stored on the record and
         threaded to the surrogate's ``train_Yvar`` when every clean record has it.
+        ``costs`` optionally gives what each run cost (core-hours, money, seconds),
+        one per candidate (a single value with ``id=``); see :mod:`abbot.cost`.
         All results are validated before any is recorded. Runs the supervisor,
         persists, and fires hooks.
         """
@@ -547,6 +602,7 @@ class Campaign:
             ids, results = [id], [results]
             observations = [observations]
             output_vars = [output_vars]
+            costs = [costs]
         else:
             if ids is None:
                 if not self._inflight:
@@ -564,16 +620,22 @@ class Campaign:
         n = len(ids)
         obs_list = observations if observations is not None else [None] * n
         var_list = output_vars if output_vars is not None else [None] * n
+        cost_list = list(costs) if costs is not None else [None] * n
+        if len(cost_list) != n:
+            raise ValueError(f"ingest got {len(cost_list)} cost(s) for {n} result(s)")
         items = [self._outstanding_item(i) for i in ids]
-        return self._commit(list(zip(items, results, obs_list, var_list)))
+        return self._commit(list(zip(items, results, obs_list, var_list, cost_list)))
 
-    def fail(self, id: str, error: str | BaseException) -> CampaignState:
+    def fail(
+        self, id: str, error: str | BaseException, *, cost: float | None = None
+    ) -> CampaignState:
         """Close an outstanding candidate whose run failed (the instrument errored,
         the sample was lost). Recorded as a faulted record carrying ``error``, then
         retried up to ``max_retries`` times before the campaign halts — the same
-        path ``step`` takes when ``experiment.run`` raises.
+        path ``step`` takes when ``experiment.run`` raises. ``cost`` is what the
+        failed run cost, if known (it still counts against a budget).
         """
-        return self._record_run_error(self._outstanding_item(id), error)
+        return self._record_run_error(self._outstanding_item(id), error, cost=cost)
 
     def cancel(self, id: str) -> CampaignState:
         """Withdraw an outstanding candidate without running it. Nothing is
@@ -632,17 +694,20 @@ class Campaign:
                     self.halted = f"pre-run check blocked {design}: {reason}"
                     logger.warning("%s", self.halted)
                     return self.state()
-        observations = self._run_designs(experiment, designs)
+        observations, timings = self._run_designs(experiment, designs)
         # Hooks see the batch once it is all recorded, not each partial state.
         self._hooks_deferred = True
         try:
-            for item, design, observation in zip(items, designs, observations, strict=True):
+            for item, design, observation, (started, finished, cost) in zip(
+                items, designs, observations, timings, strict=True
+            ):
+                item.started_at, item.finished_at = started, finished
                 if isinstance(observation, BaseException):
                     logger.error("experiment.run failed at %s", design, exc_info=observation)
-                    self._record_run_error(item, observation)
+                    self._record_run_error(item, observation, cost=cost)
                     continue
                 out = evaluate(observation)
-                self.ingest(out, observations=observation, id=item.id)
+                self.ingest(out, observations=observation, id=item.id, costs=cost)
         finally:
             self._hooks_deferred = False
             self._after_ingest()
@@ -651,32 +716,40 @@ class Campaign:
     @staticmethod
     def _run_designs(
         experiment: Experiment | BatchExperiment, designs: list[dict]
-    ) -> list[object]:
-        """One observation per design, or the exception its run raised."""
+    ) -> tuple[list[object], list[tuple[float, float, float]]]:
+        """One observation per design, or the exception its run raised, and per
+        design ``(started_at, finished_at, seconds)``: epoch times around the run and
+        its measured duration (a batch's duration is split evenly)."""
         run_batch = getattr(experiment, "run_batch", None)
         if run_batch is not None:
+            started, start = time.time(), time.perf_counter()
             try:
                 observations = list(run_batch(designs))
             except Exception as exc:
                 logger.exception("experiment.run_batch failed")
-                return [exc] * len(designs)
+                observations = [exc] * len(designs)
+            share = (time.perf_counter() - start) / len(designs)
+            finished = time.time()
             if len(observations) != len(designs):
                 err = RuntimeError(
                     f"run_batch returned {len(observations)} observation(s) for "
                     f"{len(designs)} design(s)"
                 )
-                return [err] * len(designs)
-            return observations
+                observations = [err] * len(designs)
+            return observations, [(started, finished, share)] * len(designs)
         observations: list[object] = []
+        timings: list[tuple[float, float, float]] = []
         for design in designs:
+            started, start = time.time(), time.perf_counter()
             try:
                 observations.append(experiment.run(design))
             except Exception as exc:  # noqa: BLE001 - recorded as a faulted shot
                 observations.append(exc)
-        return observations
+            timings.append((started, time.time(), time.perf_counter() - start))
+        return observations, timings
 
     def _record_run_error(
-        self, item: _InFlight, exc: str | BaseException
+        self, item: _InFlight, exc: str | BaseException, *, cost: float | None = None
     ) -> CampaignState:
         """Persist a failed run as a faulted record, then retry or halt."""
         if isinstance(exc, BaseException):
@@ -691,7 +764,7 @@ class Campaign:
         x, retry_of, attempt = item.x, item.retry_of, item.attempt
         record = Record(
             candidate=x, observation=None, fault=True, retry_of=retry_of, error=error,
-            id=item.id,
+            id=item.id, cost=cost, **_timing(item),
         )
         step = len(self.history)
         self.history.append(record)
@@ -722,6 +795,7 @@ class Campaign:
         observation: object | None = None,
         aux: object | None = None,
         output_var: object | None = None,
+        cost: float | None = None,
     ) -> CampaignState:
         """Fold an already-evaluated ``(candidate, outputs)`` pair in directly.
 
@@ -730,7 +804,8 @@ class Campaign:
         design (a ``(d,)`` tensor or a ``{variable name: value}`` dict), ``y`` the
         RAW outputs (``(m,)`` in ``spec.outputs`` order, or a ``{output name:
         value}`` dict); ``aux`` is the optional cached payload (see :mod:`abbot.composite`);
-        ``output_var`` the optional per-output noise variance ``(m,)``. If ``x``
+        ``output_var`` the optional per-output noise variance ``(m,)``; ``cost``
+        what the run cost, if known. If ``x``
         exactly equals an outstanding candidate, that candidate is closed (the
         oldest, if several match); otherwise the design is recorded as new.
         Runs the supervisor, persists, queues a retry if flagged, and fires
@@ -748,18 +823,22 @@ class Campaign:
         if item is None:
             item = _InFlight(id=self._new_id(), x=xt)
         result = (y, aux) if aux is not None else y
-        return self._commit([(item, result, observation, output_var)])
+        return self._commit([(item, result, observation, output_var, cost)])
 
-    def _commit(self, entries: list[tuple[_InFlight, object, object, object]]) -> CampaignState:
-        """Record ``(item, result, observation, output_var)`` entries: validate all,
-        then append, supervise, persist and close each, then fire hooks once.
+    def _commit(
+        self, entries: list[tuple[_InFlight, object, object, object, object]]
+    ) -> CampaignState:
+        """Record ``(item, result, observation, output_var, cost)`` entries: validate
+        all, then append, supervise, persist and close each, then fire hooks once.
         """
-        parsed = [split_eval(res, self.spec) for _, res, _, _ in entries]
-        for (item, _, obs, var), (y, aux) in zip(entries, parsed):
+        parsed = [split_eval(res, self.spec) for _, res, _, _, _ in entries]
+        for (item, _, obs, var, cost), (y, aux) in zip(entries, parsed):
             ov = None if var is None else torch.as_tensor(var, dtype=torch.double).reshape(-1)
             record = Record(
                 candidate=item.x, observation=obs, outputs=y, output_var=ov,
                 aux=aux, retry_of=item.retry_of, id=item.id,
+                cost=None if cost is None else float(cost),
+                **_timing(item),
             )
             step = len(self.history)
             self.history.append(record)
@@ -773,6 +852,9 @@ class Campaign:
 
             if verdict.halt is not None:
                 self.halted = verdict.halt
+            if getattr(verdict, "stop", None) is not None and self.stopped is None:
+                self.stopped = verdict.stop
+                logger.info("%s", self.stopped)
             if verdict.retry and item.attempt < self.max_retries:
                 self._retry_queue.append(
                     (item.x, step if item.retry_of is None else item.retry_of, item.attempt + 1)
@@ -824,7 +906,9 @@ class Campaign:
         """
         if self._model_valid:
             return self._model
+        start = time.perf_counter()
         self._model = self._fit_now()
+        self._model_fit_seconds = time.perf_counter() - start
         self._model_valid = True
         return self._model
 
@@ -855,6 +939,9 @@ class Campaign:
             recommended=list(self._recommended),
             halted=self.halted,
             pending_ids=list(self._inflight),
+            costs=[r.cost for r in self.history.records],
+            cost_spent=self.history.cost_spent,
+            stopped=self.stopped,
         )
 
     # -- internals --
@@ -865,6 +952,8 @@ class Campaign:
     _MISCONFIG_ERRORS = (ValueError, NotImplementedError, TypeError)
 
     def _propose(self, n: int, pending: list[torch.Tensor] | None = None) -> torch.Tensor:
+        self._proposal_acq = [None] * n  # random probes carry no acquisition value
+        self._proposal_seconds = (None, None)
         model = self.current_model()
         if model is None:
             # Cold start: too few clean points to fit yet. A uniform probe is the
@@ -872,7 +961,11 @@ class Campaign:
             logger.debug("no model yet (too few clean points); drawing a random probe.")
             return self._random_draw(n)
         try:
-            return self._policy_suggest(model, n, pending or [])
+            start = time.perf_counter()
+            xs = self._policy_suggest(model, n, pending or [])
+            self._proposal_seconds = (self._model_fit_seconds, time.perf_counter() - start)
+            self._proposal_acq = _acquisition_values(self.policy, len(xs))
+            return xs
         except self._MISCONFIG_ERRORS:
             # Setup is wrong (e.g. ParetoBO on a 1-objective spec). Fail loud.
             raise
@@ -957,10 +1050,20 @@ class Campaign:
         return cid
 
     def _issue(
-        self, x: torch.Tensor, retry_of: int | None = None, attempt: int = 0
+        self,
+        x: torch.Tensor,
+        retry_of: int | None = None,
+        attempt: int = 0,
+        *,
+        acquisition: float | None = None,
+        fit_seconds: float | None = None,
+        acquisition_seconds: float | None = None,
     ) -> _InFlight:
-        item = _InFlight(id=self._new_id(), x=x.reshape(-1).double(),
-                         retry_of=retry_of, attempt=attempt)
+        item = _InFlight(
+            id=self._new_id(), x=x.reshape(-1).double(), retry_of=retry_of,
+            attempt=attempt, acquisition=acquisition, issued_at=time.time(),
+            fit_seconds=fit_seconds, acquisition_seconds=acquisition_seconds,
+        )
         self._inflight[item.id] = item
         return item
 
@@ -984,7 +1087,9 @@ class Campaign:
             "next_id": self._next_id,
             "in_flight": [
                 {"id": it.id, "design": it.x.tolist(), "retry_of": it.retry_of,
-                 "attempt": it.attempt}
+                 "attempt": it.attempt, "acquisition": it.acquisition,
+                 "issued_at": it.issued_at, "fit_seconds": it.fit_seconds,
+                 "acquisition_seconds": it.acquisition_seconds}
                 for it in self._inflight.values()
             ],
             "retries": [
@@ -1017,7 +1122,9 @@ class Campaign:
             if it["id"] not in done:
                 self._inflight[it["id"]] = _InFlight(
                     id=it["id"], x=t(it["design"]), retry_of=it["retry_of"],
-                    attempt=it["attempt"],
+                    attempt=it["attempt"], acquisition=it.get("acquisition"),
+                    issued_at=it.get("issued_at"), fit_seconds=it.get("fit_seconds"),
+                    acquisition_seconds=it.get("acquisition_seconds"),
                 )
         self._retry_queue = [(t(r["design"]), r["retry_of"], r["attempt"]) for r in q["retries"]]
         self._seed_queue = [t(x) for x in q["seeds"]]

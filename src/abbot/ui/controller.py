@@ -134,7 +134,8 @@ class RunController:
         """Advance one auto step if running. Returns True iff a step was taken.
 
         No-op (returns False) when not running, halted/done, or the step budget is
-        spent. Status transitions (DONE on budget, HALTED on fault) are owned here,
+        spent. Status transitions (DONE on budget or a supervisor stop, HALTED on
+        fault) are owned here,
         so the caller just fires this on a timer and re-renders.
         """
         if self.status != RunStatus.RUNNING:
@@ -142,7 +143,9 @@ class RunController:
         if self.campaign.halted:
             self.status = RunStatus.HALTED
             return False
-        if self.max_steps is not None and len(self.campaign.history) >= self.max_steps:
+        if self.campaign.stopped or (
+            self.max_steps is not None and len(self.campaign.history) >= self.max_steps
+        ):
             self.status = RunStatus.DONE
             return False
         self.campaign.step(self.experiment, self.evaluate)
@@ -167,5 +170,7 @@ class RunController:
     def _sync_status(self) -> None:
         if self.campaign.halted:
             self.status = RunStatus.HALTED
-        elif self.max_steps is not None and len(self.campaign.history) >= self.max_steps:
+        elif self.campaign.stopped or (
+            self.max_steps is not None and len(self.campaign.history) >= self.max_steps
+        ):
             self.status = RunStatus.DONE
