@@ -121,3 +121,21 @@ def test_manual_round_feeds_progress_analysis():
     assert len(series) == len(ctrl.campaign.history)
     # Running best is non-decreasing for a MAXIMIZE objective.
     assert all(series[i + 1] >= series[i] - 1e-9 for i in range(len(series) - 1))
+
+
+def test_a_supervisor_stop_is_done_for_run_and_tick():
+    from abbot.supervision import cost_cap
+
+    exp = ManualExperiment(responder=lambda d: -((d["x"] - 0.3) ** 2))
+    for mode in ("run", "tick"):
+        c = _campaign()
+        c.supervisor = cost_cap(1e-12)  # the first run's wall-clock cost reaches it
+        ctrl = RunController(c, experiment=exp, evaluate=lambda o: o, max_steps=10)
+        if mode == "run":
+            ctrl.run()
+        else:
+            ctrl.start()
+            while ctrl.tick():
+                pass
+        assert len(c.history) == 1 and c.stopped
+        assert ctrl.status == RunStatus.DONE
