@@ -85,8 +85,7 @@ def test_default_optimizer_by_space():
     )
     assert isinstance(default_optimizer(cont), Continuous)
     assert isinstance(default_optimizer(enum), DiscreteArgmax)
-    with pytest.raises(ValueError, match="Mixed"):
-        default_optimizer(mixed)
+    assert isinstance(default_optimizer(mixed), Continuous)  # enumerated axis enumerated
 
 
 # --- BAX goal construction (goal-type dropdown + params) ---------------------

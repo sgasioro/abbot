@@ -77,7 +77,7 @@ class UIState:
             goal = build_goal(self._normalized_goal_row(), spec)  # may raise
             policy = BAXPolicy(goal, strategy=self.bax_strategy)
         else:
-            policy = default_policy(spec)  # may raise on mixed spaces
+            policy = default_policy(spec)
         # The GP constructor declares its own UQ capability (calibrated variance),
         # which satisfies every builtin policy; Campaign checks the pairing.
         campaign = Campaign(spec, policy)
@@ -537,6 +537,16 @@ def _import_spec_control(state: UIState) -> None:
             spec = abbot_io.spec_from_json(e.content.read().decode())
         except Exception as exc:  # noqa: BLE001
             ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
+            return
+        unsupported = spec.source_names + [
+            d.name for d in spec.domain if not isinstance(d, (ContinuousDomain, EnumeratedDomain))
+        ]
+        if unsupported:
+            ui.notify(
+                f"The editor can't show {unsupported} yet (sources and integer or "
+                "structured variables); run this spec through the Python API.",
+                type="negative", multi_line=True, close_button=True,
+            )
             return
         rows = []
         for d in spec.domain:

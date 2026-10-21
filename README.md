@@ -93,7 +93,7 @@ src/abbot/
   supervision.py  # per-shot detectors + stall / drift / consecutive-fault monitors
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
-    builder.py    # form rows -> ProblemSpec; optimizer selection (surfaces mixed-space limit)
+    builder.py    # form rows -> ProblemSpec; optimizer selection
     app.py        # single-dashboard: Define / Run / Progress; `python -m abbot.ui`
   interop/
     xopt.py       # gest VOCS <-> spec + CorePolicyGenerator (runs under Xopt) [F3]
@@ -230,8 +230,8 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 
 - **M1** — shared core skeleton on botorch *(done)*.
 - **M3** — non-expert lab BO tool: NiceGUI web frontend on the shared `Campaign`
-  session API, with a type-polymorphic variable editor *(done; FastAPI+React
-  split and `optimize_acqf_mixed` are follow-ons)*.
+  session API, with a type-polymorphic variable editor *(done; a FastAPI+React
+  split is a follow-on)*.
 - **M2** — composite-SBI app: `BoxMembershipReducer` + `sbi_evaluate` + aux
   caching + a lazy `interop/sbido.py` adapter (since removed), validated on sbido's analytic
   posterior *(done)*. Follow-on: install `sbi` + reproduce sbido's mat_finder
@@ -267,9 +267,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
      - Phase A, cost *(done)*: per-record cost (wall-clock or caller-given), cost
        models (`FixedCost`, `CallableCost`, `PowerLawCost`), cost-aware `SimpleBO`
        / `ParetoBO`, and `Verdict.stop` with `cost_cap` / `acquisition_monitor`.
-     - Phase B, source variables: fidelities and tasks / sources as one spec
-       concept (ordered or not, with a target), `IntegerDomain`, recommendation
-       scored at the target.
+     - Phase B, source variables *(done)*: fidelities and tasks / sources as one
+       spec concept (`Source`: ordered or not, with a target), `IntegerDomain`,
+       mixed-space proposal (`optimize_acqf_mixed`), policies pinned at the
+       target, recommendation scored at the target.
      - Phase C: a multi-fidelity model constructor; `SimpleBO` becomes
        source-aware (cost-weighted max-value entropy search, no separate policy);
        multi-fidelity InfoBAX.
@@ -289,6 +290,5 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   7. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that
      writes the spec / goal. The UI stays the run console and the
      human-in-the-loop entry point.
-- **Later** — mixed continuous + categorical spaces (`optimize_acqf_mixed`), output
-  constraints, nn-bax productionization (upstream to Xopt where it fits). BAXstics
-  merges to its main once abbot is public.
+- **Later** — output constraints, nn-bax productionization (upstream to Xopt where
+  it fits). BAXstics merges to its main once abbot is public.

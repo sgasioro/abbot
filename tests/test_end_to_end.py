@@ -18,6 +18,7 @@ from abbot.loop import run_campaign
 from abbot.model import SingleTaskGPConstructor
 from abbot.policy import SimpleBO
 from abbot.problem import ContinuousDomain, EnumeratedDomain, ObjectiveSpec, ProblemSpec
+from abbot.session import Campaign
 
 pytestmark = pytest.mark.slow  # run_campaign GP fits
 
@@ -139,15 +140,15 @@ def test_sbi_aux_payload_persisted_and_resumed(tmp_path):
     assert result.history.records[0].aux is not None
 
 
-# --- Known gap, surfaced loudly: mixed continuous + enumerated ----------------
+# --- Mixed continuous + enumerated -------------------------------------------
 
 
-def test_mixed_domain_continuous_optimizer_fails_loudly():
-    """A mixed space must NOT silently relax the enumerated axis to a float range.
+def test_mixed_domain_proposes_allowed_values():
+    """A mixed space enumerates the enumerated axis (``optimize_acqf_mixed``): the
+    proposal lands on an allowed value, never on a relaxed float in between."""
+    from botorch.acquisition import PosteriorMean
+    from botorch.models import SingleTaskGP
 
-    This is the documented deferred case (optimize_acqf_mixed). We want a clear
-    error now, not a wrong answer.
-    """
     from abbot.acq_opt import Continuous
 
     spec = ProblemSpec(
@@ -157,8 +158,17 @@ def test_mixed_domain_continuous_optimizer_fails_loudly():
         ],
         objectives=[ObjectiveSpec(name="yield", direction="MAXIMIZE")],
     )
+    X = spec.sample_designs(12, seed=0)
+    Y = -(X[:, :1] - 0.7) ** 2 - (X[:, 1:] - 1.0) ** 2
+    acq = PosteriorMean(SingleTaskGP(X, Y))
+    (x,) = Continuous(num_restarts=2, raw_samples=32).optimize(acq, spec, 1)
+    assert x[1].item() in {0.0, 1.0, 2.0}
 
-    # The loop swallows proposal errors and falls back to random, so assert the
-    # optimizer itself refuses the mixed spec directly.
-    with pytest.raises(NotImplementedError, match="all-continuous"):
-        Continuous().optimize(acq=None, spec=spec, n=1)
+    # A batch goes through the default policy (sequential, pending-aware).
+    torch.manual_seed(0)
+    c = Campaign(spec)
+    for row, y in zip(X, Y):
+        c.record(row, y)
+    picks = c.suggest(2)
+    assert not c.last_warning  # proposed, not a random fallback
+    assert all(p["catalyst"] in {0.0, 1.0, 2.0} for p in picks)
