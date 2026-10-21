@@ -23,7 +23,7 @@ without a deprecation period.
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
-| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `default_constructor` |
+| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiFidelityGPConstructor` (provisional), `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
@@ -44,9 +44,8 @@ on them.
   `cost_cap`, `acquisition_monitor` (`Verdict.stop`). The default fault thresholds
   were calibrated on sbido's scattering benchmark.
 - **`abbot.cost`** (`CostModel`, `FixedCost`, `CallableCost`, `FittedCost`,
-  `PowerLawCost`), `Record.cost` / `Record.acquisition` and the timing fields,
-  `SimpleBO` / `ParetoBO(cost_model=)` — new; multi-fidelity (source variables)
-  will build on them.
+  `PowerLawCost`, `SourceCost`), `Record.cost` / `Record.acquisition` and the timing
+  fields, `SimpleBO` / `ParetoBO(cost_model=)` — new.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
   the engine through `Campaign`, not by importing UI internals.
 - **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`,
@@ -56,8 +55,8 @@ on them.
   an optional `fixed_features={position: value}`.
 - **Source variables** (`Source`, `ProblemSpec.sources`, `spec.design_names` /
   `source_names` / `target_features` / `at_target`, `CampaignResult.run_at_target` /
-  `target_std`) — new; the source-aware model and policies (multi-fidelity) are
-  still to come.
+  `target_std`), `MultiFidelityGPConstructor`, and `SimpleBO(choose_sources=,
+  n_candidates=)` — new. Multi-fidelity BAX is still to come.
 
 ### Private — do not touch
 Anything with a leading underscore is internal and may change without notice,
@@ -199,8 +198,27 @@ source (two codes, simulation vs experiment; an unordered `EnumeratedDomain`).
 Sources are inputs like any other: they follow the design variables in every design
 vector, `suggest` hands them to the experiment in the design dict, and
 `spec.variable_names` lists them (`spec.design_names` is the design-only view).
-Everything that doesn't choose sources works *at the target*:
-- policies that aren't source-aware (`SimpleBO`, `ParetoBO`, `UncertaintySampling`,
+Declaring sources is enough to get multi-fidelity BO:
+- `default_constructor` builds a `MultiFidelityGPConstructor`. Ordered sources get
+  BoTorch's `SingleTaskMultiFidelityGP`, each source mapped to [0, 1] with its
+  accurate end at 1 (log-scaled for `log=True`). Its default linear-truncated kernel
+  models a run as the accurate result plus a bias that vanishes at the accurate end
+  and varies with the design; `linear_truncated=False, iteration="name"` instead
+  uses an exponential-decay kernel for a source whose results settle towards a
+  limit. One unordered source gets a `MultiTaskGP` (noise shared across sources
+  unless `Yvar` is given). Ordered and unordered sources together aren't supported
+  yet.
+- `SimpleBO` chooses sources: multi-fidelity max-value entropy search, the
+  information a run gives about the best value at the target, per unit of cost.
+  Batches are built one pick at a time. The cost is `cost_model=` if given, else a
+  `SourceCost` learned from the recorded costs: a power law per positive ordered
+  source, an exponential per other ordered source, a factor per level of an
+  unordered source. It ignores the design variables, and it predicts a flat cost
+  until there are enough costed records (with a warning if no run has a cost).
+  `SimpleBO(choose_sources=False)` keeps proposals at the target.
+
+Everything else works *at the target*:
+- policies that don't choose sources (`ParetoBO`, `UncertaintySampling`,
   `BAXPolicy`) propose with the sources pinned at the target, and improvement is
   judged against the target;
 - `recommend` scores each evaluated design at the target, counts a design run at
@@ -210,10 +228,12 @@ Everything that doesn't choose sources works *at the target*:
 - default seeds are space-filling over every input, with two moved to the target.
 
 `target` is a recommendation-time setting: it's left out of the resume fingerprint,
-so it can change between runs. `ordered` (default: continuous / integer yes,
-enumerated no) and `log` are read by the source-aware models still to come. The
-self-describing CSV, VOCS and the UI editor refuse specs with sources; use the JSON
-spec.
+so it can change between runs. `ordered` defaults to yes for continuous / integer
+sources and no for enumerated ones; an unordered source is enumerated with
+whole-number labels. `accurate="high"` (default) or `"low"` says which end of an
+ordered source is more accurate (system size vs a tolerance), and `log=True` puts it
+on a log scale for the model. The self-describing CSV, VOCS and the UI editor refuse
+specs with sources; use the JSON spec.
 
 **Swapping the surrogate.** The documented extension point is a custom
 `ModelConstructor`: `build(X, Y, Yvar) -> botorch.Model`, with `provides_uq` set to
@@ -232,7 +252,7 @@ are derived from the spec:
 | Omitted | Default |
 | --- | --- |
 | `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the inputs support (`DiscreteArgmax` if all enumerated, else `Continuous`). No objectives (all `OBSERVE`) raises — pass a policy. |
-| `model_constructor` | `default_constructor(spec)`: `SingleTaskGPConstructor` for 1 output, `ModelListConstructor` otherwise, normalized to the spec bounds. |
+| `model_constructor` | `default_constructor(spec)`: `MultiFidelityGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds. |
 | `initial_designs` (`run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and inequality constraints. Ignored on resume. |
 | `evaluate` (`run_campaign`) | identity — the experiment returns the outputs directly. |
 
@@ -305,8 +325,8 @@ Named here so you don't design around their absence as if permanent:
 output-constraint enforcement for BO (feasibility-weighted acquisition over an
 `OBSERVE` column), a run-level JSON serializer including the SBI `aux` payload, a
 `TARGET` objective direction, continuous BAX (pathwise / seeded-ascent), the full
-`sbi`-backed benchmark, source-aware multi-fidelity models and policies (the spec
-side, `Source`, is in), and a blop backend for Bluesky.
+`sbi`-backed benchmark, multi-fidelity BAX (BAX policies run at the target for
+now), and a blop backend for Bluesky.
 
 - **Correlated multi-output `MultiTaskGP` — near-term, needs an ADR first.** The
   `ModelConstructor` seam is the right home, but it hinges on two decisions: where

@@ -101,6 +101,23 @@ def test_infobax_eig_finite_and_prefers_boundary():
     assert float(near_boundary) >= float(far) - 1e-6
 
 
+def test_infobax_refuses_when_every_fantasy_fails(monkeypatch):
+    import abbot.policy
+
+    torch.manual_seed(0)
+    spec = _spec()
+    model = _fit(spec, [0.1, 0.3, 0.5, 0.7, 0.9], [0.0, 0.4, 1.0, 0.4, 0.0])[0]
+    pol = BAXPolicy(BandIntersection([(0.5, 1.2)]), strategy="InfoBAX",
+                    n_candidates=40, n_posterior_samples=4)
+
+    def refuse(*args, **kwargs):
+        raise IndexError("can't condition")
+
+    monkeypatch.setattr(abbot.policy, "_condition", refuse)
+    with pytest.raises(RuntimeError, match="failed for every posterior sample"):
+        pol._acquisition(spec, model, pol.candidate_grid(spec))
+
+
 def test_coherent_samples_are_joint():
     torch.manual_seed(0)
     spec = _spec()

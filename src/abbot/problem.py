@@ -120,15 +120,20 @@ class Source(BaseModel):
 
     ``ordered`` says whether nearby values are related (fidelity levels) or not
     (different codes); it defaults to True for continuous and integer domains and
-    False for enumerated ones. ``log=True`` asks the model to see the source on a
-    log scale (size-like knobs). ``target`` is a recommendation-time setting: it may
-    change between runs without invalidating a resumed store.
+    False for enumerated ones. An unordered source must be enumerated, with
+    whole-number labels (``0`` for one code, ``1`` for another). ``log=True`` asks
+    the model to see the source on a log scale (size-like knobs). ``accurate`` says
+    which end of an ordered source is the more accurate one: ``"high"`` for knobs
+    like system size or iteration count, ``"low"`` for knobs like a tolerance or a
+    mesh spacing. ``target`` is a recommendation-time setting: it may change between
+    runs without invalidating a resumed store.
     """
 
     domain: SourceDomain
     target: float
     ordered: bool | None = None
     log: bool = False
+    accurate: Literal["high", "low"] = "high"
 
     @property
     def name(self) -> str:
@@ -156,6 +161,21 @@ class Source(BaseModel):
             low = min(d.values) if isinstance(d, EnumeratedDomain) else d.lower
             if low <= 0:
                 raise ValueError(f"Source {d.name!r}: log=True needs positive values")
+        if not self.is_ordered:
+            if not isinstance(d, EnumeratedDomain):
+                raise ValueError(
+                    f"Source {d.name!r}: an unordered source must be enumerated "
+                    "(one value per code or source)"
+                )
+            if any(v != int(v) for v in d.values):
+                raise ValueError(
+                    f"Source {d.name!r}: label unordered sources with whole numbers, "
+                    f"got {d.values}"
+                )
+            if self.accurate != "high" or self.log:
+                raise ValueError(
+                    f"Source {d.name!r}: accurate= and log= apply to ordered sources only"
+                )
         return self
 
 

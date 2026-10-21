@@ -12,7 +12,14 @@ from abbot.composite import (
     Rescore,
     composite_evaluate,
 )
-from abbot.cost import CallableCost, CostModel, FittedCost, FixedCost, PowerLawCost
+from abbot.cost import (
+    CallableCost,
+    CostModel,
+    FittedCost,
+    FixedCost,
+    PowerLawCost,
+    SourceCost,
+)
 from abbot.experiment import (
     BatchExperiment,
     Experiment,
@@ -40,6 +47,7 @@ from abbot.model import (
     EnsembleConstructor,
     ModelConstructor,
     ModelListConstructor,
+    MultiFidelityGPConstructor,
     SingleTaskGPConstructor,
     default_constructor,
 )
@@ -105,6 +113,7 @@ __all__ = [
     "MockDatasetExperiment",
     "ModelConstructor",
     "ModelListConstructor",
+    "MultiFidelityGPConstructor",
     "ObjectiveReducer",
     "ObjectiveSpec",
     "OutputSpec",
@@ -121,6 +130,7 @@ __all__ = [
     "SimpleBO",
     "SingleTaskGPConstructor",
     "Source",
+    "SourceCost",
     "StructuredDomain",
     "Supervisor",
     "Targets",

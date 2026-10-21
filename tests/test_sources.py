@@ -178,7 +178,7 @@ def test_a_custom_optimizer_without_fixed_features_still_works_without_sources()
 
 
 @pytest.mark.slow
-def test_simple_bo_proposes_at_the_target_and_the_experiment_sees_the_source():
+def test_simple_bo_can_stay_at_the_target_and_the_experiment_sees_the_source():
     torch.manual_seed(0)
     spec = _spec()
     seen = []
@@ -188,7 +188,7 @@ def test_simple_bo_proposes_at_the_target_and_the_experiment_sees_the_source():
             seen.append(dict(design))
             return torch.tensor([-(design["eps"] - 0.3) ** 2 - 1e-4 * design["atoms"]])
 
-    c = Campaign(spec)
+    c = Campaign(spec, policy=SimpleBO(choose_sources=False))
     c.seed(default_initial_designs(spec, seed=0))
     for _ in range(9):
         c.step(_Sim(), lambda y: y)
