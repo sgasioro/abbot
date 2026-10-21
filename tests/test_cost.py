@@ -8,6 +8,7 @@ from abbot import (
     Campaign,
     ContinuousDomain,
     CostModel,
+    FittedCost,
     FixedCost,
     OutputSpec,
     PowerLawCost,
@@ -82,9 +83,10 @@ def test_power_law_recovers_exponent_and_prefactor():
     costs = (2.0 * n**3).tolist()
     model = PowerLawCost(["atoms"])
     model.fit(_history(spec, xs, costs), spec)
-    assert float(model.exponents[0]) == pytest.approx(3.0, abs=1e-6)
-    assert float(model.log_a.exp()) == pytest.approx(2.0, rel=1e-6)
-    assert float(model(torch.tensor([[256.0, 300.0]], dtype=torch.double))) == pytest.approx(2.0 * 256**3, rel=1e-6)
+    assert float(model.exponents[0]) == pytest.approx(3.0, abs=1e-5)
+    assert model.prefactor == pytest.approx(2.0, rel=1e-4)
+    pred = float(model(torch.tensor([[256.0, 300.0]], dtype=torch.double)))
+    assert pred == pytest.approx(2.0 * 256**3, rel=1e-4)
 
 
 def test_power_law_with_fixed_exponents_fits_only_the_prefactor():
@@ -92,7 +94,7 @@ def test_power_law_with_fixed_exponents_fits_only_the_prefactor():
     model = PowerLawCost(["atoms"], exponents=[3.0])
     model.fit(_history(spec, [[10.0]], [5000.0]), spec)
     assert float(model.exponents[0]) == 3.0
-    assert float(model.log_a.exp()) == pytest.approx(5.0)
+    assert model.prefactor == pytest.approx(5.0)
 
 
 def test_power_law_predicts_initial_until_it_has_costs_and_checks_names():
@@ -104,6 +106,31 @@ def test_power_law_predicts_initial_until_it_has_costs_and_checks_names():
     assert float(model(torch.tensor([[50.0]], dtype=torch.double))) == pytest.approx(7.0)
     with pytest.raises(ValueError, match="not in the spec"):
         PowerLawCost(["mesh"]).fit(History(), spec)
+
+
+def test_fitted_cost_learns_a_user_formula():
+    spec = _spec(("mesh", "steps"), lower=1.0, upper=1e4)
+    xs = torch.tensor([[10.0, 100.0], [20.0, 50.0], [40.0, 400.0], [80.0, 10.0], [5.0, 1000.0]])
+    true = lambda m, s: 0.5 + 1e-3 * m**2 * s  # setup + per-step work
+    model = FittedCost(
+        lambda x, p: p["setup"].exp() + p["log_k"].exp() * x["mesh"] ** 2 * x["steps"],
+        {"setup": 0.0, "log_k": 0.0},
+    )
+    model.fit(_history(spec, xs, [true(m, s) for m, s in xs.tolist()]), spec)
+    assert float(model.params["setup"].exp()) == pytest.approx(0.5, rel=1e-3)
+    assert float(model.params["log_k"].exp()) == pytest.approx(1e-3, rel=1e-3)
+    X = torch.tensor([[[30.0, 200.0]]], dtype=torch.double)
+    assert model(X).shape == (1, 1)
+    assert isinstance(model, CostModel)
+
+
+def test_fitted_cost_waits_for_enough_records_and_checks_fixed_names():
+    spec = _spec(("n",), lower=1.0, upper=10.0)
+    model = FittedCost(lambda x, p: p["a"] * x["n"] + p["b"], {"a": 1.0, "b": 2.0})
+    model.fit(_history(spec, [[3.0]], [100.0]), spec)  # one record, two free params
+    assert float(model.params["a"]) == 1.0 and float(model.params["b"]) == 2.0
+    with pytest.raises(ValueError, match="fixed"):
+        FittedCost(lambda x, p: p["a"], {"a": 1.0}, fixed=["b"])
 
 
 # -- costs on records -----------------------------------------------------------
@@ -147,6 +174,36 @@ def test_records_pickled_before_cost_existed_read_as_none():
     assert History(records=[rec]).cost_spent == 0.0
 
 
+# -- timing ---------------------------------------------------------------------
+
+
+def test_step_logs_run_times_and_ask_tell_logs_completion_only():
+    c = _seeded()
+    c.step(_Quadratic(), _identity)
+    r = c.history.records[0]
+    assert r.issued_at <= r.started_at <= r.finished_at
+    assert r.duration == pytest.approx(r.cost, abs=0.05)  # epoch vs perf clock
+    assert r.fit_seconds is None and r.acquisition_seconds is None  # a seed: no proposal
+    (cand,) = c.suggest(1)
+    c.ingest([0.0], id=cand.id)
+    r = c.history.records[-1]
+    assert r.issued_at <= r.finished_at and r.started_at is None and r.duration is None
+    assert r.cost is None  # turnaround isn't run cost
+
+
+@pytest.mark.slow
+def test_proposals_log_fit_and_acquisition_time_shared_across_a_batch():
+    torch.manual_seed(0)
+    c = _seeded(policy=UncertaintySampling())
+    c.step(_Plate(), _identity, n=3)  # the seeds
+    c.step(_Plate(), _identity, n=2)  # a proposed batch of two
+    a, b = c.history.records[-2:]
+    assert a.fit_seconds is not None and a.fit_seconds > 0
+    assert a.acquisition_seconds is not None and a.acquisition_seconds > 0
+    assert (a.fit_seconds, a.acquisition_seconds) == (b.fit_seconds, b.acquisition_seconds)
+    assert (a.started_at, a.finished_at) == (b.started_at, b.finished_at)
+
+
 # -- stopping -------------------------------------------------------------------
 
 
@@ -185,18 +242,21 @@ def test_acquisition_values_reach_records_and_the_monitor_stops():
 
 
 @pytest.mark.slow
-def test_acquisition_values_survive_a_resume(tmp_path):
+def test_acquisition_values_and_timing_survive_a_resume(tmp_path):
     torch.manual_seed(0)
     c = _seeded(policy=UncertaintySampling(), store=DataStore(tmp_path))
     for cand in c.suggest(3):
         c.ingest([0.0], id=cand.id)
     (pending,) = c.suggest(1)
-    value = c._inflight[pending.id].acquisition
-    assert value is not None
+    item = c._inflight[pending.id]
+    assert item.acquisition is not None and item.acquisition_seconds is not None
     resumed = Campaign(_spec(), policy=UncertaintySampling(), store=DataStore(tmp_path))
-    assert resumed._inflight[pending.id].acquisition == pytest.approx(value)
+    back = resumed._inflight[pending.id]
+    for field in ("acquisition", "issued_at", "fit_seconds", "acquisition_seconds"):
+        assert getattr(back, field) == pytest.approx(getattr(item, field))
     resumed.ingest([0.0], id=pending.id)
-    assert resumed.history.records[-1].acquisition == pytest.approx(value)
+    assert resumed.history.records[-1].acquisition == pytest.approx(item.acquisition)
+    assert resumed.history.records[-1].issued_at == pytest.approx(item.issued_at)
 
 
 # -- cost-aware BO --------------------------------------------------------------

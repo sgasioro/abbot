@@ -35,8 +35,25 @@ class Record:
     retry_of: int | None = None  # index this shot re-runs, if any
     error: str | None = None  # experiment.run raised (then fault=True, outputs=None)
     id: str | None = None  # the Campaign candidate id this record closed (e.g. "c0007")
-    cost: float | None = None  # what the run cost: step's wall-clock seconds, or caller-given
+    cost: float | None = None  # what the run cost: caller-given, else step's measured run time
     acquisition: float | None = None  # the policy's acquisition value when it proposed this design
+    # Timing (epoch seconds / seconds). issued_at: handed out by suggest. started_at /
+    # finished_at: around the experiment run under ``step``; ask/tell knows only when
+    # the result came back (finished_at). fit_seconds / acquisition_seconds: abbot's
+    # own time fitting the model and computing the proposal this design came from
+    # (shared by the picks of one batch; None for seeds and retries).
+    issued_at: float | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    fit_seconds: float | None = None
+    acquisition_seconds: float | None = None
+
+    @property
+    def duration(self) -> float | None:
+        """Experiment run time in seconds, when ``step`` ran it (else None)."""
+        if self.started_at is None or self.finished_at is None:
+            return None
+        return self.finished_at - self.started_at
 
 
 @dataclass

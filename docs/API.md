@@ -43,9 +43,10 @@ on them.
   `consecutive_fault_monitor`, `standard_supervisor`, and the stopping supervisors
   `cost_cap`, `acquisition_monitor` (`Verdict.stop`). The default fault thresholds
   were calibrated on sbido's scattering benchmark.
-- **`abbot.cost`** (`CostModel`, `FixedCost`, `CallableCost`, `PowerLawCost`),
-  `Record.cost` / `Record.acquisition`, `SimpleBO` / `ParetoBO(cost_model=)` — new;
-  multi-fidelity (source variables) will build on them.
+- **`abbot.cost`** (`CostModel`, `FixedCost`, `CallableCost`, `FittedCost`,
+  `PowerLawCost`), `Record.cost` / `Record.acquisition` and the timing fields,
+  `SimpleBO` / `ParetoBO(cost_model=)` — new; multi-fidelity (source variables)
+  will build on them.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
   the engine through `Campaign`, not by importing UI internals.
 - **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`,
@@ -162,13 +163,23 @@ carries it, the loop threads it to the surrogate's `train_Yvar` (a heteroskedast
 fit); otherwise the model infers the noise level. Variance is sign-invariant, so it
 is never flipped by the canonical convention.
 
-**Cost and stopping (optional).** Every record carries a `cost`: the wall-clock
-seconds `step` measured (a batch's time split evenly), or what the caller passed
-(`ingest(..., costs=)`, `record(..., cost=)`, `fail(..., cost=)`: core-hours,
-money). `CampaignState` reports `costs` and `cost_spent`. `SimpleBO(cost_model=...)`
-and `ParetoBO(cost_model=...)` maximize log-acquisition minus log cost (improvement
-per unit cost), refitting the model to the recorded costs each step; `PowerLawCost`
-suits costs that scale steeply with a size-like variable. A supervisor's
+**Timing.** Every record logs `issued_at` (when `suggest` handed it out) and
+`finished_at`; under `step` also `started_at` around the experiment run, so
+`duration` is the run time (ask/tell only knows when the result came back). Proposed
+records also carry abbot's own time: `fit_seconds` (the fit of the model the
+proposal used) and `acquisition_seconds` (computing the proposal; shared by the
+picks of one batch). Times survive a resume.
+
+**Cost and stopping (optional).** Every record carries a `cost`: what the caller
+passed (`ingest(..., costs=)`, `record(..., cost=)`, `fail(..., cost=)`:
+core-hours, money), else the experiment run time `step` measured (a batch's time
+split evenly; abbot's own fit and acquisition time is never counted).
+`CampaignState` reports `costs` and `cost_spent`. `SimpleBO(cost_model=...)` and
+`ParetoBO(cost_model=...)` maximize log-acquisition minus log cost (improvement per
+unit cost), refitting the model to the recorded costs each step. `CallableCost`
+takes a known formula; `FittedCost(fn, params)` learns a formula's parameters from
+the recorded costs (least squares on log cost), and `PowerLawCost` is a ready-made
+one for run time that scales steeply with a size-like variable. A supervisor's
 `Verdict.stop` marks the campaign done without a fault: `cost_cap(budget)` stops
 once `cost_spent` reaches the budget, and `acquisition_monitor(threshold, window)`
 once the policy's recent acquisition values (stored per record from its

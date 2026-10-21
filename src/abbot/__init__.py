@@ -12,7 +12,7 @@ from abbot.composite import (
     Rescore,
     composite_evaluate,
 )
-from abbot.cost import CallableCost, CostModel, FixedCost, PowerLawCost
+from abbot.cost import CallableCost, CostModel, FittedCost, FixedCost, PowerLawCost
 from abbot.experiment import (
     BatchExperiment,
     Experiment,
@@ -90,6 +90,7 @@ __all__ = [
     "EnsembleConstructor",
     "EnumeratedDomain",
     "Experiment",
+    "FittedCost",
     "FixedCost",
     "FunctionGoal",
     "Goal",

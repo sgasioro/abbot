@@ -346,6 +346,18 @@ class CampaignResult:
         return self.history.records[self.recommended[0]]
 
 
+def _timing(item: _InFlight) -> dict:
+    """Record fields carried over from an outstanding item, closing it now."""
+    return {
+        "acquisition": item.acquisition,
+        "issued_at": item.issued_at,
+        "started_at": item.started_at,
+        "finished_at": item.finished_at if item.finished_at is not None else time.time(),
+        "fit_seconds": item.fit_seconds,
+        "acquisition_seconds": item.acquisition_seconds,
+    }
+
+
 def _acquisition_values(policy: Policy, n: int) -> list[float | None]:
     """The policy's ``last_acquisition_value`` as ``n`` floats, or Nones if it has
     none (it is optional on the protocol) or the shape doesn't match."""
@@ -386,6 +398,11 @@ class _InFlight:
     retry_of: int | None = None
     attempt: int = 0
     acquisition: float | None = None  # the policy's value for this pick, if it proposed it
+    issued_at: float | None = None  # epoch seconds suggest handed it out
+    fit_seconds: float | None = None  # fit time of the model its proposal used
+    acquisition_seconds: float | None = None  # time computing its proposal (shared by a batch)
+    started_at: float | None = None  # set by step around the experiment run
+    finished_at: float | None = None
 
 
 # A hook is called after each ingest with (state, fitted_model_or_None); a batched
@@ -465,8 +482,11 @@ class Campaign:
         # Set when a supervisor says the campaign is done (Verdict.stop): ``drive``
         # ends there; ask/tell callers may read it and carry on regardless.
         self.stopped: str | None = None
-        # The policy's acquisition values for the last proposal, aligned with it.
+        # The policy's acquisition values for the last proposal, aligned with it, and
+        # (fit seconds of the model it used, seconds computing it).
         self._proposal_acq: list[float | None] = []
+        self._proposal_seconds: tuple[float | None, float | None] = (None, None)
+        self._model_fit_seconds: float | None = None
         # The last non-fatal warning surfaced to a caller (e.g. a transient
         # proposal fallback). A UI reads this after suggest/step and shows a toast.
         self.last_warning: str | None = None
@@ -534,7 +554,14 @@ class Campaign:
             xs = self._propose(rem, in_flight)
         issued = [self._issue(*self._retry_queue.pop(0)) for _ in range(n_retry)]
         issued += [self._issue(self._seed_queue.pop(0)) for _ in range(n_seed)]
-        issued += [self._issue(xs[i], acquisition=self._proposal_acq[i]) for i in range(rem)]
+        fit_s, acq_s = self._proposal_seconds
+        issued += [
+            self._issue(
+                xs[i], acquisition=self._proposal_acq[i], fit_seconds=fit_s,
+                acquisition_seconds=acq_s,
+            )
+            for i in range(rem)
+        ]
         self._save_queue()
         return [self._candidate(item) for item in issued]
 
@@ -667,13 +694,14 @@ class Campaign:
                     self.halted = f"pre-run check blocked {design}: {reason}"
                     logger.warning("%s", self.halted)
                     return self.state()
-        observations, seconds = self._run_designs(experiment, designs)
+        observations, timings = self._run_designs(experiment, designs)
         # Hooks see the batch once it is all recorded, not each partial state.
         self._hooks_deferred = True
         try:
-            for item, design, observation, cost in zip(
-                items, designs, observations, seconds, strict=True
+            for item, design, observation, (started, finished, cost) in zip(
+                items, designs, observations, timings, strict=True
             ):
+                item.started_at, item.finished_at = started, finished
                 if isinstance(observation, BaseException):
                     logger.error("experiment.run failed at %s", design, exc_info=observation)
                     self._record_run_error(item, observation, cost=cost)
@@ -688,35 +716,37 @@ class Campaign:
     @staticmethod
     def _run_designs(
         experiment: Experiment | BatchExperiment, designs: list[dict]
-    ) -> tuple[list[object], list[float]]:
-        """One observation per design, or the exception its run raised, and the
-        wall-clock seconds each took (a batch's time is split evenly)."""
+    ) -> tuple[list[object], list[tuple[float, float, float]]]:
+        """One observation per design, or the exception its run raised, and per
+        design ``(started_at, finished_at, seconds)``: epoch times around the run and
+        its measured duration (a batch's duration is split evenly)."""
         run_batch = getattr(experiment, "run_batch", None)
         if run_batch is not None:
-            start = time.perf_counter()
+            started, start = time.time(), time.perf_counter()
             try:
                 observations = list(run_batch(designs))
             except Exception as exc:
                 logger.exception("experiment.run_batch failed")
                 observations = [exc] * len(designs)
             share = (time.perf_counter() - start) / len(designs)
+            finished = time.time()
             if len(observations) != len(designs):
                 err = RuntimeError(
                     f"run_batch returned {len(observations)} observation(s) for "
                     f"{len(designs)} design(s)"
                 )
                 observations = [err] * len(designs)
-            return observations, [share] * len(designs)
+            return observations, [(started, finished, share)] * len(designs)
         observations: list[object] = []
-        seconds: list[float] = []
+        timings: list[tuple[float, float, float]] = []
         for design in designs:
-            start = time.perf_counter()
+            started, start = time.time(), time.perf_counter()
             try:
                 observations.append(experiment.run(design))
             except Exception as exc:  # noqa: BLE001 - recorded as a faulted shot
                 observations.append(exc)
-            seconds.append(time.perf_counter() - start)
-        return observations, seconds
+            timings.append((started, time.time(), time.perf_counter() - start))
+        return observations, timings
 
     def _record_run_error(
         self, item: _InFlight, exc: str | BaseException, *, cost: float | None = None
@@ -734,7 +764,7 @@ class Campaign:
         x, retry_of, attempt = item.x, item.retry_of, item.attempt
         record = Record(
             candidate=x, observation=None, fault=True, retry_of=retry_of, error=error,
-            id=item.id, cost=cost, acquisition=item.acquisition,
+            id=item.id, cost=cost, **_timing(item),
         )
         step = len(self.history)
         self.history.append(record)
@@ -808,7 +838,7 @@ class Campaign:
                 candidate=item.x, observation=obs, outputs=y, output_var=ov,
                 aux=aux, retry_of=item.retry_of, id=item.id,
                 cost=None if cost is None else float(cost),
-                acquisition=item.acquisition,
+                **_timing(item),
             )
             step = len(self.history)
             self.history.append(record)
@@ -876,7 +906,9 @@ class Campaign:
         """
         if self._model_valid:
             return self._model
+        start = time.perf_counter()
         self._model = self._fit_now()
+        self._model_fit_seconds = time.perf_counter() - start
         self._model_valid = True
         return self._model
 
@@ -921,6 +953,7 @@ class Campaign:
 
     def _propose(self, n: int, pending: list[torch.Tensor] | None = None) -> torch.Tensor:
         self._proposal_acq = [None] * n  # random probes carry no acquisition value
+        self._proposal_seconds = (None, None)
         model = self.current_model()
         if model is None:
             # Cold start: too few clean points to fit yet. A uniform probe is the
@@ -928,7 +961,9 @@ class Campaign:
             logger.debug("no model yet (too few clean points); drawing a random probe.")
             return self._random_draw(n)
         try:
+            start = time.perf_counter()
             xs = self._policy_suggest(model, n, pending or [])
+            self._proposal_seconds = (self._model_fit_seconds, time.perf_counter() - start)
             self._proposal_acq = _acquisition_values(self.policy, len(xs))
             return xs
         except self._MISCONFIG_ERRORS:
@@ -1021,9 +1056,14 @@ class Campaign:
         attempt: int = 0,
         *,
         acquisition: float | None = None,
+        fit_seconds: float | None = None,
+        acquisition_seconds: float | None = None,
     ) -> _InFlight:
-        item = _InFlight(id=self._new_id(), x=x.reshape(-1).double(),
-                         retry_of=retry_of, attempt=attempt, acquisition=acquisition)
+        item = _InFlight(
+            id=self._new_id(), x=x.reshape(-1).double(), retry_of=retry_of,
+            attempt=attempt, acquisition=acquisition, issued_at=time.time(),
+            fit_seconds=fit_seconds, acquisition_seconds=acquisition_seconds,
+        )
         self._inflight[item.id] = item
         return item
 
@@ -1047,7 +1087,9 @@ class Campaign:
             "next_id": self._next_id,
             "in_flight": [
                 {"id": it.id, "design": it.x.tolist(), "retry_of": it.retry_of,
-                 "attempt": it.attempt, "acquisition": it.acquisition}
+                 "attempt": it.attempt, "acquisition": it.acquisition,
+                 "issued_at": it.issued_at, "fit_seconds": it.fit_seconds,
+                 "acquisition_seconds": it.acquisition_seconds}
                 for it in self._inflight.values()
             ],
             "retries": [
@@ -1081,6 +1123,8 @@ class Campaign:
                 self._inflight[it["id"]] = _InFlight(
                     id=it["id"], x=t(it["design"]), retry_of=it["retry_of"],
                     attempt=it["attempt"], acquisition=it.get("acquisition"),
+                    issued_at=it.get("issued_at"), fit_seconds=it.get("fit_seconds"),
+                    acquisition_seconds=it.get("acquisition_seconds"),
                 )
         self._retry_queue = [(t(r["design"]), r["retry_of"], r["attempt"]) for r in q["retries"]]
         self._seed_queue = [t(x) for x in q["seeds"]]
