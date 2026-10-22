@@ -26,7 +26,7 @@ from abbot import (
 )
 from abbot.history import History, Record
 from abbot.model import _fidelity_transform
-from abbot.policy import _condition
+from abbot.policy import _condition, _MultiFidelityMES
 
 
 def _spec(*sources, outputs=None):
@@ -170,6 +170,19 @@ def test_an_unordered_source_builds_a_multitask_gp_at_the_target():
     assert isinstance(model, ModelListGP) and model.posterior(X[:3]).mean.shape == (3, 2)
 
 
+def test_linear_truncated_power_is_pinned_so_the_kernel_stays_valid():
+    from botorch.models.kernels import LinearTruncatedFidelityKernel
+
+    spec = _spec(_atoms(log=True))
+    X, Y = _fidelity_data(n=24)
+    gp = MultiFidelityGPConstructor(spec).build(X, Y)
+    (kernel,) = [k for k in gp.covar_module.modules()
+                 if isinstance(k, LinearTruncatedFidelityKernel)]
+    assert kernel.power.item() == pytest.approx(1.0) and not kernel.raw_power.requires_grad
+    Z = torch.rand(300, 2, dtype=torch.double)
+    assert torch.linalg.eigvalsh(kernel(Z).to_dense()).min() > -1e-8
+
+
 # -- the default cost -------------------------------------------------------------
 
 
@@ -253,6 +266,27 @@ def test_simple_bo_chooses_cheap_sources_and_learns_the_cost():
     assert len(batch) == 2 and (batch[0]["x"], batch[0]["atoms"]) != (batch[1]["x"], batch[1]["atoms"])
 
 
+@pytest.mark.parametrize("linear_truncated", [True, False])
+def test_entropy_search_handles_runs_at_a_log_sources_lower_bound(linear_truncated):
+    """BoTorch evaluates the model's transformed training inputs as raw designs; a
+    32-atom run (transformed to 0) then hits log(0). The wrapper avoids that."""
+    from botorch.acquisition.cost_aware import InverseCostWeightedUtility
+    from botorch.models.deterministic import GenericDeterministicModel
+
+    spec = _spec(_atoms(log=True))
+    X, Y = _fidelity_data(n=12)
+    X[:3, 1] = 32.0
+    gp = MultiFidelityGPConstructor(spec, linear_truncated=linear_truncated).build(X, Y)
+    candidates = spec.at_target(spec.sample_designs(200, seed=0))
+    acq = _MultiFidelityMES(
+        gp, candidates, train_inputs=spec.at_target(X),
+        cost_aware_utility=InverseCostWeightedUtility(
+            GenericDeterministicModel(lambda Z: Z[..., 1:2] / 32.0)),
+        project=spec.at_target,
+    )
+    assert torch.isfinite(acq(X.unsqueeze(1))).all()
+
+
 @pytest.mark.slow
 def test_choose_sources_off_keeps_proposals_at_the_target():
     c = _run(SimpleBO(choose_sources=False), steps=3)
@@ -296,14 +330,84 @@ def test_simple_bo_chooses_an_unordered_source_with_an_observe_output():
 
 
 @pytest.mark.slow
-def test_bax_with_the_multi_fidelity_model_still_works_at_the_target():
+def test_infobax_can_stay_at_the_target():
     spec = _spec(_atoms(log=True), outputs=[OutputSpec(name="y", direction="OBSERVE")])
     grid = torch.linspace(0, 1, 21, dtype=torch.double).reshape(-1, 1)
     c = Campaign(spec, policy=BAXPolicy(TopK(k=2, output=0), strategy="InfoBAX",
-                                        candidates=grid))
+                                        candidates=grid, choose_sources=False))
     torch.manual_seed(0)
     for x, a in [(0.0, 32), (0.3, 64), (0.5, 512), (0.8, 256), (1.0, 128), (0.6, 256)]:
         c.record({"x": x, "atoms": a}, [torch.sin(torch.tensor(6 * x)).item() + 1.0 / a])
     picks = c.suggest(2)
     assert all(p["atoms"] == 256.0 for p in picks)
     assert not c.last_warning
+
+
+# -- BAX choosing sources -------------------------------------------------------------
+
+
+def test_bax_source_levels_and_proposal_set():
+    spec = _spec(_atoms(log=True), outputs=[OutputSpec(name="y", direction="OBSERVE")])
+    grid = torch.linspace(0, 1, 11, dtype=torch.double).reshape(-1, 1)
+    policy = BAXPolicy(TopK(k=2, output=0), strategy="InfoBAX", candidates=grid)
+    assert policy._levels(spec) == [[256.0, 32.0, 64.0, 128.0, 512.0]]
+    proposals = policy.proposal_set(spec)
+    assert proposals.shape == (55, 2) and torch.equal(proposals[:11], policy.candidate_grid(spec))
+    assert BAXPolicy(TopK(k=2, output=0), strategy="InfoBAX", candidates=grid,
+                     source_levels={"atoms": [32, 100]})._levels(spec) == [[256.0, 32.0, 100.0]]
+    # Strategies that don't choose sources, or choose_sources=False, keep the grid.
+    for kw in ({"strategy": "MeanBAX"}, {"strategy": "US"},
+               {"strategy": "InfoBAX", "choose_sources": False}):
+        p = BAXPolicy(TopK(k=2, output=0), candidates=grid, **kw)
+        assert p.proposal_set(spec).shape == (11, 2)
+    with pytest.raises(ValueError, match="not sources"):
+        BAXPolicy(TopK(k=2, output=0), candidates=grid, source_levels={"n": [1]})._levels(spec)
+    with pytest.raises(ValueError, match="at least 2"):
+        BAXPolicy(TopK(k=2, output=0), candidates=grid, source_levels=1)._levels(spec)
+    unordered = _spec(_code(), outputs=[OutputSpec(name="y", direction="OBSERVE")])
+    assert policy._levels(unordered) == [[1.0, 0.0]]
+
+
+def _bax_campaign(strategy, steps, seed=0):
+    from abbot.goal import BandIntersection
+
+    spec = _spec(_atoms(log=True), outputs=[OutputSpec(name="y", direction="OBSERVE")])
+    grid = torch.linspace(0, 1, 101, dtype=torch.double).reshape(-1, 1)
+
+    def sim(d):
+        x, atoms = d["x"], d["atoms"]
+        return torch.sin(torch.tensor(6 * x)).item() + 40.0 / atoms * (1 + 2 * x), (atoms / 32) ** 2
+
+    torch.manual_seed(seed)
+    policy = BAXPolicy(BandIntersection([(0.5, 1.2)]), strategy=strategy, candidates=grid,
+                       n_posterior_samples=10)
+    c = Campaign(spec, policy=policy)
+    for x in default_initial_designs(spec, seed=seed):
+        d = dict(zip(spec.variable_names, x.tolist()))
+        y, cost = sim(d)
+        c.record(d, [y], cost=cost)
+    for _ in range(steps):
+        (d,) = c.suggest(1)
+        y, cost = sim(d)
+        c.record(d, [y], cost=cost)
+    return c
+
+
+@pytest.mark.slow
+def test_infobax_chooses_cheap_sources_by_information_per_cost():
+    c = _bax_campaign("InfoBAX", steps=4)
+    proposed = c.history.records[-4:]
+    assert all(r.candidate[1].item() < 256 for r in proposed)
+    assert all(r.acquisition is not None and r.acquisition > 0 for r in proposed)
+    assert c.policy._source_cost.params["p_atoms"].item() == pytest.approx(2.0, abs=1e-3)
+    batch = c.suggest(2)
+    assert len(batch) == 2
+    assert (batch[0]["x"], batch[0]["atoms"]) != (batch[1]["x"], batch[1]["atoms"])
+    assert torch.isfinite(c.policy.last_acquisition_value).all()
+
+
+@pytest.mark.slow
+def test_switchbax_proposes_at_the_target_until_it_falls_back_to_infobax():
+    c = _bax_campaign("SwitchBAX", steps=3)
+    for r in c.history.records[-3:]:
+        assert r.candidate[1].item() == 256.0 or c.policy.switched

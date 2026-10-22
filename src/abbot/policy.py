@@ -24,7 +24,10 @@ import logging
 from typing import Literal, Protocol, runtime_checkable
 
 import torch
-from botorch.acquisition import qLogNoisyExpectedImprovement
+from botorch.acquisition import (
+    qLogNoisyExpectedImprovement,
+    qMultiFidelityMaxValueEntropy,
+)
 from botorch.models.model import Model
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
@@ -269,7 +272,6 @@ class SimpleBO:
         return picks
 
     def _suggest_with_sources(self, history, spec, model, n, pending):
-        from botorch.acquisition import qMultiFidelityMaxValueEntropy
         from botorch.acquisition.cost_aware import InverseCostWeightedUtility
         from botorch.models.deterministic import GenericDeterministicModel
 
@@ -290,15 +292,17 @@ class SimpleBO:
                 lambda X: (cost_model(X) / scale).clamp_min(1e-12).unsqueeze(-1)
             )
         )
+        train_inputs = spec.at_target(history.clean.designs.double()).unique(dim=0)
         picks, values = [], []
         for _ in range(n):  # entropy search proposes one design per call
-            acq = qMultiFidelityMaxValueEntropy(
+            acq = _MultiFidelityMES(
                 model,
                 candidates,
                 posterior_transform=_objective_transform(spec),
                 X_pending=_extend_pending(_pending_or_none(pending), picks),
                 cost_aware_utility=utility,
                 project=spec.at_target,
+                train_inputs=train_inputs,
             )
             x = optimize(self.optimizer, acq, spec, 1, {})
             picks.append(x)
@@ -308,6 +312,28 @@ class SimpleBO:
 
     def ingest(self, results) -> None:  # stateless: history carries the state
         return None
+
+
+class _MultiFidelityMES(qMultiFidelityMaxValueEntropy):
+    """BoTorch's multi-fidelity max-value entropy search, with the max values drawn
+    once, over the candidates and the raw training designs at the target.
+
+    Upstream (0.18) appends the model's *transformed* training inputs to the
+    candidates and draws before ``project`` is set, so they are evaluated as raw
+    designs off the target (NaN for a log-scaled source at its lower bound, whose
+    transformed value is 0).
+    """
+
+    def __init__(self, model, candidate_set, *, train_inputs, **kwargs) -> None:
+        self._ready = False
+        super().__init__(model, candidate_set, **kwargs)
+        self.candidate_set = self.project(torch.cat([candidate_set, train_inputs]))
+        self._ready = True
+        self._sample_max_values(num_samples=self.num_mv_samples, X_pending=kwargs.get("X_pending"))
+
+    def _sample_max_values(self, num_samples, X_pending=None):
+        if self._ready:
+            super()._sample_max_values(num_samples, X_pending=X_pending)
 
 
 class ParetoBO:
@@ -556,6 +582,16 @@ class BAXPolicy:
 
     Outputs are read in RAW units before the goal runs (the model is canonical;
     ``output_signs`` is un-applied), matching multibax's unnormalize step.
+
+    **With sources**, the goal always runs at the target, and InfoBAX (also as
+    SwitchBAX's fallback) chooses sources: it scores every grid design at a ladder of
+    source levels by the information a run there gives about the goal's target set,
+    per unit of cost. The cost is ``cost_model`` if given, else a
+    :class:`abbot.cost.SourceCost` learned from the recorded costs. ``source_levels``
+    is how many levels each ordered source gets (evenly spaced on the model's scale,
+    plus the target), or ``{name: [values]}``; an unordered source uses all its
+    values. US, MeanBAX and SwitchBAX's MeanBAX phase propose at the target.
+    ``choose_sources=False`` keeps InfoBAX at the target too.
     """
 
     def __init__(
@@ -568,6 +604,9 @@ class BAXPolicy:
         candidate_seed: int = 0,
         candidates: torch.Tensor | None = None,
         noise_at=None,
+        cost_model=None,
+        choose_sources: bool = True,
+        source_levels: int | dict[str, list[float]] = 5,
     ) -> None:
         if strategy not in _BAX_UQ:
             raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
@@ -583,6 +622,12 @@ class BAXPolicy:
             None if candidates is None else candidates.double().reshape(len(candidates), -1)
         )
         self._grid: torch.Tensor | None = None  # built from the spec on first use
+        self._proposals: torch.Tensor | None = None  # the grid at each source level
+        self.cost_model = cost_model
+        self.choose_sources = choose_sources
+        self.source_levels = source_levels
+        self._source_cost = None
+        self._cost: torch.Tensor | None = None  # relative cost per proposal, this suggest
         # Grid indices measured or pending at the last suggest, plus its picks.
         # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
@@ -643,6 +688,78 @@ class BAXPolicy:
             )
         return spec.at_target(grid).unique(dim=0)
 
+    def proposal_set(self, spec: ProblemSpec) -> torch.Tensor:
+        """What this policy proposes from: the candidate grid, or with sources (when
+        InfoBAX may choose them) the grid at every combination of source levels. The
+        first ``len(candidate_grid(spec))`` rows are the grid at the target."""
+        grid = self.candidate_grid(spec)
+        if not self._chooses_sources(spec):
+            return grid
+        if self._proposals is None:
+            from itertools import product
+
+            columns = spec.source_indices()
+            blocks = []
+            for combo in product(*self._levels(spec)):  # the all-target combo first
+                block = grid.clone()
+                block[:, columns] = torch.tensor(combo, dtype=grid.dtype)
+                blocks.append(block)
+            self._proposals = torch.cat(blocks)
+        return self._proposals
+
+    def _chooses_sources(self, spec: ProblemSpec) -> bool:
+        return bool(spec.sources) and self.choose_sources and self.strategy in (
+            "InfoBAX", "SwitchBAX"
+        )
+
+    def _levels(self, spec: ProblemSpec) -> list[list[float]]:
+        """Each source's levels, the target first."""
+        import math
+
+        from abbot.problem import EnumeratedDomain, IntegerDomain
+
+        explicit = self.source_levels if isinstance(self.source_levels, dict) else {}
+        unknown = set(explicit) - set(spec.source_names)
+        if unknown:
+            raise ValueError(f"source_levels names {sorted(unknown)}, not sources {spec.source_names}")
+        levels = []
+        for source in spec.sources:
+            d = source.domain
+            if source.name in explicit:
+                values = [float(v) for v in explicit[source.name]]
+            elif isinstance(d, EnumeratedDomain):
+                values = list(d.values)
+            else:
+                k = 5 if isinstance(self.source_levels, dict) else int(self.source_levels)
+                if k < 2:
+                    raise ValueError(f"source_levels must be at least 2, got {k}")
+                t = [i / (k - 1) for i in range(k)]
+                if source.log:
+                    lo, hi = math.log(d.lower), math.log(d.upper)
+                    values = [math.exp(lo + u * (hi - lo)) for u in t]
+                else:
+                    values = [d.lower + u * (d.upper - d.lower) for u in t]
+                if isinstance(d, IntegerDomain):
+                    values = [float(round(v)) for v in values]
+            target = float(source.target)
+            levels.append([target, *sorted({v for v in values if v != target})])
+        return levels
+
+    def _relative_cost(self, history: History, spec: ProblemSpec, proposals) -> torch.Tensor:
+        """Each proposal's predicted cost relative to a typical run at the target."""
+        cost_model = self.cost_model
+        if cost_model is None:
+            from abbot.cost import SourceCost
+
+            if self._source_cost is None:
+                self._source_cost = SourceCost(spec)
+            cost_model = self._source_cost
+        cost_model.fit(history, spec)
+        with torch.no_grad():
+            cost = cost_model(proposals).reshape(-1).double()
+        n_target = len(self.candidate_grid(spec))
+        return (cost / cost[:n_target].mean().clamp_min(1e-300)).clamp_min(1e-12)
+
     def _ensure_grid(self, spec: ProblemSpec) -> torch.Tensor:
         """Deprecated alias for :meth:`candidate_grid` (kept for one release)."""
         return self.candidate_grid(spec)
@@ -676,9 +793,12 @@ class BAXPolicy:
         *,
         pending: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        grid = self.candidate_grid(spec)
+        grid = self.proposal_set(spec)
         pending = _pending_or_none(pending)
         self._out_scale = _output_scale(history)
+        self._cost = (
+            self._relative_cost(history, spec, grid) if self._chooses_sources(spec) else None
+        )
         # A batch is built greedily (kriging believer): each pick joins the pending
         # designs, the model is conditioned on them at its own mean, and the
         # acquisition is recomputed before the next pick.
@@ -709,26 +829,36 @@ class BAXPolicy:
     # -- strategy dispatch (mirrors multibax acquisition.py) --
 
     def _acquisition(self, spec, model, grid) -> torch.Tensor:
+        """The acquisition over ``grid`` (the proposal set). Its first
+        ``len(candidate_grid)`` rows are at the target; only InfoBAX scores the rest
+        (the other strategies leave them at ``-inf``)."""
         self.switched = False
-        mean, std = self._raw_mean_std(model, grid, spec)
+        n_target = len(self.candidate_grid(spec))
+        at_target = grid[:n_target]
+
+        def at_target_only(acq):
+            rest = torch.full((grid.shape[0] - n_target,), float("-inf"), dtype=acq.dtype)
+            return torch.cat([acq, rest])
+
+        mean, std = self._raw_mean_std(model, at_target, spec)
         # Average uncertainty across outputs in scale-free units (multibax fits on
         # min-max-scaled outputs); raw stds would let the largest-unit output win.
         rel = (std / self._out_scale.to(std)).mean(dim=-1)
         if self.strategy == "US":
-            return rel
+            return at_target_only(rel)
         # MeanBAX / SwitchBAX gate on the mean-execution target set.
         if self.strategy in ("MeanBAX", "SwitchBAX"):
-            target = self.goal.identify_subspace(mean, grid)
+            target = self.goal.identify_subspace(mean, at_target)
             if self._stuck(target):
                 self.switched = True
                 if self.strategy == "MeanBAX":
-                    return rel  # fall back to US
-                return self._infobax(spec, model, grid, std)  # SwitchBAX -> InfoBAX
-            acq = torch.zeros(grid.shape[0], dtype=torch.double)
+                    return at_target_only(rel)  # fall back to US
+                return self._infobax(spec, model, grid, n_target)  # SwitchBAX -> InfoBAX
+            acq = torch.zeros(n_target, dtype=torch.double)
             acq[target] = rel[target]
-            return acq
+            return at_target_only(acq)
         # InfoBAX
-        return self._infobax(spec, model, grid, std)
+        return self._infobax(spec, model, grid, n_target)
 
     def _stuck(self, target: list[int]) -> bool:
         """multibax ``meanbax_stuck``: empty target set, or already all collected."""
@@ -753,35 +883,40 @@ class BAXPolicy:
             )
             return torch.zeros(N, 1, dtype=torch.double)
 
-    def _infobax(self, spec, model, grid, std) -> torch.Tensor:
+    def _infobax(self, spec, model, grid, n_target) -> torch.Tensor:
         """EIG via fantasy conditioning (multibax ``multiproperty_infobax``).
 
         acq = H[y_x] - E_sample[ H[y_x | execution(sample)] ], averaged over
         outputs, where y_x is a noisy MEASUREMENT at x: both entropies include the
-        measurement noise at x. Coherent joint samples over the grid; the model is
-        conditioned (hyperparameters fixed) on each sample's goal-target values,
-        which are function values, so with only a numerical jitter as noise.
+        measurement noise at x. Coherent joint samples over the grid at the target
+        (its first ``n_target`` rows), where the goal runs; the model is conditioned
+        (hyperparameters fixed) on each sample's goal-target values, which are
+        function values, so with only a numerical jitter as noise. Rows at other
+        source levels are scored the same way, and with sources every row's EIG is
+        divided by its relative cost.
         """
+        at_target = grid[:n_target]
+        _, std = self._raw_mean_std(model, grid, spec)
         noise = self._measurement_noise(model, grid)  # (N, m) or (N, 1)
         term1 = _entropy((std**2 + noise).sqrt())  # (N, d_y)
         with torch.no_grad():
-            post = model.posterior(grid.double())
+            post = model.posterior(at_target.double())
             # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
             samples = post.rsample(torch.Size([self.n_posterior_samples]))
         term2 = torch.zeros_like(term1)
         n = self.n_posterior_samples
         conditioned = failed = 0
         for i in range(n):
-            f_canon = samples[i].reshape(grid.shape[0], -1)
+            f_canon = samples[i].reshape(n_target, -1)
             f_raw = spec.to_raw(f_canon)  # BAX reads ALL outputs raw (goal consumes them)
-            target = self.goal.identify_subspace(f_raw, grid)
+            target = self.goal.identify_subspace(f_raw, at_target)
             if not target:
                 term2 += term1  # no execution info -> entropy unchanged
                 continue
             conditioned += 1
             try:
                 fant = _condition(
-                    model, grid[target].double(), f_canon[target], noise=_FANTASY_JITTER
+                    model, at_target[target].double(), f_canon[target], noise=_FANTASY_JITTER
                 )
                 _, fstd = self._raw_mean_std(fant, grid, spec)
                 term2 += _entropy((fstd**2 + noise).sqrt())
@@ -798,6 +933,8 @@ class BAXPolicy:
             )
         term2 = term2 / n
         eig = (term1 - term2).mean(dim=-1)  # (N,) averaged over outputs
+        if self._cost is not None and len(self._cost) == len(eig):
+            eig = eig / self._cost  # information per target-run-equivalent of cost
         return eig
 
 

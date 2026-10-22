@@ -289,6 +289,7 @@ class MultiFidelityGPConstructor:
             linear_truncated=self.linear_truncated,
             input_transform=_fidelity_transform(spec, self.bounds),
         )
+        _pin_linear_truncated_power(gp)
         fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
         return gp
 
@@ -321,6 +322,22 @@ class MultiFidelityGPConstructor:
         return gps[0] if len(gps) == 1 else ModelListGP(*gps)
 
 
+def _pin_linear_truncated_power(gp) -> None:
+    """Fix each linear-truncated kernel's polynomial power at 1.
+
+    BoTorch learns it as a continuous parameter, but the bias term
+    ``(1 + s s')^p`` is only a valid (positive semi-definite) kernel for whole
+    numbers ``p``. A fitted ``p`` near 0.5 gives negative posterior variances, which
+    turn into NaNs in entropy search.
+    """
+    from botorch.models.kernels import LinearTruncatedFidelityKernel
+
+    for kernel in gp.covar_module.modules():
+        if isinstance(kernel, LinearTruncatedFidelityKernel):
+            kernel.power = 1.0
+            kernel.raw_power.requires_grad_(False)
+
+
 def _fidelity_transform(spec, bounds: torch.Tensor):
     """Inputs to the unit cube, with each ordered source's accurate end at 1 (on a
     log scale for ``log=True`` sources), as BoTorch's fidelity kernels expect."""
@@ -339,6 +356,9 @@ def _fidelity_transform(spec, bounds: torch.Tensor):
             lower[i], upper[i] = lower[i].log10(), upper[i].log10()
         flip[i] = source.accurate == "low"
     span = (upper - lower).where(upper > lower, torch.ones_like(lower))
+    # A hair wider than the range, so round-off (e.g. in the log) never puts a source
+    # above 1, where the product kernel's (1 - s)^power is NaN.
+    span = span * (1 + 1e-9)
     # (x - offset) / coefficient: lower -> 0 and upper -> 1, or reversed when flipped.
     affine = AffineInputTransform(
         d=len(lower),

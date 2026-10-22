@@ -55,8 +55,9 @@ on them.
   an optional `fixed_features={position: value}`.
 - **Source variables** (`Source`, `ProblemSpec.sources`, `spec.design_names` /
   `source_names` / `target_features` / `at_target`, `CampaignResult.run_at_target` /
-  `target_std`), `MultiFidelityGPConstructor`, and `SimpleBO(choose_sources=,
-  n_candidates=)` — new. Multi-fidelity BAX is still to come.
+  `target_std`), `MultiFidelityGPConstructor`, `SimpleBO(choose_sources=,
+  n_candidates=)`, and `BAXPolicy(cost_model=, choose_sources=, source_levels=)` /
+  `BAXPolicy.proposal_set` — new.
 
 ### Private — do not touch
 Anything with a leading underscore is internal and may change without notice,
@@ -216,11 +217,19 @@ Declaring sources is enough to get multi-fidelity BO:
   unordered source. It ignores the design variables, and it predicts a flat cost
   until there are enough costed records (with a warning if no run has a cost).
   `SimpleBO(choose_sources=False)` keeps proposals at the target.
+- `BAXPolicy`'s InfoBAX (also SwitchBAX's InfoBAX fallback) chooses sources. The goal
+  still runs at the target; each grid design is also scored at a ladder of source
+  levels (`source_levels=5` per ordered source, spaced on the model's scale, plus
+  the target; all values of an unordered source; or `{name: [values]}`), by the
+  information a run there gives about the goal's target set, per unit of cost (the
+  same default `SourceCost`). `proposal_set(spec)` is the grid at every level. US,
+  MeanBAX and SwitchBAX's MeanBAX phase propose at the target;
+  `choose_sources=False` keeps InfoBAX there too.
 
 Everything else works *at the target*:
-- policies that don't choose sources (`ParetoBO`, `UncertaintySampling`,
-  `BAXPolicy`) propose with the sources pinned at the target, and improvement is
-  judged against the target;
+- policies that don't choose sources (`ParetoBO`, `UncertaintySampling`, and the
+  BAX strategies above) propose with the sources pinned at the target, and
+  improvement is judged against the target;
 - `recommend` scores each evaluated design at the target, counts a design run at
   several sources once (under its at-target record if any), and the observed
   fallback ranks only at-target runs; `result()` adds `run_at_target` and the
@@ -325,8 +334,7 @@ Named here so you don't design around their absence as if permanent:
 output-constraint enforcement for BO (feasibility-weighted acquisition over an
 `OBSERVE` column), a run-level JSON serializer including the SBI `aux` payload, a
 `TARGET` objective direction, continuous BAX (pathwise / seeded-ascent), the full
-`sbi`-backed benchmark, multi-fidelity BAX (BAX policies run at the target for
-now), and a blop backend for Bluesky.
+`sbi`-backed benchmark, and a blop backend for Bluesky.
 
 - **Correlated multi-output `MultiTaskGP` — near-term, needs an ADR first.** The
   `ModelConstructor` seam is the right home, but it hinges on two decisions: where
