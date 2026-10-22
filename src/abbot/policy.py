@@ -853,12 +853,12 @@ class BAXPolicy:
                 self.switched = True
                 if self.strategy == "MeanBAX":
                     return at_target_only(rel)  # fall back to US
-                return self._infobax(spec, model, grid, n_target)  # SwitchBAX -> InfoBAX
+                return self._infobax(spec, model, grid, std)  # SwitchBAX -> InfoBAX
             acq = torch.zeros(n_target, dtype=torch.double)
             acq[target] = rel[target]
             return at_target_only(acq)
         # InfoBAX
-        return self._infobax(spec, model, grid, n_target)
+        return self._infobax(spec, model, grid, std)
 
     def _stuck(self, target: list[int]) -> bool:
         """multibax ``meanbax_stuck``: empty target set, or already all collected."""
@@ -883,20 +883,23 @@ class BAXPolicy:
             )
             return torch.zeros(N, 1, dtype=torch.double)
 
-    def _infobax(self, spec, model, grid, n_target) -> torch.Tensor:
+    def _infobax(self, spec, model, grid, std) -> torch.Tensor:
         """EIG via fantasy conditioning (multibax ``multiproperty_infobax``).
 
         acq = H[y_x] - E_sample[ H[y_x | execution(sample)] ], averaged over
         outputs, where y_x is a noisy MEASUREMENT at x: both entropies include the
         measurement noise at x. Coherent joint samples over the grid at the target
-        (its first ``n_target`` rows), where the goal runs; the model is conditioned
-        (hyperparameters fixed) on each sample's goal-target values, which are
-        function values, so with only a numerical jitter as noise. Rows at other
-        source levels are scored the same way, and with sources every row's EIG is
-        divided by its relative cost.
+        (its first ``len(std)`` rows, whose posterior std is ``std``), where the goal
+        runs; the model is conditioned (hyperparameters fixed) on each sample's
+        goal-target values, which are function values, so with only a numerical
+        jitter as noise. Rows at other source levels are scored the same way, and
+        with sources every row's EIG is divided by its relative cost.
         """
+        n_target = std.shape[0]
         at_target = grid[:n_target]
-        _, std = self._raw_mean_std(model, grid, spec)
+        if grid.shape[0] > n_target:  # other source levels: their stds too
+            _, rest = self._raw_mean_std(model, grid[n_target:], spec)
+            std = torch.cat([std, rest])
         noise = self._measurement_noise(model, grid)  # (N, m) or (N, 1)
         term1 = _entropy((std**2 + noise).sqrt())  # (N, d_y)
         with torch.no_grad():
