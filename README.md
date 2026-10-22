@@ -283,9 +283,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        sources) and `Source(accurate=)`; `SimpleBO` chooses sources (cost-weighted
        multi-fidelity max-value entropy search, no separate policy) with a learned
        default cost, `SourceCost`.
-     - Phase C2: multi-fidelity InfoBAX (source levels on the candidate grid,
-       information per unit cost).
-     - Phase D: a synthetic benchmark and an example. Later: a BAX-shaped goal
+     - Phase C2 *(done)*: multi-fidelity InfoBAX (source levels on the candidate
+       grid, information per unit cost); fixes for two BoTorch multi-fidelity bugs.
+     - Phase D: a synthetic benchmark (including which fidelity kernel should be
+       the default, and noise that varies with the source) and an example. Later: a BAX-shaped goal
        (every setting that matches the data); UI support.
   3. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
