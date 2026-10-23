@@ -133,9 +133,49 @@ def test_default_initial_designs_count():
 def test_campaign_needs_only_a_spec():
     c = Campaign(_cont())
     assert isinstance(c.policy, SimpleBO)
-    (pending,) = c.suggest(1)  # cold start: space-filling, no fit
+    (pending,) = c.suggest(1)  # the first default seed
     assert set(pending) == {"temp", "conc"}
     assert 20.0 <= pending["temp"] <= 80.0
+
+
+def test_campaign_queues_default_seeds_on_first_suggest(caplog):
+    import logging
+
+    torch.manual_seed(0)
+    c = Campaign(_cont())
+    with caplog.at_level(logging.INFO, logger="abbot.session"):
+        c.suggest(1)
+    assert "Queued 5 default initial designs" in caplog.text
+    assert len(c.state().pending) == 1 and len(c._seed_queue) == 4  # 2d + 1 in all
+
+
+def test_initial_designs_choose_skip_or_yield_to_data():
+    mine = torch.tensor([[30.0, 0.1], [70.0, 0.9]], dtype=torch.double)
+    c = Campaign(_cont(), initial_designs=mine)
+    assert [d["temp"] for d in c.suggest(2)] == [30.0, 70.0]
+    assert not c._seed_queue
+    cold = Campaign(_cont(), initial_designs=torch.empty(0, 2))
+    cold.suggest(1)
+    assert not cold._seed_queue  # a random cold-start probe, nothing queued
+    seeded = Campaign(_cont())
+    seeded.seed(mine[:1])
+    seeded.suggest(1)
+    assert not seeded._seed_queue  # your own seed wins
+    recorded = Campaign(_cont())
+    recorded.record({"temp": 50.0, "conc": 0.5}, [1.0])
+    recorded.suggest(1)
+    assert not recorded._seed_queue  # data first: no default seeds
+
+
+@pytest.mark.slow
+def test_step_without_evaluate_takes_the_outputs_as_returned():
+    torch.manual_seed(0)
+    c = Campaign(_peak_spec())
+    for _ in range(4):
+        c.step(_Peak())
+    assert len(c.history) == 4
+    assert c.history.records[0].outputs.item() == pytest.approx(
+        _Peak().run({"x": c.history.records[0].candidate.item()}))
 
 
 def test_campaign_explicit_policy_still_wins():

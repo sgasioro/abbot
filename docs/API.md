@@ -262,8 +262,8 @@ are derived from the spec:
 | --- | --- |
 | `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the inputs support (`DiscreteArgmax` if all enumerated, else `Continuous`). No objectives (all `OBSERVE`) raises — pass a policy. |
 | `model_constructor` | `default_constructor(spec)`: `MultiFidelityGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds. |
-| `initial_designs` (`run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and inequality constraints. Ignored on resume. |
-| `evaluate` (`run_campaign`) | identity — the experiment returns the outputs directly. |
+| `initial_designs` (`Campaign`, `run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and inequality constraints, two of them moved to the target when the spec has sources. `Campaign` queues them on its first `suggest`, unless the history isn't empty (a resume, or data you `record` first) or you `seed` your own; an empty tensor gives a cold start (random probes until a model can be fitted). Ignored on resume. |
+| `evaluate` (`Campaign.step`, `drive`, `run_campaign`) | none — the experiment returns the outputs directly. |
 
 The function names and signatures are Stable; the specific choices they make
 (e.g. the seed count) may improve between minor versions. Pass the argument
@@ -303,7 +303,7 @@ explicitly if you need it pinned.
   `None` to proceed or a reason string to block: the campaign halts with that
   reason and the candidate is left outstanding (in `state().pending`), not run. Use it
   for safety interlocks; soft feasibility rules belong in the spec's constraints.
-- **Synchronous batches.** `Campaign.step(experiment, evaluate, n=k)` runs `k`
+- **Synchronous batches.** `Campaign.step(experiment, evaluate=None, n=k)` runs `k`
   designs per step; `run_campaign(..., batch_size=k)` / `drive(..., batch_size=k)`
   step that way, shrinking the last batch so the budget (still counted in designs)
   isn't overshot. A `BatchExperiment` gets every step in one `run_batch(designs)`

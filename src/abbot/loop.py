@@ -46,14 +46,10 @@ from abbot.session import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
-def _identity(observation: object) -> object:
-    return observation
-
-
 def drive(
     campaign: Campaign,
     experiment: Experiment | BatchExperiment,
-    evaluate: Callable[[object], object],
+    evaluate: Callable[[object], object] | None = None,
     *,
     n_total: int | None = None,
     batch_size: int = 1,
@@ -140,12 +136,10 @@ def run_campaign(
     ``CampaignResult`` whose ``recommended`` holds the handover index/indices.
 
     Only ``spec`` and ``experiment`` are required. ``policy`` and
-    ``model_constructor`` default to what the spec implies, ``evaluate`` to the
-    identity (the experiment returns the outputs directly), and ``initial_designs``
+    ``model_constructor`` default to what the spec implies, ``evaluate`` to none
+    (the experiment returns the outputs directly), and ``initial_designs``
     to ``default_initial_designs(spec)``.
     """
-    if evaluate is None:
-        evaluate = _identity
     if initial_designs is None:
         initial_designs = default_initial_designs(spec)
     campaign = Campaign(

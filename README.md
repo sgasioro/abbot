@@ -19,10 +19,7 @@ It unifies the method that is currently reimplemented across several SLAC repos
 ## Quickstart
 
 ```python
-from abbot import (
-    ProblemSpec, OutputSpec, ContinuousDomain,
-    Campaign, default_initial_designs,
-)
+from abbot import ProblemSpec, OutputSpec, ContinuousDomain, Campaign
 
 # 1. Define the problem: design knobs + what you measure.
 spec = ProblemSpec(
@@ -30,10 +27,9 @@ spec = ProblemSpec(
     outputs=[OutputSpec(name="yield", direction="MAXIMIZE")],
 )
 
-# 2. Open a session (policy + surrogate are picked from the spec) and seed it
-#    with a few space-filling starting points — or your own (n, d) tensor.
+# 2. Open a session. The policy, surrogate and a few space-filling starting
+#    points are picked from the spec (pass initial_designs= for your own).
 campaign = Campaign(spec)
-campaign.seed(default_initial_designs(spec))
 
 # 3. Ask → run in the lab → tell. Repeat.
 for _ in range(8):
