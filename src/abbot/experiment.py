@@ -37,6 +37,11 @@ class Experiment(Protocol):
 
     Hardware that runs several designs at once implements
     :class:`BatchExperiment` instead.
+
+    Optionally, ``cost(design) -> float | None`` reports what a run cost, after it
+    ran (core-hours from the scheduler, money). ``Campaign.step`` records that
+    instead of the wall-clock time it measured, which would include queueing;
+    ``None`` keeps the measured time. It is asked about failed runs too.
     """
 
     def run(self, design: Design) -> Any: ...
@@ -51,7 +56,8 @@ class BatchExperiment(Protocol):
     failed (raising fails them all). The loop sends every step through
     ``run_batch``, batches of one included, so there is one code path whatever
     the batch size. An object defining both ``run`` and ``run_batch`` is treated
-    as a ``BatchExperiment``.
+    as a ``BatchExperiment``. It may define ``cost(design)`` as an
+    :class:`Experiment` may.
     """
 
     def run_batch(self, designs: list[Design]) -> list[Any]: ...
@@ -61,7 +67,8 @@ class TensorExperiment:
     """Adapt a vector-input experiment (``run(x: Tensor)``) to the design-dict
     contract. ``x`` is the ``(d,)`` tensor in ``spec.variable_names`` order, in
     ``dtype`` (double by default). A wrapped ``run_batch(X)`` gets the ``(q, d)``
-    tensor instead, and the wrapper is then a :class:`BatchExperiment`.
+    tensor instead, and the wrapper is then a :class:`BatchExperiment`. A wrapped
+    ``cost(x)`` gets the ``(d,)`` tensor.
     """
 
     def __init__(self, experiment: Any, dtype: torch.dtype = torch.double) -> None:
@@ -71,6 +78,11 @@ class TensorExperiment:
             self.run_batch = self._run_batch
         else:
             self.run = self._run
+        if hasattr(experiment, "cost"):
+            self.cost = self._cost
+
+    def _cost(self, design: Design) -> Any:
+        return self.experiment.cost(torch.tensor(list(design.values()), dtype=self.dtype))
 
     def _run(self, design: Design) -> Any:
         x = torch.tensor(list(design.values()), dtype=self.dtype)
@@ -163,35 +175,109 @@ class MockAnalyticExperiment:
     Deterministic: the landscape is fixed by ``seed`` and, when ``noise`` > 0, the
     per-evaluation noise is seeded by the candidate itself (so re-measuring the
     same point gives the same value — honest for a resumable run).
+
+    **With sources** the bumps live on the design variables, and a run away from a
+    source's accurate end is biased: each output gets ``source_bias`` times a
+    second, differently placed bump (scaled to the same range), fading to nothing
+    at the accurate end (linearly on the source's model scale: log for
+    ``log=True``, flipped for ``accurate="low"``). Each level of an unordered source
+    other than the target gets its own bias size, between half and all of
+    ``source_bias``. ``cost(design)`` then reports a simulated cost that
+    ``Campaign.step`` records: ``cost_ratio ** u``, with ``u`` the mean over
+    sources of how close each is to its accurate end (1 for an unordered source at
+    its target, else 0), so a run at the accurate end costs ``cost_ratio`` times the
+    cheapest. Without sources ``cost`` returns ``None`` and the measured time is
+    kept.
     """
 
-    def __init__(self, spec: Any, *, seed: int = 0, noise: float = 0.0) -> None:
+    def __init__(
+        self,
+        spec: Any,
+        *,
+        seed: int = 0,
+        noise: float = 0.0,
+        source_bias: float = 0.3,
+        cost_ratio: float = 100.0,
+    ) -> None:
         self.spec = spec
         self.seed = seed
         self.noise = float(noise)
+        self.source_bias = float(source_bias)
+        self.cost_ratio = float(cost_ratio)
         bounds = spec.bounds_tensor()
         self._lo = bounds[0]
         self._hi = bounds[1]
-        d = bounds.shape[-1]
+        n_design = len(spec.design_names)
         m = spec.n_outputs
         # Per-objective optima and widths, fixed by the seed.
         g = torch.Generator().manual_seed(seed)
-        self._centers = torch.rand(m, d, generator=g, dtype=torch.double)
-        self._widths = 0.15 + 0.25 * torch.rand(m, d, generator=g, dtype=torch.double)
+        self._centers = torch.rand(m, n_design, generator=g, dtype=torch.double)
+        self._widths = 0.15 + 0.25 * torch.rand(m, n_design, generator=g, dtype=torch.double)
+        # The bias cheap runs add: another bump per output, and per-level sizes.
+        self._bias_centers = torch.rand(m, n_design, generator=g, dtype=torch.double)
+        self._bias_widths = 0.15 + 0.25 * torch.rand(m, n_design, generator=g, dtype=torch.double)
+        self._level_bias = [
+            {v: 0.5 + 0.5 * float(torch.rand(1, generator=g, dtype=torch.double))
+             for v in s.domain.values}
+            if not s.is_ordered else None
+            for s in spec.sources or []
+        ]
+
+    def _bump(self, xn, centers, widths):
+        sq = ((xn.unsqueeze(0) - centers) / widths) ** 2  # (m, n_design)
+        return 100.0 * torch.exp(-0.5 * sq.sum(dim=-1))  # (m,)
+
+    def _accuracy(self, design: Design) -> list[float]:
+        """Per source: 1 at the accurate end (an unordered source's target), 0 at
+        the other end."""
+        import math
+
+        out = []
+        for source in self.spec.sources or []:
+            v = float(design[source.name])
+            if not source.is_ordered:
+                out.append(1.0 if v == source.target else 0.0)
+                continue
+            from abbot.problem import EnumeratedDomain
+
+            d = source.domain
+            if isinstance(d, EnumeratedDomain):
+                lo, hi = min(d.values), max(d.values)
+            else:
+                lo, hi = d.lower, d.upper
+            if source.log:
+                v, lo, hi = math.log(v), math.log(lo), math.log(hi)
+            u = (v - lo) / (hi - lo) if hi > lo else 1.0
+            out.append(min(max(u if source.accurate == "high" else 1.0 - u, 0.0), 1.0))
+        return out
 
     def run(self, design: Design) -> torch.Tensor:
         x = torch.tensor(list(design.values()), dtype=torch.double)
         span = (self._hi - self._lo).clamp(min=1e-9)
         xn = ((x - self._lo) / span).clamp(0.0, 1.0)  # normalized to [0, 1]^d
-        # Gaussian bump per objective -> smooth value in (0, 100].
-        sq = ((xn.unsqueeze(0) - self._centers) / self._widths) ** 2  # (m, d)
-        vals = 100.0 * torch.exp(-0.5 * sq.sum(dim=-1))  # (m,)
+        n_design = len(self.spec.design_names)
+        vals = self._bump(xn[:n_design], self._centers, self._widths)  # (m,) in (0, 100]
+        if self.spec.sources:
+            bias = 0.0
+            for source, u, levels in zip(
+                self.spec.sources, self._accuracy(design), self._level_bias, strict=True
+            ):
+                size = (1.0 - u) if levels is None else levels[float(design[source.name])] * (1.0 - u)
+                bias += self.source_bias * size
+            vals = vals + bias * self._bump(xn[:n_design], self._bias_centers, self._bias_widths)
         if self.noise > 0.0:
             # Seed noise by the candidate so a re-measurement repeats exactly.
             key = int(abs(hash((self.seed, tuple(round(float(v), 6) for v in xn.tolist())))) % (2**31))
             gn = torch.Generator().manual_seed(key)
             vals = vals + self.noise * torch.randn(vals.shape, generator=gn, dtype=torch.double)
         return vals
+
+    def cost(self, design: Design) -> float | None:
+        """The simulated cost of a run (``None`` without sources: measured time)."""
+        if not self.spec.sources:
+            return None
+        u = self._accuracy(design)
+        return self.cost_ratio ** (sum(u) / len(u))
 
 
 class MockDatasetExperiment:

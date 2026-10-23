@@ -271,6 +271,13 @@ class SimpleBO:
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
 
+    @property
+    def source_cost(self):
+        """The cost model choosing sources: ``cost_model`` if given, else the
+        :class:`abbot.cost.SourceCost` learned from the records (``None`` until the
+        first proposal with sources)."""
+        return self.cost_model if self.cost_model is not None else self._source_cost
+
     def _suggest_with_sources(self, history, spec, model, n, pending):
         from botorch.acquisition.cost_aware import InverseCostWeightedUtility
         from botorch.models.deterministic import GenericDeterministicModel
@@ -744,6 +751,13 @@ class BAXPolicy:
             target = float(source.target)
             levels.append([target, *sorted({v for v in values if v != target})])
         return levels
+
+    @property
+    def source_cost(self):
+        """The cost model choosing sources: ``cost_model`` if given, else the
+        :class:`abbot.cost.SourceCost` learned from the records (``None`` until the
+        first proposal with sources)."""
+        return self.cost_model if self.cost_model is not None else self._source_cost
 
     def _relative_cost(self, history: History, spec: ProblemSpec, proposals) -> torch.Tensor:
         """Each proposal's predicted cost relative to a typical run at the target."""

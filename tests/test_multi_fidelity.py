@@ -257,7 +257,7 @@ def test_simple_bo_chooses_cheap_sources_and_learns_the_cost():
     atoms = [r.candidate[1].item() for r in proposed]
     assert min(atoms) < 256  # it used cheaper runs than the target
     assert all(a == round(a) for a in atoms)  # integer source, rounded
-    assert c.policy._source_cost.params["p_atoms"].item() == pytest.approx(2.0, abs=1e-3)
+    assert c.policy.source_cost.params["p_atoms"].item() == pytest.approx(2.0, abs=1e-3)
     assert all(r.acquisition is not None and r.acquisition > 0 for r in proposed)
     result = c.result()
     assert len(result.recommended) == 1 and len(result.run_at_target) == 1
@@ -300,7 +300,7 @@ def test_an_explicit_cost_model_overrides_the_learned_one():
     # Claim the cheap end is expensive: it should then stay near the top.
     flipped = CallableCost(lambda X: (544.0 - X[..., 1]) ** 2)
     c = _run(SimpleBO(cost_model=flipped), steps=4)
-    assert c.policy._source_cost is None
+    assert c.policy._source_cost is None and c.policy.source_cost is flipped
     assert all(r.candidate[1].item() > 256 for r in c.history.records[-4:])
 
 
@@ -411,3 +411,83 @@ def test_switchbax_proposes_at_the_target_until_it_falls_back_to_infobax():
     c = _bax_campaign("SwitchBAX", steps=3)
     for r in c.history.records[-3:]:
         assert r.candidate[1].item() == 256.0 or c.policy.switched
+
+
+# -- experiments reporting cost; the analytic mock with sources -----------------------
+
+
+def test_an_experiments_own_cost_replaces_the_measured_time():
+    from abbot import TensorExperiment
+
+    spec = _spec(_atoms())
+
+    class _Sim:
+        def run(self, design):
+            if design["x"] > 0.9:
+                raise RuntimeError("diverged")
+            return [design["x"]]
+
+        def cost(self, design):
+            return None if design["atoms"] == 32 else design["atoms"] / 10.0
+
+    c = Campaign(spec, max_retries=5)
+    c.seed(torch.tensor([[0.1, 64.0], [0.2, 32.0], [0.95, 128.0]], dtype=torch.double))
+    c.step(_Sim(), lambda y: y, n=3)
+    by_design = {tuple(r.candidate.tolist()): r for r in c.history.records}
+    assert by_design[(0.1, 64.0)].cost == 6.4
+    measured = by_design[(0.2, 32.0)].cost
+    assert measured is not None and measured < 1.0  # wall-clock seconds
+    failed = by_design[(0.95, 128.0)]
+    assert failed.outputs is None and failed.cost == 12.8  # failed runs are paid for too
+
+    class _Vector:
+        def run(self, x):
+            return [float(x[0])]
+
+        def cost(self, x):
+            return float(x[1])
+
+    wrapped = TensorExperiment(_Vector())
+    assert wrapped.cost({"x": 0.5, "atoms": 64.0}) == 64.0
+
+
+def test_mock_sources_bias_cheap_runs_and_report_cost():
+    from abbot import MockAnalyticExperiment
+
+    spec = _spec(_atoms(log=True))
+    mock = MockAnalyticExperiment(spec, seed=1, source_bias=0.5)
+    plain = MockAnalyticExperiment(_spec(), seed=1)
+    design = {"x": 0.4}
+    accurate = mock.run({**design, "atoms": 512}).item()
+    assert accurate == pytest.approx(plain.run(design).item())  # no bias at the accurate end
+    assert abs(mock.run({**design, "atoms": 32}).item() - accurate) > 1.0
+    assert mock.cost({**design, "atoms": 32}) == pytest.approx(1.0)
+    assert mock.cost({**design, "atoms": 512}) == pytest.approx(100.0)
+    assert mock.cost({**design, "atoms": 128}) == pytest.approx(10.0)  # log midpoint
+    assert plain.cost(design) is None
+    tol = _spec(Source(domain=ContinuousDomain(name="tol", lower=0.0, upper=1.0), target=0.1,
+                       accurate="low"))
+    flipped = MockAnalyticExperiment(tol, seed=1, cost_ratio=10.0)
+    assert flipped.cost({**design, "tol": 0.0}) == pytest.approx(10.0)
+    coded = MockAnalyticExperiment(_spec(_code(target=1.0)), seed=1)
+    assert coded.cost({**design, "code": 1.0}) == pytest.approx(100.0)
+    assert coded.run({**design, "code": 1.0}).item() == pytest.approx(plain.run(design).item())
+    assert coded.run({**design, "code": 0.0}).item() != pytest.approx(plain.run(design).item())
+
+
+@pytest.mark.slow
+def test_a_mock_driven_campaign_learns_the_cost_through_step():
+    from abbot import MockAnalyticExperiment
+
+    torch.manual_seed(0)
+    spec = _spec(_atoms(log=True))
+    mock = MockAnalyticExperiment(spec, seed=1)
+    c = Campaign(spec)
+    c.seed(default_initial_designs(spec, seed=0))
+    for _ in range(9):
+        c.step(mock, lambda y: y)
+    assert all(r.cost == pytest.approx(mock.cost(dict(zip(spec.variable_names, r.candidate.tolist()))))
+               for r in c.history.records)
+    # cost = (atoms / 32) ** (log 100 / log 16)
+    assert c.policy._source_cost.params["p_atoms"].item() == pytest.approx(1.661, abs=1e-3)
+    assert min(r.candidate[1].item() for r in c.history.records[7:]) < 256

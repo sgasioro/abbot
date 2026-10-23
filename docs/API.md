@@ -24,7 +24,7 @@ without a deprecation period.
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiFidelityGPConstructor` (provisional), `default_constructor` |
-| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
+| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
 | Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
@@ -56,8 +56,8 @@ on them.
 - **Source variables** (`Source`, `ProblemSpec.sources`, `spec.design_names` /
   `source_names` / `target_features` / `at_target`, `CampaignResult.run_at_target` /
   `target_std`), `MultiFidelityGPConstructor`, `SimpleBO(choose_sources=,
-  n_candidates=)`, and `BAXPolicy(cost_model=, choose_sources=, source_levels=)` /
-  `BAXPolicy.proposal_set` — new.
+  n_candidates=)`, `BAXPolicy(cost_model=, choose_sources=, source_levels=)` /
+  `BAXPolicy.proposal_set`, and `.source_cost` on both — new.
 
 ### Private — do not touch
 Anything with a leading underscore is internal and may change without notice,
@@ -177,8 +177,10 @@ picks of one batch). Times survive a resume.
 
 **Cost and stopping (optional).** Every record carries a `cost`: what the caller
 passed (`ingest(..., costs=)`, `record(..., cost=)`, `fail(..., cost=)`:
-core-hours, money), else the experiment run time `step` measured (a batch's time
-split evenly; abbot's own fit and acquisition time is never counted).
+core-hours, money); under `step`, what the experiment's optional `cost(design)`
+reports after the run (core-hours from a scheduler, since wall-clock would include
+queueing); else the run time `step` measured (a batch's time split evenly; abbot's
+own fit and acquisition time is never counted).
 `CampaignState` reports `costs` and `cost_spent`. `SimpleBO(cost_model=...)` and
 `ParetoBO(cost_model=...)` maximize log-acquisition minus log cost (improvement per
 unit cost), refitting the model to the recorded costs each step. `CallableCost`
@@ -216,7 +218,8 @@ Declaring sources is enough to get multi-fidelity BO:
   source, an exponential per other ordered source, a factor per level of an
   unordered source. It ignores the design variables, and it predicts a flat cost
   until there are enough costed records (with a warning if no run has a cost).
-  `SimpleBO(choose_sources=False)` keeps proposals at the target.
+  `policy.source_cost` is the cost model in use. `SimpleBO(choose_sources=False)`
+  keeps proposals at the target.
 - `BAXPolicy`'s InfoBAX (also SwitchBAX's InfoBAX fallback) chooses sources. The goal
   still runs at the target; each grid design is also scored at a ladder of source
   levels (`source_levels=5` per ordered source, spaced on the model's scale, plus
