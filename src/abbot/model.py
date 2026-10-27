@@ -223,7 +223,11 @@ class MultiFidelityGPConstructor:
       Each source is mapped to [0, 1] with its accurate end (``Source.accurate``) at
       1, on a log scale for ``log=True`` sources. The default linear-truncated kernel
       models a run as the accurate result plus a bias that vanishes at the accurate
-      end and varies with the design. ``linear_truncated=False`` instead multiplies
+      end and varies with the design. ``power`` (a whole number, default 1) shapes how
+      that bias fades between the ends; it is fixed rather than learned, because
+      BoTorch's learned power is a fraction in general, and the kernel is only valid
+      (positive semi-definite) for whole numbers: a fitted power near 0.5 gives
+      negative variances. ``linear_truncated=False`` instead multiplies
       the design kernel by a per-source kernel, with ``iteration`` naming a source
       whose results settle towards a limit along it (an exponential-decay kernel;
       iteration counts, epochs).
@@ -239,8 +243,18 @@ class MultiFidelityGPConstructor:
     provides_uq = "calibrated_variance"
 
     def __init__(
-        self, spec, *, linear_truncated: bool = True, iteration: str | None = None
+        self,
+        spec,
+        *,
+        linear_truncated: bool = True,
+        power: int = 1,
+        iteration: str | None = None,
     ) -> None:
+        if isinstance(power, bool) or not float(power).is_integer() or power < 1:
+            raise ValueError(
+                f"power must be a positive whole number, got {power!r}: the "
+                "linear-truncated kernel is only valid for whole-number powers"
+            )
         sources = list(spec.sources or [])
         if not sources:
             raise ValueError("MultiFidelityGPConstructor needs a spec with sources")
@@ -265,6 +279,7 @@ class MultiFidelityGPConstructor:
         self.spec = spec
         self.linear_truncated = linear_truncated
         self.iteration = iteration
+        self.power = int(power)
         self.bounds = spec.bounds_tensor()
 
     def build(self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None):
@@ -289,7 +304,7 @@ class MultiFidelityGPConstructor:
             linear_truncated=self.linear_truncated,
             input_transform=_fidelity_transform(spec, self.bounds),
         )
-        _pin_linear_truncated_power(gp)
+        _pin_linear_truncated_power(gp, self.power)
         fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
         return gp
 
@@ -322,8 +337,8 @@ class MultiFidelityGPConstructor:
         return gps[0] if len(gps) == 1 else ModelListGP(*gps)
 
 
-def _pin_linear_truncated_power(gp) -> None:
-    """Fix each linear-truncated kernel's polynomial power at 1.
+def _pin_linear_truncated_power(gp, power: int) -> None:
+    """Fix each linear-truncated kernel's polynomial power at ``power``.
 
     BoTorch learns it as a continuous parameter, but the bias term
     ``(1 + s s')^p`` is only a valid (positive semi-definite) kernel for whole
@@ -334,7 +349,7 @@ def _pin_linear_truncated_power(gp) -> None:
 
     for kernel in gp.covar_module.modules():
         if isinstance(kernel, LinearTruncatedFidelityKernel):
-            kernel.power = 1.0
+            kernel.power = float(power)
             kernel.raw_power.requires_grad_(False)
 
 

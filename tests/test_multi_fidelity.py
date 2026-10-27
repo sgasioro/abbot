@@ -181,6 +181,13 @@ def test_linear_truncated_power_is_pinned_so_the_kernel_stays_valid():
     assert kernel.power.item() == pytest.approx(1.0) and not kernel.raw_power.requires_grad
     Z = torch.rand(300, 2, dtype=torch.double)
     assert torch.linalg.eigvalsh(kernel(Z).to_dense()).min() > -1e-8
+    gp2 = MultiFidelityGPConstructor(spec, power=2).build(X, Y)
+    (kernel2,) = [k for k in gp2.covar_module.modules()
+                  if isinstance(k, LinearTruncatedFidelityKernel)]
+    assert kernel2.power.item() == pytest.approx(2.0)
+    for bad in (0.5, 0, -1, True):
+        with pytest.raises(ValueError, match="whole number"):
+            MultiFidelityGPConstructor(spec, power=bad)
 
 
 # -- the default cost -------------------------------------------------------------

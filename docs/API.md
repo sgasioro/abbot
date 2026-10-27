@@ -206,7 +206,9 @@ Declaring sources is enough to get multi-fidelity BO:
   BoTorch's `SingleTaskMultiFidelityGP`, each source mapped to [0, 1] with its
   accurate end at 1 (log-scaled for `log=True`). Its default linear-truncated kernel
   models a run as the accurate result plus a bias that vanishes at the accurate end
-  and varies with the design; `linear_truncated=False, iteration="name"` instead
+  and varies with the design. Its `power=1` (a whole number) is fixed, not learned
+  as in BoTorch: the kernel is only valid for whole-number powers, and a learned
+  fractional one gives negative variances; `linear_truncated=False, iteration="name"` instead
   uses an exponential-decay kernel for a source whose results settle towards a
   limit. One unordered source gets a `MultiTaskGP` (noise shared across sources
   unless `Yvar` is given). Ordered and unordered sources together aren't supported

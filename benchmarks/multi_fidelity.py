@@ -15,10 +15,6 @@ Methods:
   mf-yvar   mf-lt / mf-prod given each run's noise variance (noisy problem only)
   mf-kg     BoTorch's multi-fidelity knowledge gradient (its tutorial's reference
             setup) on abbot's model and learned cost
-  xopt      Xopt's approach, rebuilt in abbot: the source as a design variable
-            s in [0, 1] that is also maximized as an objective, with independent
-            GPs, cost-weighted NEHVI, the true cost given, and Xopt's default
-            reference point; recommends the best posterior mean at s = 1
 
     python benchmarks/multi_fidelity.py --problems wiggly smooth --seeds 5 --workers 4
 
@@ -58,7 +54,7 @@ class Problem:
     budget: float
     max_evals: int
     noise_sd: Callable[[dict], float] | None = None
-    methods: tuple[str, ...] = ("target", "mf-lt", "mf-prod", "mf-kg", "xopt")
+    methods: tuple[str, ...] = ("target", "mf-lt", "mf-prod", "mf-kg")
 
     def spec(self):
         from abbot import ProblemSpec
@@ -89,8 +85,7 @@ def _grid_best(truth, source, n_design, minimize, n=4001):
 def _atoms_problem(name, bias, noise=None, methods=None, upper=256):
     from abbot import ContinuousDomain, IntegerDomain, OutputSpec, Source
 
-    # By default the target is the top of the range, as Xopt's formulation requires
-    # (s = 1); ``upper=512`` puts it mid-range (abbot only).
+    # By default the target is the top of the range; ``upper=512`` puts it mid-range.
     source = Source(domain=IntegerDomain(name="atoms", lower=32, upper=upper), target=256,
                     log=True)
 
@@ -107,7 +102,7 @@ def _atoms_problem(name, bias, noise=None, methods=None, upper=256):
         cost=lambda d: (d["atoms"] / 32.0) ** 2,  # 64x from 32 to the target
         best=_grid_best(truth, source, 1, minimize=False),
         budget=15, max_evals=60, noise_sd=noise,
-        methods=methods or ("target", "mf-lt", "mf-prod", "mf-kg", "xopt"),
+        methods=methods or ("target", "mf-lt", "mf-prod", "mf-kg"),
     )
 
 
@@ -256,68 +251,6 @@ class MultiFidelityKG:
         return None
 
 
-def _accuracy(source, value: float) -> float:
-    """Where ``value`` sits between the source's cheap end (0) and accurate end (1),
-    on its model scale: Xopt's ``s``."""
-    d = source.domain
-    lo, hi, v = float(d.lower), float(d.upper), float(value)
-    if source.log:
-        lo, hi, v = math.log(lo), math.log(hi), math.log(v)
-    u = (v - lo) / (hi - lo)
-    return u if source.accurate == "high" else 1 - u
-
-
-def _from_accuracy(source, u: float) -> float:
-    d = source.domain
-    lo, hi = float(d.lower), float(d.upper)
-    u = u if source.accurate == "high" else 1 - u
-    v = math.exp(math.log(lo) + u * (math.log(hi) - math.log(lo))) if source.log else lo + u * (hi - lo)
-    return float(round(v)) if d.kind == "integer" else v
-
-
-def _xopt_campaign(problem: Problem):
-    """The source as an input s in [0, 1] that is also maximized, as Xopt does."""
-    from abbot import (
-        CallableCost,
-        Campaign,
-        ContinuousDomain,
-        OutputSpec,
-        ParetoBO,
-        ProblemSpec,
-    )
-
-    base = problem.spec()
-    source = problem.source
-    spec = ProblemSpec(
-        domain=[*base.domain, ContinuousDomain(name="s", lower=0.0, upper=1.0)],
-        outputs=[*base.outputs, OutputSpec(name="s_out", direction="MAXIMIZE")],
-    )
-
-    def cost_of_s(X):
-        return torch.stack([
-            torch.as_tensor(problem.cost({source.name: _from_accuracy(source, float(s))}),
-                            dtype=X.dtype)
-            for s in X[..., -1].reshape(-1)
-        ]).reshape(X.shape[:-1])
-
-    # Xopt's default reference point: -100 for a maximized objective (+100 raw for a
-    # minimized one, i.e. -100 canonical), 0 for s.
-    policy = ParetoBO(ref_point=[-100.0, 0.0], cost_model=CallableCost(cost_of_s))
-    return spec, Campaign(spec, policy=policy)
-
-
-def _recommend_xopt(problem, spec, campaign):
-    """Xopt's ``get_optimum``: the best posterior mean at s = 1, over evaluated designs."""
-    model = campaign.current_model()
-    X = campaign.history.clean.designs.double().clone()
-    u_target = _accuracy(problem.source, problem.source.target)
-    X[:, -1] = u_target
-    with torch.no_grad():
-        mean = model.posterior(X).mean[..., 0]  # canonical objective column
-    x = X[int(mean.argmax())]
-    return dict(zip(spec.design_names[:-1], x[:-1].tolist()))
-
-
 def run_one(problem_name: str, method: str, seed: int) -> dict:
     warnings.filterwarnings("ignore")
     torch.set_num_threads(2)
@@ -334,7 +267,6 @@ def run_one(problem_name: str, method: str, seed: int) -> dict:
     source = problem.source
     torch.manual_seed(seed)
     gen = torch.Generator().manual_seed(10_000 + seed)
-    xopt = method == "xopt"
 
     def observe(design):
         y = problem.truth(design)
@@ -348,8 +280,6 @@ def run_one(problem_name: str, method: str, seed: int) -> dict:
     if method == "target":
         run_spec = ProblemSpec(**{**problem.spec_kwargs, "sources": None})
         campaign = Campaign(run_spec)
-    elif xopt:
-        run_spec, campaign = _xopt_campaign(problem)
     else:
         run_spec = spec
         linear_truncated = not method.endswith("prod")
@@ -362,26 +292,18 @@ def run_one(problem_name: str, method: str, seed: int) -> dict:
         """A campaign design as the problem's design dict (with the source)."""
         if method == "target":
             return {**design, source.name: source.target}
-        if xopt:
-            d = {k: v for k, v in design.items() if k != "s"}
-            return {**d, source.name: _from_accuracy(source, design["s"])}
         return dict(design)
 
     def record(design):
         full = to_problem(design)
         y, var = observe(full)
-        outputs = [y, design["s"]] if xopt else [y]
-        kw = {"output_var": [var] if (yvar and var is not None) else None}
-        if xopt and kw["output_var"] is not None:
-            kw["output_var"] = [var, 1e-8]
-        campaign.record(design, outputs, cost=problem.cost(full), **kw)
+        output_var = [var] if (yvar and var is not None) else None
+        campaign.record(design, [y], cost=problem.cost(full), output_var=output_var)
         return problem.cost(full)
 
     target_cost = problem.cost({source.name: source.target})
 
     def recommendation():
-        if xopt:
-            return _recommend_xopt(problem, run_spec, campaign)
         result = campaign.result()
         rec = campaign.history.records[result.recommended[0]].candidate.tolist()
         return dict(zip(run_spec.design_names, rec))
@@ -409,8 +331,6 @@ def run_one(problem_name: str, method: str, seed: int) -> dict:
         if within:
             curve.append((c, within[-1]))
     sources_used = (
-        [round(_from_accuracy(source, r.candidate[-1].item()), 3) for r in campaign.history.records]
-        if xopt else
         [r.candidate[len(spec.design_names)].item() for r in campaign.history.records]
         if method != "target" else []
     )
