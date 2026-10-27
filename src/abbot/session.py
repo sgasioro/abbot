@@ -455,6 +455,13 @@ class Campaign:
 
     ``policy`` and ``model_constructor`` default to what the spec implies
     (``default_policy`` / ``default_constructor``); pass either to override.
+
+    ``initial_designs`` are measured before the policy proposes. By default (``None``)
+    a new campaign queues ``default_initial_designs(spec)`` when it first needs a
+    design: space-filling, with two at the target when the spec has sources. That is
+    skipped when the history is not empty (a resume, or data you ``record`` first) or
+    you ``seed`` your own. Pass a tensor to choose the seeds, or an empty one for a
+    cold start: random probes until there are enough results to fit a model.
     """
 
     def __init__(
@@ -471,6 +478,7 @@ class Campaign:
         fingerprint: dict | None = None,
         allow_resume_mismatch: bool = False,
         targets: Targets | None = None,
+        initial_designs: torch.Tensor | None = None,
     ) -> None:
         if policy is None:
             policy = default_policy(spec)
@@ -530,6 +538,10 @@ class Campaign:
         self._model = None
         self._model_valid = False
         self._queue_restored = self._load_queue()
+        # None: queue the default seeds on the first suggest, if nothing else did.
+        self._default_seeds_pending = initial_designs is None
+        if initial_designs is not None and len(initial_designs):
+            self.seed(initial_designs)
 
     # -- setup --
 
@@ -546,6 +558,24 @@ class Campaign:
             return
         self._seed_queue.extend(list(designs))
         self._save_queue()
+
+    def _queue_default_seeds(self) -> None:
+        """On the first ``suggest`` of a new, unseeded campaign, queue the default
+        initial designs (see the class docstring)."""
+        if not self._default_seeds_pending:
+            return
+        self._default_seeds_pending = False
+        if len(self.history) or self._queue_restored or self._seed_queue or self._inflight:
+            return
+        designs = default_initial_designs(self.spec)
+        self._seed_queue.extend(list(designs))
+        self._save_queue()
+        at_target = " (2 at the target)" if self.spec.sources else ""
+        logger.info(
+            "Queued %d default initial designs%s; pass Campaign(initial_designs=...) to "
+            "choose them, or an empty tensor for a random cold start.",
+            len(designs), at_target,
+        )
 
     def load_history(self, history: History) -> None:
         """Append already-measured records (e.g. imported from CSV) to the history.
@@ -577,6 +607,7 @@ class Campaign:
         """
         if self.halted:
             raise RuntimeError(f"campaign is halted: {self.halted}")
+        self._queue_default_seeds()
         n_retry = min(n, len(self._retry_queue))
         n_seed = min(n - n_retry, len(self._seed_queue))
         rem = n - n_retry - n_seed
@@ -686,7 +717,7 @@ class Campaign:
     def step(
         self,
         experiment: Experiment | BatchExperiment,
-        evaluate: Callable[[object], object],
+        evaluate: Callable[[object], object] | None = None,
         n: int = 1,
     ) -> CampaignState:
         """One full cycle: suggest -> experiment.run -> evaluate -> ingest.
@@ -694,6 +725,9 @@ class Campaign:
         The single primitive both ``run_campaign`` and the UI auto-runner call.
         If candidates are already outstanding (e.g. resumed after a crash
         mid-experiment), the oldest are run before any new one is suggested.
+
+        ``evaluate`` reduces what the experiment returned to outputs (a spectrum to a
+        peak position, say); by default the experiment returns the outputs itself.
 
         ``n`` > 1 runs a synchronous batch of ``n`` designs (a plate, several
         reactors). A :class:`BatchExperiment` gets every step in one
@@ -742,7 +776,7 @@ class Campaign:
                     logger.error("experiment.run failed at %s", design, exc_info=observation)
                     self._record_run_error(item, observation, cost=cost)
                     continue
-                out = evaluate(observation)
+                out = observation if evaluate is None else evaluate(observation)
                 self.ingest(out, observations=observation, id=item.id, costs=cost)
         finally:
             self._hooks_deferred = False
