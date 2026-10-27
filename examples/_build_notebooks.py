@@ -369,7 +369,7 @@ policy = BAXPolicy(goal, strategy="MeanBAX", n_candidates=200)
 campaign = Campaign(spec, policy)  # model defaults to a GP per output
 campaign.seed(policy.candidate_grid(spec)[torch.randperm(200)[:6]])
 for _ in range(10):
-    campaign.step(TargetExperiment(), lambda obs: obs)
+    campaign.step(TargetExperiment())
 """),
     code("""
 # How many sampled designs landed in the target region vs. the base rate?
@@ -431,7 +431,7 @@ itself is learned from what runs report.
 import torch
 from abbot import (
     Campaign, ContinuousDomain, IntegerDomain, OutputSpec, ProblemSpec, SimpleBO,
-    Source, default_initial_designs,
+    Source,
 )
 from abbot.supervision import cost_cap
 torch.manual_seed(0)
@@ -490,9 +490,8 @@ price of 5 runs at the target.
     code("""
 budget = 5 * target_run
 campaign = Campaign(spec, supervisor=cost_cap(budget))
-campaign.seed(default_initial_designs(spec, seed=0))
 while not campaign.stopped:
-    campaign.step(sim, lambda y: y)
+    campaign.step(sim)
 
 atoms = [int(r.candidate[2]) for r in campaign.history.records]
 print("atoms per run:", atoms)
@@ -500,9 +499,9 @@ print(f"{len(atoms)} runs for {campaign.history.cost_spent:.1f} core-hours")
 print("learned cost:", campaign.policy.source_cost)
 """),
     md("""
-Most runs are small. The learned cost recovers the atoms² scaling from what the
-runs reported. Before it has data, abbot assumes every size costs the same, so the
-seeds include two runs at the target.
+The campaign seeded itself with a few space-filling runs, two of them at the
+target. After that most runs are small. The learned cost recovers the atoms² scaling
+from what the runs reported.
 
 ### The answer, at the target
 Recommendations are judged at the target: the model's prediction at 256 atoms, even
@@ -522,10 +521,10 @@ budget.
 """),
     code("""
 target_only = Campaign(spec, policy=SimpleBO(choose_sources=False),
-                       supervisor=cost_cap(budget))
-target_only.seed(spec.at_target(default_initial_designs(spec, seed=0))[:3])
+                       supervisor=cost_cap(budget),
+                       initial_designs=spec.at_target(spec.sample_designs(3)))
 while not target_only.stopped:
-    target_only.step(sim, lambda y: y)
+    target_only.step(sim)
 
 rec = target_only.history.records[target_only.result().recommended[0]].candidate
 best = min(misfit(e / 100, s / 100, 256) for e in range(101) for s in range(101))
