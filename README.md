@@ -287,8 +287,22 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        `MockAnalyticExperiment` with sources, and `Experiment.cost(design)`.
      - Later: a BAX-shaped goal (every setting that matches the data); a noise level
        that varies with the source, without per-run variances; UI support.
-  3. **Peer audit:** abbot's functionality and UX against BoTorch, Ax, Xopt and
-     blop, across every workflow, to set what to build next (internal).
+  3. **Peer audit** *(done; internal)*: functionality and UX against BoTorch,
+     Ax, Xopt and blop. What to build and what to borrow is in
+     [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md#build-or-borrow). From it, in order:
+     - **Output constraints** by name (feasibility-weighted acquisition, BAX and
+       multi-fidelity aware, recommending feasible points only).
+     - **Spec ergonomics:** names instead of indices (linear constraints, boxes,
+       goals), string categories, `log=True` on design variables,
+       `suggest(fixed=...)`.
+     - **Xopt generators in abbot's loop:** `GestGeneratorPolicy` (TuRBO,
+       Nelder-Mead, RCDS, genetic algorithms, time-dependent BO), with policies
+       able to skip abbot's model fit.
+     - **Diagnostics and stopping:** `campaign.check()` (leave-one-out fit,
+       noise and lengthscale sanity, runs vs dimension), target and
+       no-improvement supervisors, a "how do I…" docs index.
+     - **Travel limits** per variable (with or before the blop backend), a
+       prior-mean option, a high-dimensional (SAAS) default.
   4. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
   5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` (it fails

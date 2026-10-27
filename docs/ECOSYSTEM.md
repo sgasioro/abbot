@@ -48,9 +48,16 @@ DataFrame of scalars, generators `generate(n)` from it. Its `BaxGenerator` is
 InfoBAX only (expected information gain over `GridOptimize` /
 `CurvatureGridOptimize`), without discrete variables. abbot's BAX is broader
 (InfoBAX, MeanBAX, SwitchBAX; arbitrary goals; finite candidate sets; greedy
-kriging-believer batches). Interop: `abbot.interop.xopt` maps spec and VOCS and
-wraps a `Campaign` as a gest `Generator`, so an abbot problem runs under
-`Xopt(generator=...)`.
+kriging-believer batches). Interop runs both ways over the gest-api
+`suggest`/`ingest` protocol, with `spec_to_vocs` / `vocs_to_spec` moving the
+problem itself:
+- abbot's proposals in Xopt's loop: `CorePolicyGenerator` wraps a `Campaign` as
+  a gest `Generator`, so an abbot problem runs under `Xopt(generator=...)` on
+  Xopt's parallel evaluators, Badger and control systems;
+- Xopt's proposals in abbot's loop (planned): `GestGeneratorPolicy` wraps any
+  gest generator (TuRBO, Nelder-Mead, RCDS, genetic algorithms, time-dependent
+  BO) as an abbot `Policy`, under abbot's supervisors, resume, cost tracking and
+  UI.
 
 **Bluesky / blop.** Bluesky runs the hardware; blop is its optimization agent,
 used at several light sources. blop defines a small `Optimizer` protocol
@@ -75,6 +82,24 @@ needs abbot is owning the loop: raw observation → `evaluate` → outputs with 
 observation kept; candidate ids, the outstanding queue, retry/halt, supervisors
 and resume; and a UI that needs no EPICS, Bluesky or Badger.
 
+## Build or borrow
+
+From the October 2026 audit against these neighbours (internal). The rule:
+build natively what has to work with abbot's own pieces (the spec, sources and
+cost, BAX goals, recommendation at the target, guardrails, the UI); borrow
+algorithms that are self-contained and run on their own data.
+
+| Need | Route |
+|---|---|
+| Output constraints, named spec references, string categories, log-scaled design variables, pinning a variable at proposal time | Native: they are the spec, and constraints must work with BAX, multi-fidelity and recommendation |
+| Model diagnostics, stopping on a target or on no improvement | Native: small, and part of the loop |
+| Per-variable travel limits (hardware safety) | Native: they wrap every policy, BAX and multi-fidelity included |
+| Physics prior mean, a high-dimensional model (SAAS) | Native: BoTorch models behind the `ModelConstructor` seam |
+| TuRBO, non-BO optimizers (Nelder-Mead, RCDS, extremum seeking, genetic algorithms), time-dependent BO, MGGPO | Xopt, through `GestGeneratorPolicy` |
+| Parallel and asynchronous evaluation at scale, control systems, Badger | Xopt, through `CorePolicyGenerator` |
+| Bluesky devices, plans, queue server, moving to the best setting, baselines | blop, with abbot as a backend |
+| Hierarchical or derived parameters, learning-curve early stopping, preference learning, SQL storage | Ax; not planned in abbot |
+
 ## Rules of thumb
 
 - **Algorithms are written to travel**: policies and acquisitions stay plain
@@ -98,7 +123,7 @@ and resume; and a UI that needs no EPICS, Bluesky or Badger.
 
 | Neighbour | Status |
 |---|---|
-| Xopt | `abbot.interop.xopt` (`abbot[xopt]`) |
+| Xopt | `abbot.interop.xopt` (`abbot[xopt]`): abbot in Xopt's loop; Xopt's generators in abbot's loop planned |
 | blop | Planned: a `Campaign`-backed blop `Optimizer`. abbot requires BoTorch 0.18, the same line as blop and Ax |
 | Ax | None planned; complementary rather than integrated |
 | bluesky-adaptive | Not planned unless blop doesn't cover a need |
