@@ -9,6 +9,7 @@ capabilities. They use tiny budgets so they execute in seconds.
 | `02_multi_objective.ipynb` | **Native multi-objective** optimization with `ParetoBO`; recovers the Pareto front. |
 | `03_composite_sbi.ipynb` | **Composite simulation-based inference** — objective = a functional of an inferred posterior, with cached-posterior re-scoring. abbot's lead differentiator. |
 | `04_goal_bax.ipynb` | **Goal-driven search (BAX)** — find the *region* satisfying a target, not just the maximum. |
+| `05_multi_fidelity.ipynb` | **Multi-fidelity** — calibrating a simulation whose size sets cost and accuracy: abbot learns the cost, spends the budget on cheap runs, and recommends at the size you trust. |
 | `custom_models.py` | **Swapping the surrogate** — a Matern-kernel GP, a fully-Bayesian SAAS GP, and a deep ensemble, all behind the same `Campaign` via the `ModelConstructor` seam (run `python examples/custom_models.py`). |
 
 ## Run

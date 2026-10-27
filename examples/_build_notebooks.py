@@ -369,7 +369,7 @@ policy = BAXPolicy(goal, strategy="MeanBAX", n_candidates=200)
 campaign = Campaign(spec, policy)  # model defaults to a GP per output
 campaign.seed(policy.candidate_grid(spec)[torch.randperm(200)[:6]])
 for _ in range(10):
-    campaign.step(TargetExperiment(), lambda obs: obs)
+    campaign.step(TargetExperiment())
 """),
     code("""
 # How many sampled designs landed in the target region vs. the base rate?
@@ -410,12 +410,157 @@ flexibility of nn-bax's `FunctionAlgorithm`, now on botorch.
 
 
 # --------------------------------------------------------------------------- #
+# 05 — Multi-fidelity: calibrating an expensive simulation
+# --------------------------------------------------------------------------- #
+
+multi_fidelity = _nb([
+    md("""
+# 5 · Multi-fidelity: calibrating an expensive simulation
+
+A simulation has two parameters to calibrate against data, and its accuracy depends
+on a knob — here the number of atoms. Small systems run in seconds but carry a
+finite-size bias; the size you trust takes an hour. Cheap runs are still
+informative: they show roughly where the good parameters are.
+
+Declaring the knob as a **source**, with the value you trust as its **target**, is
+all abbot needs. The model learns how cheap runs relate to runs at the target,
+`SimpleBO` picks which size to run by information per unit of cost, and the cost
+itself is learned from what runs report.
+"""),
+    code("""
+import torch
+from abbot import (
+    Campaign, ContinuousDomain, IntegerDomain, OutputSpec, ProblemSpec, SimpleBO,
+    Source,
+)
+from abbot.supervision import cost_cap
+torch.manual_seed(0)
+"""),
+    md("""
+### Define the problem
+`eps` and `sigma` are the parameters to calibrate; `misfit` (to minimize) is the
+discrepancy between simulation and data. `atoms` is a source: an input the
+simulation needs, but not something to recommend. `log=True` because cost and bias
+scale with size, and `target=256` is the size we trust.
+"""),
+    code("""
+spec = ProblemSpec(
+    domain=[
+        ContinuousDomain(name="eps", lower=0.0, upper=1.0),
+        ContinuousDomain(name="sigma", lower=0.0, upper=1.0),
+    ],
+    sources=[Source(domain=IntegerDomain(name="atoms", lower=32, upper=256),
+                    target=256, log=True)],
+    outputs=[OutputSpec(name="misfit", direction="MINIMIZE")],
+)
+"""),
+    md("""
+### The simulation
+A stand-in: the misfit has a good basin near `(0.3, 0.7)` and a broad, worse one
+near `(0.8, 0.2)`, plus a finite-size bias that shrinks as the system grows.
+`cost(design)` reports what a run cost (here, core-hours that grow as atoms²).
+Without it abbot records each run's wall-clock time, which on a cluster would
+include queueing.
+"""),
+    code("""
+import math
+
+def misfit(eps, sigma, atoms):
+    good = math.exp(-((eps - 0.3) ** 2 + (sigma - 0.7) ** 2) / 0.05)
+    broad = 0.5 * math.exp(-((eps - 0.8) ** 2 + (sigma - 0.2) ** 2) / 0.1)
+    finite_size = 4.0 / atoms * (1 + 2 * eps)       # vanishes for large systems
+    return 1 - good - broad + finite_size
+
+class Simulation:
+    def run(self, design):
+        return [misfit(design["eps"], design["sigma"], design["atoms"])]
+
+    def cost(self, design):
+        return (design["atoms"] / 32) ** 2 / 60     # core-hours
+
+sim = Simulation()
+target_run = sim.cost({"atoms": 256})
+print(f"one run at the target: {target_run:.2f} core-hours; at 32 atoms: {sim.cost({'atoms': 32}):.3f}")
+"""),
+    md("""
+### Run until a budget is spent
+`cost_cap` stops the campaign once the recorded cost reaches a budget: here, the
+price of 5 runs at the target.
+"""),
+    code("""
+budget = 5 * target_run
+campaign = Campaign(spec, supervisor=cost_cap(budget))
+while not campaign.stopped:
+    campaign.step(sim)
+
+atoms = [int(r.candidate[2]) for r in campaign.history.records]
+print("atoms per run:", atoms)
+print(f"{len(atoms)} runs for {campaign.history.cost_spent:.1f} core-hours")
+print("learned cost:", campaign.policy.source_cost)
+"""),
+    md("""
+The campaign seeded itself with a few space-filling runs, two of them at the
+target. After that most runs are small. The learned cost recovers the atoms² scaling
+from what the runs reported.
+
+### The answer, at the target
+Recommendations are judged at the target: the model's prediction at 256 atoms, even
+for a design that was only ever run small. `run_at_target` says whether it was.
+"""),
+    code("""
+result = campaign.result()
+best = campaign.history.records[result.recommended[0]]
+eps, sigma = best.candidate[:2].tolist()
+print(f"recommended eps={eps:.3f}, sigma={sigma:.3f}  (good basin: 0.3, 0.7)")
+print("run at the target:", result.run_at_target[0], "| model std there:", result.target_std[0])
+"""),
+    md("""
+### The same budget at the target only
+For comparison, plain BO with every run at 256 atoms gets 5 runs for the same
+budget.
+"""),
+    code("""
+target_only = Campaign(spec, policy=SimpleBO(choose_sources=False),
+                       supervisor=cost_cap(budget),
+                       initial_designs=spec.at_target(spec.sample_designs(3)))
+while not target_only.stopped:
+    target_only.step(sim)
+
+rec = target_only.history.records[target_only.result().recommended[0]].candidate
+best = min(misfit(e / 100, s / 100, 256) for e in range(101) for s in range(101))
+print(f"best possible:  misfit {best:.3f} at the target")
+print(f"multi-fidelity: misfit {misfit(eps, sigma, 256):.3f}")
+print(f"target only:    misfit {misfit(*rec[:2].tolist(), 256):.3f}")
+"""),
+    md("""
+### Other kinds of source
+- **A knob where smaller is more accurate** (a convergence tolerance, a mesh
+  spacing): `Source(..., accurate="low")`.
+- **Different codes, or simulation vs experiment** (unordered): an enumerated
+  source with whole-number labels, e.g.
+  `Source(domain=EnumeratedDomain(name="code", values=[0, 1]), target=1)`.
+- **Goal-driven search**: `BAXPolicy(goal, strategy="InfoBAX")` chooses sources the
+  same way, by information about the goal per unit of cost.
+- **Known noise per run** (e.g. a standard error from block averaging): pass it as
+  `output_var` and the model uses it instead of one shared noise level.
+
+**What this showed:** with the fidelity knob declared as a source, abbot spends
+most of the budget on cheap runs, learns their cost and bias, and still recommends
+for the size you trust. With five target runs' worth of budget, the cheap runs found
+the good basin; five runs at the target alone usually don't (this holds across
+seeds, not just this one).
+"""),
+])
+
+
+# --------------------------------------------------------------------------- #
 
 NOTEBOOKS = {
     "01_lab_bo.ipynb": lab_bo,
     "02_multi_objective.ipynb": multi_obj,
     "03_composite_sbi.ipynb": composite_sbi,
     "04_goal_bax.ipynb": goal_bax,
+    "05_multi_fidelity.ipynb": multi_fidelity,
 }
 
 

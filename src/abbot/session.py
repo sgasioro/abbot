@@ -765,6 +765,12 @@ class Campaign:
                     logger.warning("%s", self.halted)
                     return self.state()
         observations, timings = self._run_designs(experiment, designs)
+        reported = getattr(experiment, "cost", None)
+        if reported is not None:  # the experiment's own account replaces wall-clock
+            timings = [
+                (started, finished, measured if (c := reported(design)) is None else float(c))
+                for design, (started, finished, measured) in zip(designs, timings, strict=True)
+            ]
         # Hooks see the batch once it is all recorded, not each partial state.
         self._hooks_deferred = True
         try:

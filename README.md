@@ -281,9 +281,12 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        default cost, `SourceCost`.
      - Phase C2 *(done)*: multi-fidelity InfoBAX (source levels on the candidate
        grid, information per unit cost); fixes for two BoTorch multi-fidelity bugs.
-     - Phase D: a synthetic benchmark (including which fidelity kernel should be
-       the default, and noise that varies with the source) and an example. Later: a BAX-shaped goal
-       (every setting that matches the data); UI support.
+     - Phase D *(done)*: `benchmarks/multi_fidelity.py` (cost to a good answer at
+       the target, against target-only BO and BoTorch's MF-KG; it kept the
+       linear-truncated kernel as the default), the `05_multi_fidelity` example,
+       `MockAnalyticExperiment` with sources, and `Experiment.cost(design)`.
+     - Later: a BAX-shaped goal (every setting that matches the data); a noise level
+       that varies with the source, without per-run variances; UI support.
   3. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
   4. **sbido:** Sam's review of the cutover PR; port master's BAX fallback
