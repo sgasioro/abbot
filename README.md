@@ -287,11 +287,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        `MockAnalyticExperiment` with sources, and `Experiment.cost(design)`.
      - Later: a BAX-shaped goal (every setting that matches the data); a noise level
        that varies with the source, without per-run variances; UI support.
-  3. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
+  3. **Peer audit:** abbot's functionality and UX against BoTorch, Ax, Xopt and
+     blop, across every workflow, to set what to build next (internal).
+  4. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
-  4. **sbido:** Sam's review of the cutover PR; port master's BAX fallback
-     option (e6a5d77) into abbot or sbido; bump the abbot pin; then what the
-     paper benchmark needs (mat_finder regret-parity, continuous BAX).
   5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` (it fails
      to fit sparse, partly zero data; check sbido's kernel option), flagged-shot
      handling, an outstanding-candidates list in the UI, and reporting
@@ -301,5 +300,11 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   7. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that
      writes the spec / goal. The UI stays the run console and the
      human-in-the-loop entry point.
+- **Deferred: integration.** Building out abbot comes first; then back to the
+  applications. sbido: Sam's review of the cutover PR, port master's BAX fallback
+  option (e6a5d77) into abbot or sbido, bump the abbot pin, then what the paper
+  benchmark needs (mat_finder regret-parity, continuous BAX). BAXstics: push the
+  `abbot-port` branch, bump its abbot pin, and merge to its main once abbot is
+  public.
 - **Later** — output constraints, nn-bax productionization (upstream to Xopt where
-  it fits). BAXstics merges to its main once abbot is public.
+  it fits).
