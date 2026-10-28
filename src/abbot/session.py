@@ -27,6 +27,7 @@ import torch
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
 from abbot.experiment import BatchExperiment, Experiment, Supervisor, Verdict
+from abbot.feasibility import FEASIBLE_P, feasible, prob_feasible, row_scale, violation
 from abbot.history import DataStore, History, Record
 from abbot.model import ModelConstructor, default_constructor
 from abbot.policy import Policy, default_policy
@@ -229,6 +230,11 @@ def recommend(
     once (under its at-target record if it has one), and the observed fallback
     ranks only records run at the target.
 
+    With output constraints, only designs that satisfy them are ranked: those the
+    model gives at least a 50% chance (or, from observed values, that did). If there
+    are none, it returns the single design most likely to (the smallest observed
+    violation); :func:`feasibility` tells the two cases apart.
+
     Returns ``[]`` for a pure-BAX spec (no objectives — handover is the goal's job)
     or when there are no clean records.
     """
@@ -236,21 +242,48 @@ def recommend(
     if not idx:
         return []
     keep = [i for i, r in enumerate(history.records) if not r.fault]
+    use_model = denoise and model is not None
     if spec.sources:
-        keep = _one_per_design(history, spec, keep, observed=not (denoise and model is not None))
+        keep = _one_per_design(history, spec, keep, observed=not use_model)
     if not keep:
         return []
-    if denoise and model is not None:
+    if use_model:
         X = spec.at_target(torch.stack([history.records[i].candidate for i in keep]).double())
         with torch.no_grad():
             # Model is full-width & canonical; select objective columns (already
             # canonical, so no sign flip — unlike raw observed values).
             Y = model.posterior(X).mean.reshape(len(keep), -1)[:, idx]
     else:
-        Y = spec.objective_view(
-            torch.stack([history.records[i].outputs.reshape(-1) for i in keep])
-        )
+        raw = torch.stack([history.records[i].outputs.reshape(-1) for i in keep]).double()
+        Y = spec.objective_view(raw)
+    if spec.has_output_constraints:
+        if use_model:
+            p = prob_feasible(spec, model, X)
+            ok = p >= FEASIBLE_P
+            fallback = int(p.argmax())
+        else:
+            ok = feasible(spec, raw)
+            fallback = int(violation(spec, raw, row_scale(history, spec)).argmin())
+        if not ok.any():
+            return [keep[fallback]]
+        Y = Y[ok]
+        keep = [i for i, k in zip(keep, ok.tolist()) if k]
     return _front_indices(Y, keep)
+
+
+def feasibility(
+    history: History, spec: ProblemSpec, indices: list[int], model=None
+) -> list[float]:
+    """For records ``indices``, the chance their design satisfies every output
+    constraint: the model's probability at the target, or without a model 1.0 / 0.0
+    from the observed outputs. Empty without output constraints."""
+    if not (spec.has_output_constraints and indices):
+        return []
+    if model is not None:
+        X = torch.stack([history.records[i].candidate.double().reshape(-1) for i in indices])
+        return prob_feasible(spec, model, spec.at_target(X)).tolist()
+    Y = torch.stack([history.records[i].outputs.double().reshape(-1) for i in indices])
+    return feasible(spec, Y).double().tolist()
 
 
 def observed_front(history: History, spec: ProblemSpec) -> list[int]:
@@ -362,6 +395,12 @@ class CampaignResult:
     # model's posterior std of each objective there (raw units). Empty without.
     run_at_target: list[bool] = field(default_factory=list)
     target_std: list[list[float]] = field(default_factory=list)
+    # With output constraints: per recommended design, the chance it satisfies them
+    # (see ``feasibility``) and whether that is at least 50%. Empty without. All
+    # False means nothing is likely to satisfy them yet, and the recommendation is
+    # the design closest to doing so.
+    p_feasible: list[float] = field(default_factory=list)
+    feasible: list[bool] = field(default_factory=list)
 
     @property
     def designs(self) -> torch.Tensor:
@@ -957,6 +996,18 @@ class Campaign:
         uncertainty there)."""
         recommended = self.recommend()
         result = CampaignResult(history=self.history, recommended=recommended)
+        if self.spec.has_output_constraints and recommended:
+            model = self.current_model()
+            result.p_feasible = feasibility(self.scored_history(), self.spec, recommended, model)
+            result.feasible = [p >= FEASIBLE_P for p in result.p_feasible]
+            if not any(result.feasible):
+                msg = (
+                    "No design is likely to satisfy the output constraints yet "
+                    f"(best chance {max(result.p_feasible):.2f}); the recommendation is "
+                    "the design closest to satisfying them."
+                )
+                logger.warning(msg)
+                self.last_warning = msg
         if not (self.spec.sources and recommended):
             return result
         X = torch.stack([self.history.records[i].candidate.double().reshape(-1) for i in recommended])
@@ -1055,6 +1106,10 @@ class Campaign:
             xs = self._policy_suggest(model, n, pending or [])
             self._proposal_seconds = (self._model_fit_seconds, time.perf_counter() - start)
             self._proposal_acq = _acquisition_values(self.policy, len(xs))
+            # A policy may explain an odd proposal (e.g. BAX with an empty goal).
+            warning = getattr(self.policy, "last_warning", None)
+            if warning:
+                self.last_warning = warning
             return xs
         except self._MISCONFIG_ERRORS:
             # Setup is wrong (e.g. ParetoBO on a 1-objective spec). Fail loud.

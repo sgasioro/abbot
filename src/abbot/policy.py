@@ -32,6 +32,15 @@ from botorch.models.model import Model
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
 from abbot.acq_opt import CandidateOptimizer, Continuous, optimize
+from abbot.feasibility import (
+    FEASIBLE_P,
+    LogProbFeasible,
+    any_feasible,
+    feasible,
+    mc_constraints,
+    prob_feasible,
+    row_scale,
+)
 from abbot.history import History
 from abbot.problem import ProblemSpec
 
@@ -132,6 +141,58 @@ def _objective_transform(spec: ProblemSpec):
     return ScalarizedPosteriorTransform(weights=weights)
 
 
+def _objective_kwargs(spec: ProblemSpec, history: History) -> dict:
+    """How a single-objective MC acquisition reads the model: through
+    ``_objective_transform``, or with output constraints, an MC objective selecting
+    the objective column plus the constraints (BoTorch applies constraints to the
+    model's outputs, which a posterior transform would already have reduced)."""
+    if not spec.has_output_constraints:
+        return {"posterior_transform": _objective_transform(spec)}
+    from botorch.acquisition.objective import GenericMCObjective
+
+    kwargs = {"constraints": mc_constraints(spec, row_scale(history, spec))}
+    if spec.n_outputs > 1:
+        j = spec.objective_indices()[0]
+        kwargs["objective"] = GenericMCObjective(lambda Z, X=None: Z[..., j])
+    return kwargs
+
+
+def _find_feasible(policy, history, spec, model, n, pending) -> torch.Tensor:
+    """Propose ``n`` designs at the target by the probability of satisfying every
+    output constraint, while no run at the target has. Improvement and
+    hypervolume have no feasible reference yet, so they would ignore the
+    constraints. Sets ``policy.last_acquisition_value``."""
+    logger.info(
+        "%s: no run satisfies the output constraints yet; searching for designs that "
+        "will.", type(policy).__name__,
+    )
+    scale = row_scale(history, spec)
+    pending = _pending_or_none(pending)
+    picks, values = [], []
+    for _ in range(n):
+        cond = condition_on_pending(model, _extend_pending(pending, picks))
+        acq = LogProbFeasible(cond, spec, explore=True, scale=scale)
+        picks.append(optimize(policy.optimizer, acq, spec, 1, spec.target_features()))
+        values.append(_acq_value(acq, picks[-1]))
+    policy.last_acquisition_value = torch.tensor(values, dtype=torch.double)
+    return torch.cat(picks)
+
+
+class _FeasibilityWeighted(torch.nn.Module):
+    """An acquisition times the probability that the design, moved to the target,
+    satisfies every output constraint. For a positive acquisition (entropy search)."""
+
+    def __init__(self, acq, model, spec: ProblemSpec) -> None:
+        super().__init__()
+        self.acq = acq
+        self.model = model
+        self.spec = spec
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        pof = LogProbFeasible(self.model, self.spec)(self.spec.at_target(X)).exp()
+        return self.acq(X) * pof
+
+
 def _pending_or_none(pending: torch.Tensor | None) -> torch.Tensor | None:
     if pending is None or pending.numel() == 0:
         return None
@@ -222,6 +283,14 @@ class SimpleBO:
     accounting for the earlier ones. ``choose_sources=False`` keeps every proposal
     at the target instead (cheap runs then only inform the model).
     ``n_candidates`` sets how many target designs sample the best value.
+
+    **With output constraints** (``OutputSpec`` bounds or ``output_constraints``),
+    the improvement only counts where the constraints hold, weighted by their
+    probability (constrained log-NEI). Until some run satisfies them, it proposes by
+    the probability that a design will, favoring designs where that is uncertain.
+    With sources, the entropy search is weighted by that probability at the target
+    and the best value is sampled over designs likely to satisfy the constraints (an
+    approximation).
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
@@ -255,6 +324,8 @@ class SimpleBO:
                 f"SimpleBO is single-objective but the spec has {spec.n_objectives} "
                 "objective(s); use ParetoBO for multi-objective optimization."
             )
+        if spec.has_output_constraints and not any_feasible(history, spec):
+            return _find_feasible(self, history, spec, model, n, pending)
         if spec.sources and self.choose_sources:
             return self._suggest_with_sources(history, spec, model, n, pending)
         # Improvement is judged at the target: a lucky cheap-source run must not set
@@ -263,8 +334,8 @@ class SimpleBO:
         acq = qLogNoisyExpectedImprovement(
             model,
             X_baseline=X,
-            posterior_transform=_objective_transform(spec),
             X_pending=_pending_or_none(pending),
+            **_objective_kwargs(spec, history),
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
         picks = optimize(self.optimizer, acq, spec, n, spec.target_features())
@@ -291,6 +362,14 @@ class SimpleBO:
             cost_model = self._source_cost
         cost_model.fit(history, spec)
         candidates = spec.at_target(spec.sample_designs(self.n_candidates))
+        if spec.has_output_constraints:
+            # The best value worth learning about is among designs that satisfy
+            # the constraints: sample it over the likely ones (at least a few).
+            p = prob_feasible(spec, model, candidates)
+            likely = p >= FEASIBLE_P
+            if int(likely.sum()) < 10:
+                likely = p >= p.topk(min(10, len(p))).values[-1]
+            candidates = candidates[likely]
         # Costs relative to a typical target run, so the values read as information
         # per target-run-equivalent.
         scale = cost_model(candidates).mean().clamp_min(1e-300)
@@ -300,17 +379,19 @@ class SimpleBO:
             )
         )
         train_inputs = spec.at_target(history.clean.designs.double()).unique(dim=0)
+        objective_model = _objective_model(model, spec)
         picks, values = [], []
         for _ in range(n):  # entropy search proposes one design per call
             acq = _MultiFidelityMES(
-                model,
+                objective_model,
                 candidates,
-                posterior_transform=_objective_transform(spec),
                 X_pending=_extend_pending(_pending_or_none(pending), picks),
                 cost_aware_utility=utility,
                 project=spec.at_target,
                 train_inputs=train_inputs,
             )
+            if spec.has_output_constraints:
+                acq = _FeasibilityWeighted(acq, model, spec)
             x = optimize(self.optimizer, acq, spec, 1, {})
             picks.append(x)
             values.append(_acq_value(acq, x))
@@ -319,6 +400,22 @@ class SimpleBO:
 
     def ingest(self, results) -> None:  # stateless: history carries the state
         return None
+
+
+def _objective_model(model: Model, spec: ProblemSpec) -> Model:
+    """The single-output model of the objective, for entropy search, which refuses
+    multi-output models even with a posterior transform (a spec with OBSERVE or
+    constrained outputs has one)."""
+    if model.num_outputs == 1:
+        return model
+    j = spec.objective_indices()[0]
+    try:
+        return model.subset_output([j])
+    except NotImplementedError as exc:
+        raise ValueError(
+            f"Choosing sources needs a model that can give the objective's output "
+            f"alone (subset_output); {type(model).__name__} can't."
+        ) from exc
 
 
 class _MultiFidelityMES(qMultiFidelityMaxValueEntropy):
@@ -359,6 +456,11 @@ class ParetoBO:
 
     ``cost_model`` (:mod:`abbot.cost`) makes it log-NEHVI minus log cost, as for
     :class:`SimpleBO`.
+
+    **With output constraints**, only runs that satisfy them form the front and set
+    the inferred reference point, and the hypervolume improvement is weighted by
+    the probability they hold. Until some run satisfies them (and without a
+    ``ref_point``), it proposes by that probability, as :class:`SimpleBO` does.
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
@@ -407,6 +509,11 @@ class ParetoBO:
                 floor,
             )
             return self._explore(history, spec, model, n, pending)
+        constrained = spec.has_output_constraints
+        if constrained:
+            if self.ref_point is None and not any_feasible(history, spec):
+                return _find_feasible(self, history, spec, model, n, pending)
+            Y = Y[feasible(spec, history.clean.outputs.double())]
 
         if self.ref_point is not None:
             ref_point = self.ref_point
@@ -454,6 +561,7 @@ class ParetoBO:
             X_baseline=X,
             objective=objective,
             X_pending=_pending_or_none(pending),
+            constraints=mc_constraints(spec, row_scale(history, spec)) if constrained else None,
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
         picks = optimize(self.optimizer, acq, spec, n, spec.target_features())
@@ -599,6 +707,18 @@ class BAXPolicy:
     plus the target), or ``{name: [values]}``; an unordered source uses all its
     values. US, MeanBAX and SwitchBAX's MeanBAX phase propose at the target.
     ``choose_sources=False`` keeps InfoBAX at the target too.
+
+    **With output constraints** and ``respect_constraints=True`` (the default), the
+    goal only sees the designs whose outputs satisfy them: on the posterior mean for
+    MeanBAX, and on each posterior sample for InfoBAX. The goal runs on those rows,
+    so ``TopK(k=5)`` means the five best designs that satisfy the constraints.
+    ``respect_constraints=False`` lets the goal see every design, for bounds you want
+    to map rather than filter by. When the constraints leave the goal nothing to
+    select, the policy says so in ``last_warning`` (which ``Campaign`` passes on).
+
+    If the goal selects nothing on any posterior sample, InfoBAX has no
+    information to rank by; it proposes by uncertainty instead and says so in
+    ``last_warning``.
     """
 
     def __init__(
@@ -614,6 +734,7 @@ class BAXPolicy:
         cost_model=None,
         choose_sources: bool = True,
         source_levels: int | dict[str, list[float]] = 5,
+        respect_constraints: bool = True,
     ) -> None:
         if strategy not in _BAX_UQ:
             raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
@@ -643,6 +764,8 @@ class BAXPolicy:
         # Optional ``noise_at(X) -> (N, m)`` measurement-noise variance (raw units) at
         # candidates, for InfoBAX; default: the model's own observation noise.
         self.noise_at = noise_at
+        self.respect_constraints = respect_constraints
+        self.last_warning: str | None = None  # set by suggest when the goal is empty
         self._out_scale = torch.ones(1, dtype=torch.double)  # per-output, set by suggest
 
     # -- grid --
@@ -808,6 +931,7 @@ class BAXPolicy:
         pending: torch.Tensor | None = None,
     ) -> torch.Tensor:
         grid = self.proposal_set(spec)
+        self.last_warning = None
         pending = _pending_or_none(pending)
         self._out_scale = _output_scale(history)
         self._cost = (
@@ -862,7 +986,12 @@ class BAXPolicy:
             return at_target_only(rel)
         # MeanBAX / SwitchBAX gate on the mean-execution target set.
         if self.strategy in ("MeanBAX", "SwitchBAX"):
-            target = self.goal.identify_subspace(mean, at_target)
+            target = self._identify(spec, mean, at_target)
+            if not target and self._constrains(spec) and len(self.goal.identify_subspace(mean, at_target)):
+                self._warn(
+                    "the output constraints exclude every design the goal selects on the "
+                    "posterior mean"
+                )
             if self._stuck(target):
                 self.switched = True
                 if self.strategy == "MeanBAX":
@@ -873,6 +1002,27 @@ class BAXPolicy:
             return at_target_only(acq)
         # InfoBAX
         return self._infobax(spec, model, grid, std)
+
+    def _constrains(self, spec) -> bool:
+        return self.respect_constraints and spec.has_output_constraints
+
+    def _identify(self, spec, Y, X) -> list[int]:
+        """The goal's target set on RAW outputs ``Y`` at designs ``X``. With output
+        constraints (and ``respect_constraints``), the goal runs on only the rows
+        that satisfy them, and its indices are mapped back to ``Y``'s rows."""
+        if not self._constrains(spec):
+            return list(self.goal.identify_subspace(Y, X))
+        rows = feasible(spec, Y).nonzero(as_tuple=True)[0]
+        if not len(rows):
+            return []
+        target = self.goal.identify_subspace(Y[rows], X[rows])
+        return [int(rows[i]) for i in target]
+
+    def _warn(self, msg: str) -> None:
+        msg = f"BAXPolicy: {msg}."
+        if msg != self.last_warning:
+            logger.warning("%s", msg)
+        self.last_warning = msg
 
     def _stuck(self, target: list[int]) -> bool:
         """multibax ``meanbax_stuck``: empty target set, or already all collected."""
@@ -923,11 +1073,14 @@ class BAXPolicy:
         term2 = torch.zeros_like(term1)
         n = self.n_posterior_samples
         conditioned = failed = 0
+        unconstrained = 0  # samples where only the constraints emptied the goal
         for i in range(n):
             f_canon = samples[i].reshape(n_target, -1)
             f_raw = spec.to_raw(f_canon)  # BAX reads ALL outputs raw (goal consumes them)
-            target = self.goal.identify_subspace(f_raw, at_target)
+            target = self._identify(spec, f_raw, at_target)
             if not target:
+                if self._constrains(spec) and len(self.goal.identify_subspace(f_raw, at_target)):
+                    unconstrained += 1
                 term2 += term1  # no execution info -> entropy unchanged
                 continue
             conditioned += 1
@@ -941,6 +1094,19 @@ class BAXPolicy:
                 logger.exception("InfoBAX fantasy conditioning failed for a sample.")
                 failed += 1
                 term2 += term1
+        if not conditioned:
+            # No sample gives the goal anything to select, so the information gain
+            # is zero everywhere and the pick would be arbitrary. Explore instead.
+            why = (
+                ", once the output constraints are applied" if unconstrained else ""
+            )
+            self._warn(
+                f"the goal selects nothing on any of {n} posterior samples{why}; "
+                "proposing by uncertainty instead"
+            )
+            rel = (std[:n_target] / self._out_scale.to(std)).mean(dim=-1)
+            rest = torch.full((grid.shape[0] - n_target,), float("-inf"), dtype=rel.dtype)
+            return torch.cat([rel, rest])
         if conditioned and failed == conditioned:
             # Every fantasy failed, so the information gain is zero everywhere and
             # the pick would be arbitrary. Say so instead.

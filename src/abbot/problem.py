@@ -191,13 +191,30 @@ class OutputSpec(BaseModel):
     ``direction``:
       - ``MAXIMIZE`` / ``MINIMIZE`` — an optimized *objective* (BO/MO).
       - ``OBSERVE``  — modeled but NOT optimized: a feature a BAX ``Goal``
-        consumes, or (future) a constraint output. OBSERVE outputs are fit by the
-        surrogate like any other column; they are simply excluded from the
-        optimized-objective subset (``ProblemSpec.objectives``).
+        consumes, or an output that only has to stay within bounds. OBSERVE outputs
+        are fit by the surrogate like any other column; they are simply excluded
+        from the optimized-objective subset (``ProblemSpec.objectives``).
+
+    ``min_val`` / ``max_val`` make the output a constraint, in its raw units: a
+    design is only acceptable if the output lands within them (``purity`` at least
+    0.9). Policies steer towards designs likely to satisfy every constraint, and the
+    recommendation only picks designs likely to. For a bound on a combination of
+    outputs, use ``ProblemSpec.output_constraints``.
     """
 
     name: str
     direction: Direction = "MAXIMIZE"
+    min_val: float | None = None
+    max_val: float | None = None
+
+    @model_validator(mode="after")
+    def _check_bounds(self) -> OutputSpec:
+        _check_range(f"OutputSpec {self.name!r}", self.min_val, self.max_val)
+        return self
+
+    @property
+    def is_constrained(self) -> bool:
+        return self.min_val is not None or self.max_val is not None
 
 
 # Back-compat: an "objective" is just a non-OBSERVE output. Existing
@@ -225,8 +242,52 @@ class Box(BaseModel):
         return self
 
 
+def _check_range(what: str, lo: float | None, hi: float | None) -> None:
+    if lo is not None and hi is not None and hi <= lo:
+        raise ValueError(f"{what}: max_val ({hi}) must exceed min_val ({lo})")
+
+
+class LinearConstraint(BaseModel):
+    """A bound on a weighted sum of named quantities:
+    ``min_val <= sum(coeff * value) <= max_val``, either bound optional.
+
+    In ``ProblemSpec.domain_constraints`` the names are design variables (or
+    sources) and the constraint is hard: no design outside it is ever proposed. In
+    ``ProblemSpec.output_constraints`` the names are outputs, whose values are only
+    known after a run, so the constraint is learned with the outputs.
+
+    The coefficients may be passed positionally::
+
+        LinearConstraint({"temp": 1, "conc": 2}, max_val=100)
+    """
+
+    coeffs: dict[str, float]
+    min_val: float | None = None
+    max_val: float | None = None
+
+    def __init__(self, coeffs: dict[str, float] | None = None, /, **data) -> None:
+        if coeffs is not None:
+            data["coeffs"] = coeffs
+        super().__init__(**data)
+
+    @model_validator(mode="after")
+    def _check(self) -> LinearConstraint:
+        if not self.coeffs:
+            raise ValueError("LinearConstraint needs at least one name in coeffs")
+        if self.min_val is None and self.max_val is None:
+            raise ValueError(
+                f"LinearConstraint over {list(self.coeffs)} needs min_val, max_val or both"
+            )
+        _check_range(f"LinearConstraint over {list(self.coeffs)}", self.min_val, self.max_val)
+        return self
+
+
 class InequalitySpec(BaseModel):
-    """botorch sparse inequality: sum(coeffs_i * x[indices_i]) >= rhs."""
+    """botorch sparse inequality: sum(coeffs_i * x[indices_i]) >= rhs.
+
+    Superseded by :class:`LinearConstraint`, which names the variables; still
+    accepted in ``ProblemSpec.domain_constraints``.
+    """
 
     indices: list[int]
     coeffs: list[float]
@@ -239,6 +300,17 @@ class InequalitySpec(BaseModel):
         return self
 
 
+def _check_names(c, allowed, kind, other, where, other_hint) -> None:
+    """Every name in constraint ``c`` must be one of ``allowed``; a name from the
+    other list gets a pointed error saying where it belongs."""
+    for name in c.coeffs:
+        if name in allowed:
+            continue
+        if name in other:
+            raise ValueError(f"{where}: {name!r} is {other_hint}")
+        raise ValueError(f"{where}: {name!r} is not a known {kind} (known: {allowed})")
+
+
 # --- The spec ----------------------------------------------------------------
 
 
@@ -248,12 +320,22 @@ class ProblemSpec(BaseModel):
     Round-trips to/from JSON (``model_dump_json`` / ``model_validate_json``) with
     no live-object references — the property that simultaneously serves the
     frontend, run resume, and agent drivers.
+
+    Constraints come in two lists, named after what they constrain:
+
+    - ``domain_constraints``: linear bounds on the design variables (and sources).
+      Hard: every proposal and seed satisfies them. ``constraints=`` is accepted as
+      the old name.
+    - ``output_constraints``: linear bounds on combinations of outputs, learned from
+      the runs like the outputs themselves. A bound on one output is simpler as
+      ``OutputSpec(min_val=..., max_val=...)``.
     """
 
     domain: list[Domain]
     outputs: list[OutputSpec]
     boxes: list[Box] | None = None
-    constraints: list[InequalitySpec] | None = None
+    domain_constraints: list[LinearConstraint | InequalitySpec] | None = None
+    output_constraints: list[LinearConstraint] | None = None
     sources: list[Source] | None = None
 
     @model_validator(mode="before")
@@ -270,6 +352,14 @@ class ProblemSpec(BaseModel):
                 raise ValueError("pass either `outputs=` or `objectives=`, not both")
             data = {**data, "outputs": data["objectives"]}
             data.pop("objectives", None)
+        if isinstance(data, dict) and "constraints" in data:
+            if data.get("domain_constraints") is not None:
+                raise ValueError(
+                    "pass either `domain_constraints=` or `constraints=` (its old "
+                    "name), not both"
+                )
+            data = {**data, "domain_constraints": data["constraints"]}
+            data.pop("constraints", None)
         return data
 
     @model_validator(mode="after")
@@ -284,7 +374,27 @@ class ProblemSpec(BaseModel):
         onames = [o.name for o in self.outputs]
         if len(onames) != len(set(onames)):
             raise ValueError(f"Duplicate output names: {onames}")
+        for c in self.domain_constraints or []:
+            if isinstance(c, InequalitySpec):
+                bad = [i for i in c.indices if not 0 <= i < len(names)]
+                if bad:
+                    raise ValueError(
+                        f"InequalitySpec indices {bad} are out of range for the "
+                        f"{len(names)} variables {names}"
+                    )
+                continue
+            _check_names(c, names, "variable", onames, "domain_constraints",
+                         "an output: put it in output_constraints, or set min_val/max_val on "
+                         "its OutputSpec")
+        for c in self.output_constraints or []:
+            _check_names(c, onames, "output", names, "output_constraints",
+                         "a design variable: put it in domain_constraints")
         return self
+
+    @property
+    def constraints(self) -> list | None:
+        """Old name for ``domain_constraints`` (read-only)."""
+        return self.domain_constraints
 
     # --- outputs vs objectives -------------------------------------------------
     # The surrogate models every OUTPUT (one column each, in ``outputs`` order) —
@@ -338,6 +448,8 @@ class ProblemSpec(BaseModel):
         data = self.model_dump(mode="json")
         for s in data.get("sources") or []:
             s.pop("target", None)
+        # Under its old key, so stores written before the rename still resume.
+        data["constraints"] = data.pop("domain_constraints")
         return data
 
     @property
@@ -433,19 +545,64 @@ class ProblemSpec(BaseModel):
         return torch.tensor([lowers, uppers], dtype=dtype or torch.double, device=device)
 
     def inequality_constraints(self, dtype=None, device=None):
-        """Return botorch ``inequality_constraints`` form, or None."""
-        if not self.constraints:
+        """The domain constraints in botorch ``inequality_constraints`` form
+        (``sum(coeffs * x[indices]) >= rhs``, one entry per bound), or None."""
+        if not self.domain_constraints:
             return None
         import torch
 
-        return [
-            (
-                torch.tensor(c.indices, dtype=torch.long, device=device),
-                torch.tensor(c.coeffs, dtype=dtype or torch.double, device=device),
-                float(c.rhs),
+        def entry(indices, coeffs, rhs):
+            return (
+                torch.tensor(indices, dtype=torch.long, device=device),
+                torch.tensor(coeffs, dtype=dtype or torch.double, device=device),
+                float(rhs),
             )
-            for c in self.constraints
-        ]
+
+        position = {name: j for j, name in enumerate(self.variable_names)}
+        out = []
+        for c in self.domain_constraints:
+            if isinstance(c, InequalitySpec):
+                out.append(entry(c.indices, c.coeffs, c.rhs))
+                continue
+            indices = [position[name] for name in c.coeffs]
+            coeffs = list(c.coeffs.values())
+            if c.min_val is not None:
+                out.append(entry(indices, coeffs, c.min_val))
+            if c.max_val is not None:
+                out.append(entry(indices, [-a for a in coeffs], -c.max_val))
+        return out
+
+    @property
+    def has_output_constraints(self) -> bool:
+        """Whether any output is bounded (``OutputSpec`` bounds or
+        ``output_constraints``)."""
+        return bool(self.output_constraints) or any(o.is_constrained for o in self.outputs)
+
+    def output_constraint_rows(self, dtype=None, device=None):
+        """Every output constraint as rows ``lower <= A @ y <= upper`` over RAW
+        outputs: ``A (k, n_outputs)``, ``lower (k,)``, ``upper (k,)``, with a missing
+        bound as -inf / inf. ``k`` is 0 without output constraints."""
+        import torch
+
+        kw = {"dtype": dtype or torch.double, "device": device}
+        rows, lower, upper = [], [], []
+        position = {name: j for j, name in enumerate(self.output_names)}
+
+        def add(coeffs: dict[str, float], lo, hi):
+            a = torch.zeros(self.n_outputs, **kw)
+            for name, coef in coeffs.items():
+                a[position[name]] = coef
+            rows.append(a)
+            lower.append(-math.inf if lo is None else lo)
+            upper.append(math.inf if hi is None else hi)
+
+        for o in self.outputs:
+            if o.is_constrained:
+                add({o.name: 1.0}, o.min_val, o.max_val)
+        for c in self.output_constraints or []:
+            add(c.coeffs, c.min_val, c.max_val)
+        A = torch.stack(rows) if rows else torch.zeros(0, self.n_outputs, **kw)
+        return A, torch.tensor(lower, **kw), torch.tensor(upper, **kw)
 
     def sample_designs(self, n: int, *, seed: int | None = None):
         """Draw ``n`` designs as an (n, d) tensor.
@@ -466,7 +623,7 @@ class ProblemSpec(BaseModel):
 
         if seed is None:
             seed = int(torch.randint(2**31 - 1, (1,)))
-        if self.constraints and all(isinstance(d, ContinuousDomain) for d in self.inputs):
+        if self.domain_constraints and all(isinstance(d, ContinuousDomain) for d in self.inputs):
             from botorch.utils.sampling import get_polytope_samples
 
             return get_polytope_samples(
@@ -476,7 +633,7 @@ class ProblemSpec(BaseModel):
                 seed=seed,
             )
         engine = SobolEngine(dimension=len(self.inputs), scramble=True, seed=seed)
-        if not self.constraints:
+        if not self.domain_constraints:
             return self._from_unit(engine.draw(n).double())
 
         kept: list = []
@@ -523,11 +680,10 @@ class ProblemSpec(BaseModel):
         return torch.stack(cols, dim=-1)
 
     def _feasible(self, x):
-        """Boolean mask of rows of ``x`` satisfying every inequality constraint."""
+        """Boolean mask of rows of ``x`` satisfying every domain constraint."""
         import torch
 
         ok = torch.ones(x.shape[0], dtype=torch.bool)
-        for c in self.constraints or []:
-            coeffs = torch.tensor(c.coeffs, dtype=x.dtype)
-            ok &= (x[:, c.indices] * coeffs).sum(dim=-1) >= c.rhs
+        for indices, coeffs, rhs in self.inequality_constraints(dtype=x.dtype) or []:
+            ok &= (x[:, indices] * coeffs).sum(dim=-1) >= rhs
         return ok
