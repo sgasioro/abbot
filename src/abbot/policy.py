@@ -708,9 +708,17 @@ class BAXPolicy:
     values. US, MeanBAX and SwitchBAX's MeanBAX phase propose at the target.
     ``choose_sources=False`` keeps InfoBAX at the target too.
 
-    **With output constraints**, the goal's target set only keeps the designs that
-    satisfy them: on the posterior mean for MeanBAX, and on each posterior sample
-    for InfoBAX.
+    **With output constraints** and ``respect_constraints=True`` (the default), the
+    goal only sees the designs whose outputs satisfy them: on the posterior mean for
+    MeanBAX, and on each posterior sample for InfoBAX. The goal runs on those rows,
+    so ``TopK(k=5)`` means the five best designs that satisfy the constraints.
+    ``respect_constraints=False`` lets the goal see every design, for bounds you want
+    to map rather than filter by. When the constraints leave the goal nothing to
+    select, the policy says so in ``last_warning`` (which ``Campaign`` passes on).
+
+    If the goal selects nothing on any posterior sample, InfoBAX has no
+    information to rank by; it proposes by uncertainty instead and says so in
+    ``last_warning``.
     """
 
     def __init__(
@@ -726,6 +734,7 @@ class BAXPolicy:
         cost_model=None,
         choose_sources: bool = True,
         source_levels: int | dict[str, list[float]] = 5,
+        respect_constraints: bool = True,
     ) -> None:
         if strategy not in _BAX_UQ:
             raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
@@ -755,6 +764,8 @@ class BAXPolicy:
         # Optional ``noise_at(X) -> (N, m)`` measurement-noise variance (raw units) at
         # candidates, for InfoBAX; default: the model's own observation noise.
         self.noise_at = noise_at
+        self.respect_constraints = respect_constraints
+        self.last_warning: str | None = None  # set by suggest when the goal is empty
         self._out_scale = torch.ones(1, dtype=torch.double)  # per-output, set by suggest
 
     # -- grid --
@@ -920,6 +931,7 @@ class BAXPolicy:
         pending: torch.Tensor | None = None,
     ) -> torch.Tensor:
         grid = self.proposal_set(spec)
+        self.last_warning = None
         pending = _pending_or_none(pending)
         self._out_scale = _output_scale(history)
         self._cost = (
@@ -975,6 +987,11 @@ class BAXPolicy:
         # MeanBAX / SwitchBAX gate on the mean-execution target set.
         if self.strategy in ("MeanBAX", "SwitchBAX"):
             target = self._identify(spec, mean, at_target)
+            if not target and self._constrains(spec) and len(self.goal.identify_subspace(mean, at_target)):
+                self._warn(
+                    "the output constraints exclude every design the goal selects on the "
+                    "posterior mean"
+                )
             if self._stuck(target):
                 self.switched = True
                 if self.strategy == "MeanBAX":
@@ -986,14 +1003,26 @@ class BAXPolicy:
         # InfoBAX
         return self._infobax(spec, model, grid, std)
 
+    def _constrains(self, spec) -> bool:
+        return self.respect_constraints and spec.has_output_constraints
+
     def _identify(self, spec, Y, X) -> list[int]:
-        """The goal's target set on RAW outputs ``Y`` at designs ``X``, keeping only
-        designs whose outputs satisfy every output constraint."""
-        target = self.goal.identify_subspace(Y, X)
-        if not (spec.has_output_constraints and len(target)):
-            return target
-        ok = feasible(spec, Y[list(target)]).tolist()
-        return [i for i, keep in zip(target, ok) if keep]
+        """The goal's target set on RAW outputs ``Y`` at designs ``X``. With output
+        constraints (and ``respect_constraints``), the goal runs on only the rows
+        that satisfy them, and its indices are mapped back to ``Y``'s rows."""
+        if not self._constrains(spec):
+            return list(self.goal.identify_subspace(Y, X))
+        rows = feasible(spec, Y).nonzero(as_tuple=True)[0]
+        if not len(rows):
+            return []
+        target = self.goal.identify_subspace(Y[rows], X[rows])
+        return [int(rows[i]) for i in target]
+
+    def _warn(self, msg: str) -> None:
+        msg = f"BAXPolicy: {msg}."
+        if msg != self.last_warning:
+            logger.warning("%s", msg)
+        self.last_warning = msg
 
     def _stuck(self, target: list[int]) -> bool:
         """multibax ``meanbax_stuck``: empty target set, or already all collected."""
@@ -1044,11 +1073,14 @@ class BAXPolicy:
         term2 = torch.zeros_like(term1)
         n = self.n_posterior_samples
         conditioned = failed = 0
+        unconstrained = 0  # samples where only the constraints emptied the goal
         for i in range(n):
             f_canon = samples[i].reshape(n_target, -1)
             f_raw = spec.to_raw(f_canon)  # BAX reads ALL outputs raw (goal consumes them)
             target = self._identify(spec, f_raw, at_target)
             if not target:
+                if self._constrains(spec) and len(self.goal.identify_subspace(f_raw, at_target)):
+                    unconstrained += 1
                 term2 += term1  # no execution info -> entropy unchanged
                 continue
             conditioned += 1
@@ -1062,6 +1094,19 @@ class BAXPolicy:
                 logger.exception("InfoBAX fantasy conditioning failed for a sample.")
                 failed += 1
                 term2 += term1
+        if not conditioned:
+            # No sample gives the goal anything to select, so the information gain
+            # is zero everywhere and the pick would be arbitrary. Explore instead.
+            why = (
+                ", once the output constraints are applied" if unconstrained else ""
+            )
+            self._warn(
+                f"the goal selects nothing on any of {n} posterior samples{why}; "
+                "proposing by uncertainty instead"
+            )
+            rel = (std[:n_target] / self._out_scale.to(std)).mean(dim=-1)
+            rest = torch.full((grid.shape[0] - n_target,), float("-inf"), dtype=rel.dtype)
+            return torch.cat([rel, rest])
         if conditioned and failed == conditioned:
             # Every fantasy failed, so the information gain is zero everywhere and
             # the pick would be arbitrary. Say so instead.

@@ -227,13 +227,21 @@ def bax_target_region(
     Returns ``{"identified": int, "grid_size": int}``: how many candidate-grid
     points the policy's goal selects from the posterior-MEAN prediction (the size
     of the region found so far — should grow then stabilize), and the grid size.
+    When the policy applies output constraints, ``identified`` counts what the goal
+    selects among points predicted to satisfy them, and ``"before_constraints"``
+    what it selects from every point, so the narrowing is visible.
     Pure function of ``(policy, model, spec)``; encapsulates grid + raw-posterior +
     ``goal.identify_subspace`` so no BAX internals leak to the caller.
     """
     grid = policy.candidate_grid(spec)
     mean, _ = _posterior_raw(model, grid, spec)
-    identified = len(policy._identify(spec, mean, grid))
-    return {"identified": identified, "grid_size": int(grid.shape[0])}
+    out = {
+        "identified": len(policy._identify(spec, mean, grid)),
+        "grid_size": int(grid.shape[0]),
+    }
+    if policy._constrains(spec):
+        out["before_constraints"] = len(policy.goal.identify_subspace(mean, grid))
+    return out
 
 
 __all__ = [

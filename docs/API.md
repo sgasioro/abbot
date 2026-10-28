@@ -134,12 +134,16 @@ them comes from the model (`abbot.feasibility`). What uses them:
 | --- | --- |
 | `SimpleBO`, `ParetoBO` | Constrained log-NEI / log-NEHVI: improvement only counts where the constraints hold, weighted by the chance they do. Until a run at the target satisfies them (and without a `ref_point` for `ParetoBO`), proposals maximize the chance that a design will, favoring designs where that chance is uncertain. `ParetoBO` infers the reference point from the runs that satisfy them. |
 | `SimpleBO` with sources | Entropy search weighted by the chance of satisfying the constraints at the target, with the best value sampled over designs likely to (an approximation). |
-| `BAXPolicy` | The goal's target set keeps only designs whose outputs satisfy the constraints: on the posterior mean (MeanBAX) and on each posterior sample (InfoBAX). |
+| `BAXPolicy` | The goal runs only on designs whose outputs satisfy the constraints: on the posterior mean (MeanBAX) and on each posterior sample (InfoBAX). So `TopK(k=5)` is the five best designs that satisfy them. `respect_constraints=False` lets the goal see every design, for bounds you want to map rather than filter by. When the constraints leave the goal nothing to select, `last_warning` says so (on the policy and the `Campaign`), and `bax_target_region` reports the goal's count before them as `before_constraints`. |
 | `recommend` / `result()` | Only designs with at least a 50% chance (observed: that satisfied them) are ranked. If none, the design with the best chance (smallest observed violation) is returned, `CampaignResult.feasible` is `[False]`, and `Campaign.last_warning` says so. `CampaignResult.p_feasible` holds the chances. |
 | `convergence`, `hypervolume` | Count only runs that satisfied the constraints. |
 | VOCS, self-describing CSV | Output bounds round-trip. Linear constraints are refused rather than dropped (VOCS has none; use the JSON spec). |
 
 `UncertaintySampling` ignores output constraints: it explores the model.
+
+Independently of constraints: when the goal selects nothing on any posterior
+sample, InfoBAX has no information to rank by, so it proposes by uncertainty and
+says so in `last_warning` (before, it picked an arbitrary grid point).
 
 ## Outstanding candidates
 

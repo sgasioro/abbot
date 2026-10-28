@@ -1106,6 +1106,10 @@ class Campaign:
             xs = self._policy_suggest(model, n, pending or [])
             self._proposal_seconds = (self._model_fit_seconds, time.perf_counter() - start)
             self._proposal_acq = _acquisition_values(self.policy, len(xs))
+            # A policy may explain an odd proposal (e.g. BAX with an empty goal).
+            warning = getattr(self.policy, "last_warning", None)
+            if warning:
+                self.last_warning = warning
             return xs
         except self._MISCONFIG_ERRORS:
             # Setup is wrong (e.g. ParetoBO on a 1-objective spec). Fail loud.

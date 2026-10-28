@@ -363,3 +363,73 @@ def test_simple_bo_chooses_sources_with_an_observe_output(ordered):
     model = default_constructor(spec).build(h.designs.double(), canonical_Y(h, spec))
     x = SimpleBO(n_candidates=200).suggest(h, spec, model, n=1)
     assert x.shape == (1, 3)
+
+
+# --- BAX and output constraints ------------------------------------------------------
+
+
+def test_bax_goal_runs_on_the_feasible_designs_only():
+    """TopK means the best k designs that satisfy the constraints, not the best k
+    overall minus the infeasible ones."""
+    from abbot import TopK
+
+    spec = _spec()
+    Y = torch.tensor([[5.0, 0.0], [4.0, 2.0], [3.0, 0.0], [2.0, 2.0], [1.0, 2.0]])
+    X = torch.zeros(5, 2)
+    policy = BAXPolicy(TopK(k=2, output=0))
+    assert sorted(policy._identify(spec, Y, X)) == [1, 3]
+    assert sorted(BAXPolicy(TopK(k=2, output=0), respect_constraints=False)._identify(spec, Y, X)) == [0, 1]
+    assert policy._identify(spec, Y[[0, 2]], X[:2]) == []
+
+
+@pytest.mark.slow
+def test_bax_says_when_the_constraints_exclude_the_goal():
+    torch.manual_seed(0)
+    spec = _spec()
+    h = _history(torch.rand(10, 2))
+    model = default_constructor(spec).build(h.designs.double(), canonical_Y(h, spec))
+    # y >= -0.05 only near (0.2, 0.2), where c = a + b < 1: the goal and the
+    # constraint never meet.
+    policy = BAXPolicy(LevelSet(-0.05, output=0), strategy="MeanBAX", n_candidates=128)
+    x = policy.suggest(h, spec, model, n=1)
+    assert x.shape == (1, 2)
+    assert "exclude every design the goal selects" in policy.last_warning
+    info = BAXPolicy(LevelSet(-0.05, output=0), strategy="InfoBAX", n_candidates=128, n_posterior_samples=4)
+    info.suggest(h, spec, model, n=1)
+    assert "once the output constraints are applied" in info.last_warning
+    assert "proposing by uncertainty" in info.last_warning
+    # Without constraints in play, the policy is quiet.
+    free = BAXPolicy(LevelSet(-0.05, output=0), strategy="MeanBAX", n_candidates=128, respect_constraints=False)
+    free.suggest(h, spec, model, n=1)
+    assert free.last_warning is None
+    # The campaign passes the policy's warning on.
+    campaign = Campaign(spec, policy, initial_designs=torch.empty(0, 2))
+    campaign.load_history(h)
+    campaign.suggest(1)
+    assert "exclude every design" in campaign.last_warning
+
+
+@pytest.mark.slow
+def test_infobax_explores_when_the_goal_is_empty_on_every_sample():
+    torch.manual_seed(0)
+    spec = _spec(outputs=[OutputSpec(name="y"), OutputSpec(name="c", direction="OBSERVE")])
+    h = _history(torch.rand(10, 2))
+    model = default_constructor(spec).build(h.designs.double(), canonical_Y(h, spec))
+    policy = BAXPolicy(LevelSet(100.0, output=0), strategy="InfoBAX", n_candidates=64, n_posterior_samples=4)
+    policy.suggest(h, spec, model, n=1)
+    assert "selects nothing on any of 4 posterior samples; proposing" in policy.last_warning
+    assert torch.isfinite(policy.last_acquisition_value).all()
+
+
+@pytest.mark.slow
+def test_bax_target_region_shows_the_narrowing():
+    from abbot.analysis import bax_target_region
+
+    torch.manual_seed(0)
+    spec = _spec()
+    h = _history(torch.rand(10, 2))
+    model = default_constructor(spec).build(h.designs.double(), canonical_Y(h, spec))
+    out = bax_target_region(BAXPolicy(LevelSet(-0.3, output=0), n_candidates=128), model, spec)
+    assert out["before_constraints"] > out["identified"]
+    plain = bax_target_region(BAXPolicy(LevelSet(-0.3, output=0), n_candidates=128, respect_constraints=False), model, spec)
+    assert "before_constraints" not in plain
