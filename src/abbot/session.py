@@ -141,18 +141,22 @@ def _looks_like_tensor_code(exc: Exception) -> bool:
     return isinstance(exc, KeyError) and bool(exc.args) and isinstance(exc.args[0], int)
 
 
-def _accepts_pending(policy: Policy) -> bool:
-    """Does ``policy.suggest`` take ``pending=``? (Policies written before it was
-    added to the protocol don't.)"""
+def _accepts(policy: Policy, name: str) -> bool:
+    """Does ``policy.suggest`` take keyword ``name``? (Policies written before
+    ``pending=`` / ``fixed=`` were added don't.)"""
     import inspect
 
     try:
         params = inspect.signature(policy.suggest).parameters
     except (TypeError, ValueError):
         return False
-    return "pending" in params or any(
+    return name in params or any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
     )
+
+
+def _accepts_pending(policy: Policy) -> bool:
+    return _accepts(policy, "pending")
 
 
 def canonical_Y(history: History, spec: ProblemSpec) -> torch.Tensor:
@@ -635,7 +639,7 @@ class Campaign:
 
     # -- ask/tell --
 
-    def suggest(self, n: int = 1) -> list[Candidate]:
+    def suggest(self, n: int = 1, *, fixed: dict[str, float] | None = None) -> list[Candidate]:
         """Propose ``n`` more candidates. Retries take priority, then queued seeds,
         then a batch proposal from the policy.
 
@@ -643,23 +647,40 @@ class Campaign:
         an ``.id``. It stays outstanding (``outstanding()``, ``state().pending``)
         until ``ingest``, ``fail`` or ``cancel`` closes it; calling ``suggest``
         again adds to the outstanding set rather than replacing it.
+
+        ``fixed`` (``{name: value}``) holds inputs at given values in these
+        candidates: today's sample temperature, a setting you can't change. The
+        policy chooses the rest. A queued seed takes the fixed values; a queued
+        retry is a re-run of one design, so it waits for a ``suggest`` it matches.
+        A source may be fixed too, overriding the policy's choice.
         """
         if self.halted:
             raise RuntimeError(f"campaign is halted: {self.halted}")
+        pinned = self.spec.resolve_fixed(fixed)  # a bad name or value raises here
+        if pinned and not _accepts(self.policy, "fixed"):
+            raise ValueError(
+                f"{type(self.policy).__name__}.suggest takes no fixed= argument, so it "
+                "can't hold inputs fixed."
+            )
         self._queue_default_seeds()
-        n_retry = min(n, len(self._retry_queue))
+        retries = [i for i, (x, _, _) in enumerate(self._retry_queue) if self._matches(x, pinned)]
+        n_retry = min(n, len(retries))
         n_seed = min(n - n_retry, len(self._seed_queue))
         rem = n - n_retry - n_seed
+        seeds = [self._pin(x, pinned) for x in self._seed_queue[:n_seed]]
         # Propose first: a misconfiguration raises before any queue is touched. The
         # policy sees everything in flight, incl. retries/seeds issued alongside.
         xs = []
         if rem > 0:
             in_flight = [it.x for it in self._inflight.values()]
-            in_flight += [x for x, _, _ in self._retry_queue[:n_retry]]
-            in_flight += self._seed_queue[:n_seed]
-            xs = self._propose(rem, in_flight)
-        issued = [self._issue(*self._retry_queue.pop(0)) for _ in range(n_retry)]
-        issued += [self._issue(self._seed_queue.pop(0)) for _ in range(n_seed)]
+            in_flight += [self._retry_queue[i][0] for i in retries[:n_retry]]
+            in_flight += seeds
+            xs = self._propose(rem, in_flight, fixed)
+        issued = [self._issue(*self._retry_queue[i]) for i in retries[:n_retry]]
+        for i in reversed(retries[:n_retry]):
+            del self._retry_queue[i]
+        del self._seed_queue[:n_seed]
+        issued += [self._issue(x) for x in seeds]
         fit_s, acq_s = self._proposal_seconds
         issued += [
             self._issue(
@@ -758,6 +779,8 @@ class Campaign:
         experiment: Experiment | BatchExperiment,
         evaluate: Callable[[object], object] | None = None,
         n: int = 1,
+        *,
+        fixed: dict[str, float] | None = None,
     ) -> CampaignState:
         """One full cycle: suggest -> experiment.run -> evaluate -> ingest.
 
@@ -782,6 +805,9 @@ class Campaign:
         other results are still recorded. ``on_step`` hooks run once per step,
         after the whole batch is recorded. Errors from ``evaluate`` propagate (they
         are analysis bugs, and re-running the experiment would not fix them).
+
+        ``fixed`` is passed to ``suggest`` for the new candidates; candidates
+        already outstanding run as they were issued.
         """
         if self.halted:
             raise RuntimeError(f"campaign is halted: {self.halted}")
@@ -793,7 +819,7 @@ class Campaign:
                 "run_batch(designs)"
             )
         if len(self._inflight) < n:
-            self.suggest(n - len(self._inflight))
+            self.suggest(n - len(self._inflight), fixed=fixed)
         items = list(self._inflight.values())[:n]
         designs = [self._to_dict(item.x) for item in items]
         if self.pre_run is not None:
@@ -1092,7 +1118,9 @@ class Campaign:
     # propagate so the caller/UI sees them immediately — never a silent random run.
     _MISCONFIG_ERRORS = (ValueError, NotImplementedError, TypeError)
 
-    def _propose(self, n: int, pending: list[torch.Tensor] | None = None) -> torch.Tensor:
+    def _propose(
+        self, n: int, pending: list[torch.Tensor] | None = None, fixed: dict | None = None
+    ) -> torch.Tensor:
         self._proposal_acq = [None] * n  # random probes carry no acquisition value
         self._proposal_seconds = (None, None)
         model = self.current_model()
@@ -1100,10 +1128,10 @@ class Campaign:
             # Cold start: too few clean points to fit yet. A uniform probe is the
             # correct behavior here (not an error) — stay quiet.
             logger.debug("no model yet (too few clean points); drawing a random probe.")
-            return self._random_draw(n)
+            return self._random_draw(n, fixed)
         try:
             start = time.perf_counter()
-            xs = self._policy_suggest(model, n, pending or [])
+            xs = self._policy_suggest(model, n, pending or [], fixed)
             self._proposal_seconds = (self._model_fit_seconds, time.perf_counter() - start)
             self._proposal_acq = _acquisition_values(self.policy, len(xs))
             # A policy may explain an odd proposal (e.g. BAX with an empty goal).
@@ -1121,26 +1149,46 @@ class Campaign:
             )
             logger.warning("%s", msg, exc_info=True)
             self.last_warning = msg
-            return self._random_draw(n)
+            return self._random_draw(n, fixed)
 
-    def _policy_suggest(self, model, n: int, pending: list[torch.Tensor]) -> torch.Tensor:
+    def _policy_suggest(
+        self, model, n: int, pending: list[torch.Tensor], fixed: dict | None = None
+    ) -> torch.Tensor:
+        kwargs = {"fixed": fixed} if fixed else {}
         if not pending:
-            return self.policy.suggest(self.scored_history(), self.spec, model, n=n)
+            return self.policy.suggest(self.scored_history(), self.spec, model, n=n, **kwargs)
         X_pending = torch.stack([x.reshape(-1).double() for x in pending])
         if _accepts_pending(self.policy):
             return self.policy.suggest(
-                self.scored_history(), self.spec, model, n=n, pending=X_pending
+                self.scored_history(), self.spec, model, n=n, pending=X_pending, **kwargs
             )
         logger.warning(
             "%s.suggest takes no pending= argument, so it can't see the %d design(s) "
             "in flight and may propose duplicates.",
             type(self.policy).__name__, len(pending),
         )
-        return self.policy.suggest(self.scored_history(), self.spec, model, n=n)
+        return self.policy.suggest(self.scored_history(), self.spec, model, n=n, **kwargs)
 
-    def _random_draw(self, n: int) -> torch.Tensor:
-        # Space-filling, and respects enumerated values + inequality constraints.
-        return self.spec.sample_designs(n)
+    def _random_draw(self, n: int, fixed: dict | None = None) -> torch.Tensor:
+        # Space-filling, and respects enumerated values + domain constraints.
+        return self.spec.sample_designs(n, fixed=fixed)
+
+    def _matches(self, x: torch.Tensor, pinned: dict[int, float]) -> bool:
+        x = x.double().reshape(-1)
+        return all(bool(torch.isclose(x[j], torch.tensor(v, dtype=x.dtype))) for j, v in pinned.items())
+
+    def _pin(self, x: torch.Tensor, pinned: dict[int, float]) -> torch.Tensor:
+        """A queued seed with the fixed inputs set, or a fresh draw with them if that
+        would break a domain constraint."""
+        if not pinned:
+            return x
+        x = x.clone()
+        for j, v in pinned.items():
+            x[..., j] = v
+        if self.spec._feasible(x.double().reshape(1, -1))[0]:
+            return x
+        names = self.spec.variable_names
+        return self.spec.sample_designs(1, fixed={names[j]: v for j, v in pinned.items()})[0].to(x)
 
     def _fit_now(self):
         """Fit the surrogate on the current clean history (uncached), or None."""

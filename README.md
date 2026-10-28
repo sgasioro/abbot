@@ -54,7 +54,10 @@ model_constructor)` to choose your own. A few variations:
 - **Multi-objective** — give the spec two+ directional outputs; the same calls
   pick `ParetoBO`, and `result().recommended` is the Pareto set.
 - **Find a region, not an optimum (BAX)** — mark outputs `direction="OBSERVE"`, pick
-  a `Goal` (e.g. `BandIntersection`, `LevelSet`), and use `BAXPolicy(goal)`.
+  a `Goal` (e.g. `BandIntersection({"yield": (0.4, 0.6)})`,
+  `LevelSet(0.9, output="purity")`), and use `BAXPolicy(goal)`.
+- **Hold a knob fixed** — `campaign.suggest(1, fixed={"temp": 30})` proposes with
+  `temp` at 30 and chooses the rest.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
 
@@ -301,9 +304,9 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        target sets and multi-fidelity entropy search that respect them, and
        recommending only designs likely to satisfy them. Later: UI support and a
        feasibility stopping rule.
-     - **Spec ergonomics:** names instead of indices (linear constraints, boxes,
-       goals), string categories, `log=True` on design variables,
-       `suggest(fixed=...)`.
+     - **Spec ergonomics:** names instead of positions in boxes and goals,
+       `log=True` on design variables and `suggest(fixed=...)` *(done)*; string
+       categories next (with a categorical kernel).
      - **Xopt generators in abbot's loop:** `GestGeneratorPolicy` (TuRBO,
        Nelder-Mead, RCDS, genetic algorithms, time-dependent BO), with policies
        able to skip abbot's model fit.

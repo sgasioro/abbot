@@ -42,7 +42,7 @@ from abbot.feasibility import (
     row_scale,
 )
 from abbot.history import History
-from abbot.problem import ProblemSpec
+from abbot.problem import ContinuousDomain, ProblemSpec
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,10 @@ class Policy(Protocol):
         ``pending`` ``(k, d)`` holds designs already handed out but not yet
         measured; a policy should steer away from duplicating them. ``None`` or
         empty means nothing is outstanding.
+
+        A policy may also take ``fixed: dict[str, float] | None``: inputs to hold at
+        given values in every proposal (``Campaign.suggest(fixed=...)``). The
+        builtins do; a policy without it is refused when ``fixed`` is used.
         """
         ...
 
@@ -157,7 +161,13 @@ def _objective_kwargs(spec: ProblemSpec, history: History) -> dict:
     return kwargs
 
 
-def _find_feasible(policy, history, spec, model, n, pending) -> torch.Tensor:
+def _pinned(spec: ProblemSpec, fixed: dict[str, float] | None) -> dict[int, float]:
+    """Inputs a proposal holds fixed, ``{position: value}``: sources at their
+    target, overridden by ``fixed`` (``{name: value}``)."""
+    return {**spec.target_features(), **spec.resolve_fixed(fixed)}
+
+
+def _find_feasible(policy, history, spec, model, n, pending, fixed=None) -> torch.Tensor:
     """Propose ``n`` designs at the target by the probability of satisfying every
     output constraint, while no run at the target has. Improvement and
     hypervolume have no feasible reference yet, so they would ignore the
@@ -172,7 +182,7 @@ def _find_feasible(policy, history, spec, model, n, pending) -> torch.Tensor:
     for _ in range(n):
         cond = condition_on_pending(model, _extend_pending(pending, picks))
         acq = LogProbFeasible(cond, spec, explore=True, scale=scale)
-        picks.append(optimize(policy.optimizer, acq, spec, 1, spec.target_features()))
+        picks.append(optimize(policy.optimizer, acq, spec, 1, _pinned(spec, fixed)))
         values.append(_acq_value(acq, picks[-1]))
     policy.last_acquisition_value = torch.tensor(values, dtype=torch.double)
     return torch.cat(picks)
@@ -318,6 +328,7 @@ class SimpleBO:
         n: int = 1,
         *,
         pending: torch.Tensor | None = None,
+        fixed: dict[str, float] | None = None,
     ) -> torch.Tensor:
         if spec.n_objectives != 1:
             raise ValueError(
@@ -325,9 +336,9 @@ class SimpleBO:
                 "objective(s); use ParetoBO for multi-objective optimization."
             )
         if spec.has_output_constraints and not any_feasible(history, spec):
-            return _find_feasible(self, history, spec, model, n, pending)
+            return _find_feasible(self, history, spec, model, n, pending, fixed)
         if spec.sources and self.choose_sources:
-            return self._suggest_with_sources(history, spec, model, n, pending)
+            return self._suggest_with_sources(history, spec, model, n, pending, fixed)
         # Improvement is judged at the target: a lucky cheap-source run must not set
         # the bar. Without sources this is the clean designs unchanged.
         X = spec.at_target(history.clean.designs.double()).unique(dim=0)
@@ -338,7 +349,7 @@ class SimpleBO:
             **_objective_kwargs(spec, history),
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
-        picks = optimize(self.optimizer, acq, spec, n, spec.target_features())
+        picks = optimize(self.optimizer, acq, spec, n, _pinned(spec, fixed))
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
 
@@ -349,7 +360,7 @@ class SimpleBO:
         first proposal with sources)."""
         return self.cost_model if self.cost_model is not None else self._source_cost
 
-    def _suggest_with_sources(self, history, spec, model, n, pending):
+    def _suggest_with_sources(self, history, spec, model, n, pending, fixed=None):
         from botorch.acquisition.cost_aware import InverseCostWeightedUtility
         from botorch.models.deterministic import GenericDeterministicModel
 
@@ -392,7 +403,7 @@ class SimpleBO:
             )
             if spec.has_output_constraints:
                 acq = _FeasibilityWeighted(acq, model, spec)
-            x = optimize(self.optimizer, acq, spec, 1, {})
+            x = optimize(self.optimizer, acq, spec, 1, spec.resolve_fixed(fixed))
             picks.append(x)
             values.append(_acq_value(acq, x))
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
@@ -493,6 +504,7 @@ class ParetoBO:
         n: int = 1,
         *,
         pending: torch.Tensor | None = None,
+        fixed: dict[str, float] | None = None,
     ) -> torch.Tensor:
         m = spec.n_objectives
         if m < 2:
@@ -508,11 +520,11 @@ class ParetoBO:
                 Y.shape[0],
                 floor,
             )
-            return self._explore(history, spec, model, n, pending)
+            return self._explore(history, spec, model, n, pending, fixed)
         constrained = spec.has_output_constraints
         if constrained:
             if self.ref_point is None and not any_feasible(history, spec):
-                return _find_feasible(self, history, spec, model, n, pending)
+                return _find_feasible(self, history, spec, model, n, pending, fixed)
             Y = Y[feasible(spec, history.clean.outputs.double())]
 
         if self.ref_point is not None:
@@ -531,7 +543,7 @@ class ParetoBO:
                     "or add more seed points."
                 )
                 return UncertaintySampling(self.optimizer).suggest(
-                    history, spec, model, n, pending=pending
+                    history, spec, model, n, pending=pending, fixed=fixed
                 )
             ref_point = infer_reference_point(pareto_Y)
             logger.info(
@@ -564,14 +576,14 @@ class ParetoBO:
             constraints=mc_constraints(spec, row_scale(history, spec)) if constrained else None,
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
-        picks = optimize(self.optimizer, acq, spec, n, spec.target_features())
+        picks = optimize(self.optimizer, acq, spec, n, _pinned(spec, fixed))
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
 
-    def _explore(self, history, spec, model, n, pending) -> torch.Tensor:
+    def _explore(self, history, spec, model, n, pending, fixed=None) -> torch.Tensor:
         """Uncertainty sampling until the front can direct the search."""
         us = UncertaintySampling(self.optimizer)
-        picks = us.suggest(history, spec, model, n, pending=pending)
+        picks = us.suggest(history, spec, model, n, pending=pending, fixed=fixed)
         self.last_acquisition_value = us.last_acquisition_value
         return picks
 
@@ -603,6 +615,7 @@ class UncertaintySampling:
         n: int = 1,
         *,
         pending: torch.Tensor | None = None,
+        fixed: dict[str, float] | None = None,
     ) -> torch.Tensor:
         from botorch.acquisition import PosteriorStandardDeviation
 
@@ -619,7 +632,7 @@ class UncertaintySampling:
                 acq = PosteriorStandardDeviation(cond)
             else:
                 acq = _SumPosteriorStd(cond)
-            picks.append(optimize(self.optimizer, acq, spec, 1, spec.target_features()))
+            picks.append(optimize(self.optimizer, acq, spec, 1, _pinned(spec, fixed)))
             values.append(_acq_value(acq, picks[-1]))
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
         return torch.cat(picks)
@@ -765,6 +778,7 @@ class BAXPolicy:
         # candidates, for InfoBAX; default: the model's own observation noise.
         self.noise_at = noise_at
         self.respect_constraints = respect_constraints
+        self._bound = None  # (spec, goal with names resolved), see _goal_for
         self.last_warning: str | None = None  # set by suggest when the goal is empty
         self._out_scale = torch.ones(1, dtype=torch.double)  # per-output, set by suggest
 
@@ -774,7 +788,8 @@ class BAXPolicy:
         """The candidate grid ``(N, d)`` this policy proposes over.
 
         The ``candidates`` passed at construction, else a Sobol grid built once from
-        the spec and cached (honoring sparse inequality constraints). With sources,
+        the spec and cached (honoring the domain constraints; integer and enumerated
+        variables at allowed values; ``log=True`` ones log-uniform). With sources,
         candidates are proposed at the target: a grid over the design variables only
         gets the target columns appended, and a full-width one is moved to the target
         (MeanBAX / SwitchBAX / US don't choose sources).
@@ -787,10 +802,14 @@ class BAXPolicy:
             from torch.quasirandom import SobolEngine
 
             n_design = len(spec.design_names)
-            bounds = spec.bounds_tensor()[:, :n_design]
             sobol = SobolEngine(dimension=n_design, scramble=True, seed=self.candidate_seed)
             draw = sobol.draw(self.n_candidates).double()
-            grid = self._at_target(spec, bounds[0] + draw * (bounds[1] - bounds[0]))
+            # Integer and enumerated variables take allowed values; log=True ones
+            # are spread log-uniformly.
+            grid = spec._from_unit(draw, spec.domain)
+            if any(not isinstance(d, ContinuousDomain) for d in spec.domain):
+                grid = grid.unique(dim=0)  # snapping can repeat a design
+            grid = self._at_target(spec, grid)
             # Respect sparse inequality constraints (sum(coef*x[idx]) >= rhs).
             cons = spec.inequality_constraints()
             if cons:
@@ -864,7 +883,7 @@ class BAXPolicy:
                 if k < 2:
                     raise ValueError(f"source_levels must be at least 2, got {k}")
                 t = [i / (k - 1) for i in range(k)]
-                if source.log:
+                if source.is_log:
                     lo, hi = math.log(d.lower), math.log(d.upper)
                     values = [math.exp(lo + u * (hi - lo)) for u in t]
                 else:
@@ -929,9 +948,11 @@ class BAXPolicy:
         n: int = 1,
         *,
         pending: torch.Tensor | None = None,
+        fixed: dict[str, float] | None = None,
     ) -> torch.Tensor:
         grid = self.proposal_set(spec)
         self.last_warning = None
+        allowed = self._matching(spec, grid, fixed)
         pending = _pending_or_none(pending)
         self._out_scale = _output_scale(history)
         self._cost = (
@@ -954,12 +975,38 @@ class BAXPolicy:
             switched |= self.switched
             acq = acq.clone()
             acq[self._collected] = float("-inf")
+            if allowed is not None:
+                acq[~allowed] = float("-inf")
+                if not torch.isfinite(acq[allowed]).any():
+                    raise ValueError(
+                        f"BAXPolicy: every candidate with {fixed} is already measured "
+                        "or in flight"
+                    )
             picks.append(int(acq.argmax()))
             values.append(float(acq[picks[-1]]))
         self._collected.append(picks[-1])
         self.switched = switched
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
         return grid[picks]
+
+    @staticmethod
+    def _matching(spec, grid, fixed) -> torch.Tensor | None:
+        """Rows of ``grid`` with every ``fixed`` input at its value (None: all)."""
+        pinned = spec.resolve_fixed(fixed)
+        if not pinned:
+            return None
+        ok = torch.ones(grid.shape[0], dtype=torch.bool)
+        for j, v in pinned.items():
+            ok &= torch.isclose(grid[:, j], torch.tensor(v, dtype=grid.dtype))
+        if not ok.any():
+            names = spec.variable_names
+            raise ValueError(
+                f"BAXPolicy proposes from its candidate grid, and no candidate has "
+                f"{ {names[j]: v for j, v in pinned.items()} }. Fix an integer or "
+                "enumerated variable (the grid takes their values), or pass "
+                "candidates= that include the fixed values."
+            )
+        return ok
 
     def ingest(self, results) -> None:
         return None
@@ -987,7 +1034,7 @@ class BAXPolicy:
         # MeanBAX / SwitchBAX gate on the mean-execution target set.
         if self.strategy in ("MeanBAX", "SwitchBAX"):
             target = self._identify(spec, mean, at_target)
-            if not target and self._constrains(spec) and len(self.goal.identify_subspace(mean, at_target)):
+            if not target and self._constrains(spec) and len(self._goal_for(spec).identify_subspace(mean, at_target)):
                 self._warn(
                     "the output constraints exclude every design the goal selects on the "
                     "posterior mean"
@@ -1003,6 +1050,13 @@ class BAXPolicy:
         # InfoBAX
         return self._infobax(spec, model, grid, std)
 
+    def _goal_for(self, spec):
+        """The goal with output names resolved against ``spec`` (``bind``), once."""
+        if self._bound is None or self._bound[0] is not spec:
+            bind = getattr(self.goal, "bind", None)
+            self._bound = (spec, bind(spec) if bind is not None else self.goal)
+        return self._bound[1]
+
     def _constrains(self, spec) -> bool:
         return self.respect_constraints and spec.has_output_constraints
 
@@ -1010,12 +1064,13 @@ class BAXPolicy:
         """The goal's target set on RAW outputs ``Y`` at designs ``X``. With output
         constraints (and ``respect_constraints``), the goal runs on only the rows
         that satisfy them, and its indices are mapped back to ``Y``'s rows."""
+        goal = self._goal_for(spec)
         if not self._constrains(spec):
-            return list(self.goal.identify_subspace(Y, X))
+            return list(goal.identify_subspace(Y, X))
         rows = feasible(spec, Y).nonzero(as_tuple=True)[0]
         if not len(rows):
             return []
-        target = self.goal.identify_subspace(Y[rows], X[rows])
+        target = goal.identify_subspace(Y[rows], X[rows])
         return [int(rows[i]) for i in target]
 
     def _warn(self, msg: str) -> None:
@@ -1079,7 +1134,7 @@ class BAXPolicy:
             f_raw = spec.to_raw(f_canon)  # BAX reads ALL outputs raw (goal consumes them)
             target = self._identify(spec, f_raw, at_target)
             if not target:
-                if self._constrains(spec) and len(self.goal.identify_subspace(f_raw, at_target)):
+                if self._constrains(spec) and len(self._goal_for(spec).identify_subspace(f_raw, at_target)):
                     unconstrained += 1
                 term2 += term1  # no execution info -> entropy unchanged
                 continue

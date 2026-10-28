@@ -21,8 +21,8 @@ without a deprecation period.
 | Training targets | `Campaign(..., targets=)` / `Targets` (`(history, spec) -> Y` or `(Y, Yvar)`), `apply_targets` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, batch_size, ...)`, `drive(campaign, experiment, evaluate, *, n_total, batch_size, on_persistent_fault, should_continue)` (the one blocking loop; `run_campaign` and the UI `RunController` run on it), `PersistentFaultError` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
-| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
-| BAX goals | `Goal` (protocol), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
+| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
+| BAX goals | `Goal` (protocol; optional `bind(spec)` to resolve output names), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiFidelityGPConstructor` (provisional), `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
@@ -144,6 +144,40 @@ them comes from the model (`abbot.feasibility`). What uses them:
 Independently of constraints: when the goal selects nothing on any posterior
 sample, InfoBAX has no information to rank by, so it proposes by uncertainty and
 says so in `last_warning` (before, it picked an arbitrary grid point).
+
+## Names, not positions
+
+The spec, its constraints and the goals refer to variables and outputs by name:
+
+```python
+ContinuousDomain(name="conc", lower=1e-4, upper=1.0, log=True)
+Box({"yield": (0.4, 0.6)})                 # outputs left out are unbounded
+TopK(k=5, output="yield"); LevelSet(0.9, output="purity"); PercentileSet(80, output="yield")
+BandIntersection({"yield": (0.4, 0.6), "purity": (0.9, 1.0)})
+Wishlist([{"yield": (0.4, 0.6)}, {"purity": (0.95, 1.0)}])
+campaign.suggest(2, fixed={"temp": 30})
+```
+
+- **Positions still work** (`TopK(output=0)`, `Box(lower=[...], upper=[...])`,
+  band lists with one entry per output). A goal with names is resolved by
+  `goal.bind(spec)`, which `BAXPolicy` calls; using it unbound raises an error
+  that says so. A custom goal can define `bind` the same way.
+- **`log=True`** on a `ContinuousDomain` or `IntegerDomain` (positive bounds): the
+  default models see `log10` of it, initial designs and BAX grids are log-uniform,
+  and `Continuous` starts its restarts from log-uniform draws (when no enumerated
+  input needs enumerating), so a narrow optimum in a low decade isn't missed. VOCS
+  has no log scale: `spec_to_vocs` warns and exports it linearly. The CSV keeps
+  it.
+- **`fixed={name: value}`** on `Campaign.suggest` and `step` holds inputs at given
+  values for those candidates (today's sample temperature, a setting you can't
+  change); the policy chooses the rest. Values are checked against their
+  domains. Queued seeds take the fixed values (redrawn if that breaks a domain
+  constraint); a queued retry re-runs one design, so it waits for a `suggest` it
+  matches. Fixing a source overrides the policy's choice of it. Every builtin
+  policy accepts `fixed`; `BAXPolicy` proposes from its grid, so it can only fix
+  integer or enumerated variables (the grid takes their allowed values) or values
+  in a `candidates=` grid, and says so otherwise. A custom policy without `fixed=`
+  is refused when it's used.
 
 ## Outstanding candidates
 

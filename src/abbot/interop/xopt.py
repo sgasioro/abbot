@@ -25,6 +25,7 @@ Xopt's tabular interchange, which is why it lives in abbot.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
@@ -36,6 +37,8 @@ from abbot.problem import (
     ProblemSpec,
 )
 from abbot.session import Campaign
+
+logger = logging.getLogger(__name__)
 
 # --- ProblemSpec <-> gest VOCS ------------------------------------------------
 
@@ -72,6 +75,11 @@ def spec_to_vocs(spec: ProblemSpec):
     variables: dict[str, Any] = {}
     for d in spec.domain:
         if isinstance(d, ContinuousDomain):
+            if d.log:
+                logger.warning(
+                    "spec_to_vocs: VOCS has no log scale; %r is exported on a linear one.",
+                    d.name,
+                )
             variables[d.name] = ContinuousVariable(domain=[d.lower, d.upper])
         elif isinstance(d, EnumeratedDomain):
             variables[d.name] = DiscreteVariable(values=list(d.values))
