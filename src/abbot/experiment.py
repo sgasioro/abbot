@@ -245,7 +245,7 @@ class MockAnalyticExperiment:
                 lo, hi = min(d.values), max(d.values)
             else:
                 lo, hi = d.lower, d.upper
-            if source.log:
+            if source.is_log:
                 v, lo, hi = math.log(v), math.log(lo), math.log(hi)
             u = (v - lo) / (hi - lo) if hi > lo else 1.0
             out.append(min(max(u if source.accurate == "high" else 1.0 - u, 0.0), 1.0))

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 
 import torch
 
@@ -88,8 +89,8 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 # Adopted from the bax-platform student tool; abbot adds a version tag + domain
 # types (continuous/enumerated) + boxes. Row grammar (each ``# key,value...``):
 #   # version,1
-#   # continuous,<name>,<lower>,<upper>
-#   # integer,<name>,<lower>,<upper>
+#   # continuous,<name>,<lower>,<upper>[,log]
+#   # integer,<name>,<lower>,<upper>[,log]
 #   # enumerated,<name>,<v1>,<v2>,...
 #   # output,<name>,MINIMIZE|MAXIMIZE|OBSERVE[,<min_val>,<max_val>]
 #                                     (OBSERVE = modeled, not optimized; a bound
@@ -131,9 +132,9 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
     w.writerow(["# version", CSV_FORMAT_VERSION])
     for d in spec.domain:
         if isinstance(d, ContinuousDomain):
-            w.writerow(["# continuous", d.name, d.lower, d.upper])
+            w.writerow(["# continuous", d.name, d.lower, d.upper, *(["log"] if d.log else [])])
         elif isinstance(d, IntegerDomain):
-            w.writerow(["# integer", d.name, d.lower, d.upper])
+            w.writerow(["# integer", d.name, d.lower, d.upper, *(["log"] if d.log else [])])
         elif isinstance(d, EnumeratedDomain):
             w.writerow(["# enumerated", d.name, *d.values])
         else:
@@ -147,7 +148,10 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
         ]
         w.writerow(["# output", o.name, o.direction, *bounds])
     for box in spec.boxes or []:
-        w.writerow(["# box", *box.lower, "|", *box.upper])
+        # Named boxes are written positionally, an unbanded output as (-inf, inf).
+        bands = box.band_dict(spec.output_names)
+        full = [bands.get(name, (-math.inf, math.inf)) for name in spec.output_names]
+        w.writerow(["# box", *(lo for lo, _ in full), "|", *(hi for _, hi in full)])
     # Measurement table (reuse the flat writer's columns = all outputs).
     if history is not None and len(history):
         buf.write(history_to_csv(history, spec))
@@ -187,14 +191,20 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
                     f"self-describing CSV: malformed `# continuous` row {raw!r}; "
                     "expected `# continuous,<name>,<lower>,<upper>`."
                 )
-            domain.append(ContinuousDomain(name=cells[1], lower=float(cells[2]), upper=float(cells[3])))
+            domain.append(ContinuousDomain(
+                name=cells[1], lower=float(cells[2]), upper=float(cells[3]),
+                log=len(cells) > 4 and cells[4].lower() == "log",
+            ))
         elif key == "integer":
             if len(cells) < 4:
                 raise ValueError(
                     f"self-describing CSV: malformed `# integer` row {raw!r}; "
                     "expected `# integer,<name>,<lower>,<upper>`."
                 )
-            domain.append(IntegerDomain(name=cells[1], lower=int(cells[2]), upper=int(cells[3])))
+            domain.append(IntegerDomain(
+                name=cells[1], lower=int(cells[2]), upper=int(cells[3]),
+                log=len(cells) > 4 and cells[4].lower() == "log",
+            ))
         elif key == "enumerated":
             if len(cells) < 3:
                 raise ValueError(

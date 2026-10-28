@@ -240,7 +240,7 @@ def bax_target_region(
         "grid_size": int(grid.shape[0]),
     }
     if policy._constrains(spec):
-        out["before_constraints"] = len(policy.goal.identify_subspace(mean, grid))
+        out["before_constraints"] = len(policy._goal_for(spec).identify_subspace(mean, grid))
     return out
 
 

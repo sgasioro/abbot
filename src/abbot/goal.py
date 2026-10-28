@@ -16,15 +16,51 @@ Beyond the box/threshold builtins, ``FunctionGoal`` wraps an arbitrary
 goal expressible as "pick indices from (evaluated values, candidates)" is supported
 — ``LevelSet`` and ``TopK`` are two ready-made examples. The richer multibax
 algorithms (Pareto, etc.) port on demand on the same protocol.
+
+Goals name the outputs they read (``TopK(k=5, output="yield")``,
+``BandIntersection({"yield": (0.4, 0.6)})``); integer positions in ``spec.outputs``
+order still work. A goal with names is resolved against a spec by ``bind(spec)``,
+which ``BAXPolicy`` does for you.
 """
 
 from __future__ import annotations
 
+import copy
+import math
 from typing import Protocol, runtime_checkable
 
 import torch
 
 from abbot.problem import ProblemSpec
+
+Output = int | str
+Bands = list[tuple[float, float]] | dict[str, tuple[float, float]]
+
+
+def _column(output: Output, names: list[str], goal: str) -> int:
+    """A goal's output, by name or position, as a position in ``names``."""
+    if isinstance(output, str):
+        if output not in names:
+            raise ValueError(f"{goal}: {output!r} is not an output (outputs: {names})")
+        return names.index(output)
+    return output
+
+
+def _unbound(goal: str, name: str):
+    return ValueError(
+        f"{goal} reads output {name!r} by name, so it needs the spec's output names: "
+        "use it through BAXPolicy, or call goal.bind(spec) first"
+    )
+
+
+def _bands_by_position(bands: Bands, names: list[str], goal: str) -> list[tuple[float, float]]:
+    """Named bands as one ``(lo, hi)`` per output (unbanded outputs unbounded)."""
+    if not isinstance(bands, dict):
+        return list(bands)
+    out = [(-math.inf, math.inf)] * len(names)
+    for name, (lo, hi) in bands.items():
+        out[_column(name, names, goal)] = (float(lo), float(hi))
+    return out
 
 
 @runtime_checkable
@@ -44,56 +80,86 @@ class PercentileSet:
     """Top ``(100 - p)``% of candidates by a single-output score (``PercentileSet1D``).
 
     Data-relative: the threshold is recomputed from ``f`` on every call, so under
-    BAX it differs per posterior sample. Single-output only.
+    BAX it differs per posterior sample. Scores one output: ``output`` (a name or
+    position), which may be omitted when there is only one.
     """
 
-    def __init__(self, percentile: float = 80.0) -> None:
+    def __init__(self, percentile: float = 80.0, output: Output | None = None) -> None:
         self.percentile = percentile
+        self.output = output
+
+    def bind(self, spec: ProblemSpec) -> PercentileSet:
+        if self.output is None:
+            return self
+        bound = copy.copy(self)
+        bound.output = _column(self.output, spec.output_names, "PercentileSet")
+        return bound
 
     def identify_subspace(
         self, f: torch.Tensor, X: torch.Tensor | None = None
     ) -> list[int]:
         f = f.reshape(f.shape[0], -1)
-        if f.shape[1] != 1:
+        if isinstance(self.output, str):
+            raise _unbound("PercentileSet", self.output)
+        if self.output is None and f.shape[1] != 1:
             raise ValueError(
-                f"PercentileSet is single-output but f has {f.shape[1]} columns; "
-                "use Wishlist/BandIntersection for multi-output targets."
+                f"PercentileSet scores one output but f has {f.shape[1]} columns; "
+                "say which, e.g. PercentileSet(80, output='yield')."
             )
-        col = f[:, 0]
+        col = f[:, 0 if self.output is None else self.output]
         thresh = torch.quantile(col, self.percentile / 100.0)
         return (col >= thresh).nonzero(as_tuple=True)[0].tolist()
 
 
 class BandIntersection:
-    """Candidates inside a per-output ``[lo, hi]`` box on EVERY output.
+    """Candidates inside a ``[lo, hi]`` band on every banded output
+    (``multi_level_region_intersection_Nd``).
 
-    ``bounds``: list of ``(lo, hi)`` per output (``multi_level_region_intersection_Nd``).
+    ``bounds``: ``{output name: (lo, hi)}``, outputs left out being unbounded; or a
+    list with one ``(lo, hi)`` per output, in ``spec.outputs`` order.
     """
 
-    def __init__(self, bounds: list[tuple[float, float]]) -> None:
+    def __init__(self, bounds: Bands) -> None:
         self.bounds = bounds
+
+    def bind(self, spec: ProblemSpec) -> BandIntersection:
+        bound = copy.copy(self)
+        bound.bounds = _bands_by_position(self.bounds, spec.output_names, "BandIntersection")
+        return bound
 
     def identify_subspace(
         self, f: torch.Tensor, X: torch.Tensor | None = None
     ) -> list[int]:
+        if isinstance(self.bounds, dict):
+            raise _unbound("BandIntersection", next(iter(self.bounds)))
         return _band_indices(f, self.bounds)
 
 
 class Wishlist:
     """Union of ``BandIntersection`` boxes — OR of AND-boxes (``Wishlist``).
 
-    ``bounds_list``: list of per-output ``[(lo, hi), ...]`` specs; a candidate is in
-    the subset if it satisfies ANY one box (on all that box's outputs).
+    ``bounds_list``: a list of boxes, each as for :class:`BandIntersection` (named
+    bands, or one ``(lo, hi)`` per output); a candidate is in the subset if it
+    satisfies ANY one box (on all that box's outputs).
     """
 
-    def __init__(self, bounds_list: list[list[tuple[float, float]]]) -> None:
+    def __init__(self, bounds_list: list[Bands]) -> None:
         self.bounds_list = bounds_list
+
+    def bind(self, spec: ProblemSpec) -> Wishlist:
+        bound = copy.copy(self)
+        bound.bounds_list = [
+            _bands_by_position(b, spec.output_names, "Wishlist") for b in self.bounds_list
+        ]
+        return bound
 
     def identify_subspace(
         self, f: torch.Tensor, X: torch.Tensor | None = None
     ) -> list[int]:
         ids: set[int] = set()
         for bounds in self.bounds_list:
+            if isinstance(bounds, dict):
+                raise _unbound("Wishlist", next(iter(bounds)))
             ids.update(_band_indices(f, bounds))
         return sorted(ids)
 
@@ -123,33 +189,49 @@ class FunctionGoal:
 class LevelSet:
     """Super-level set on one output: indices where ``f[:, output] >= threshold``.
 
-    (A sub-level set is ``LevelSet(threshold, output, upper=True)`` -> ``<=``.)
+    ``output`` is a name or a position. (A sub-level set is
+    ``LevelSet(threshold, output, upper=True)`` -> ``<=``.)
     """
 
-    def __init__(self, threshold: float, output: int = 0, upper: bool = False) -> None:
+    def __init__(self, threshold: float, output: Output = 0, upper: bool = False) -> None:
         self.threshold = threshold
         self.output = output
         self.upper = upper
 
+    def bind(self, spec: ProblemSpec) -> LevelSet:
+        bound = copy.copy(self)
+        bound.output = _column(self.output, spec.output_names, "LevelSet")
+        return bound
+
     def identify_subspace(
         self, f: torch.Tensor, X: torch.Tensor | None = None
     ) -> list[int]:
+        if isinstance(self.output, str):
+            raise _unbound("LevelSet", self.output)
         col = f.reshape(f.shape[0], -1)[:, self.output]
         mask = col <= self.threshold if self.upper else col >= self.threshold
         return mask.nonzero(as_tuple=True)[0].tolist()
 
 
 class TopK:
-    """The ``k`` candidates with the highest (or lowest) value on one output."""
+    """The ``k`` candidates with the highest (or lowest) value on one output
+    (``output``: a name or a position)."""
 
-    def __init__(self, k: int = 1, output: int = 0, largest: bool = True) -> None:
+    def __init__(self, k: int = 1, output: Output = 0, largest: bool = True) -> None:
         self.k = k
         self.output = output
         self.largest = largest
 
+    def bind(self, spec: ProblemSpec) -> TopK:
+        bound = copy.copy(self)
+        bound.output = _column(self.output, spec.output_names, "TopK")
+        return bound
+
     def identify_subspace(
         self, f: torch.Tensor, X: torch.Tensor | None = None
     ) -> list[int]:
+        if isinstance(self.output, str):
+            raise _unbound("TopK", self.output)
         col = f.reshape(f.shape[0], -1)[:, self.output]
         k = min(self.k, col.numel())
         return torch.topk(col, k, largest=self.largest).indices.tolist()
@@ -172,12 +254,9 @@ def goals_from_spec(spec: ProblemSpec) -> Wishlist:
     """Build a ``Wishlist`` from a ``ProblemSpec``'s target boxes (OR over boxes).
 
     Each ``Box`` becomes one AND-across-outputs band; the Wishlist unions them —
-    a multi-box OR target maps straight in. Requires ``spec.boxes``.
+    a multi-box OR target maps straight in. Requires ``spec.boxes``. The result is
+    bound to ``spec``.
     """
     if not spec.boxes:
         raise ValueError("goals_from_spec requires ProblemSpec.boxes (target bands).")
-    bounds_list = [
-        [(float(lo), float(hi)) for lo, hi in zip(box.lower, box.upper)]
-        for box in spec.boxes
-    ]
-    return Wishlist(bounds_list)
+    return Wishlist([box.band_dict(spec.output_names) for box in spec.boxes]).bind(spec)

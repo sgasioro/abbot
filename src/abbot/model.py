@@ -70,22 +70,50 @@ def _covar_module(kernel: Kernel, d: int):
     raise ValueError(f"kernel must be 'default' or 'matern52', got {kernel!r}")
 
 
+def _input_transform(d: int, bounds: torch.Tensor | None, log: list[int] | None,
+                     indices: list[int] | None = None):
+    """Inputs to the unit cube: ``Normalize`` to ``bounds`` (from the data when
+    None), after a log10 of the ``log`` columns. ``indices`` limits normalization
+    to some columns (the rest, e.g. a task label, pass through)."""
+    if not log:
+        if bounds is None:
+            return Normalize(d=d, indices=indices)
+        return Normalize(d=d, indices=indices, bounds=bounds.double())
+    from botorch.models.transforms.input import ChainedInputTransform, Log10
+
+    if bounds is not None:
+        bounds = bounds.double().clone()
+        bounds[:, log] = bounds[:, log].log10()
+    normalize = (
+        Normalize(d=d, indices=indices)
+        if bounds is None
+        else Normalize(d=d, indices=indices, bounds=bounds)
+    )
+    return ChainedInputTransform(log=Log10(indices=list(log)), normalize=normalize)
+
+
 class SingleTaskGPConstructor:
     """Scalar / independent-output GP with input normalization and MLL fit.
 
     The GP infers the noise level unless Yvar is supplied, and inputs are
-    normalized to the problem bounds. A GP posterior is a full
-    Gaussian, so it provides calibrated variance (the strongest UQ tier).
+    normalized to the problem bounds, after a log of the ``log`` columns (the
+    spec's ``log=True`` variables; see ``ProblemSpec.log_indices``). A GP posterior
+    is a full Gaussian, so it provides calibrated variance (the strongest UQ tier).
     """
 
     provides_uq = "calibrated_variance"
 
     def __init__(
-        self, bounds: torch.Tensor | None = None, kernel: Kernel = "default"
+        self,
+        bounds: torch.Tensor | None = None,
+        kernel: Kernel = "default",
+        *,
+        log: list[int] | None = None,
     ) -> None:
         # bounds: (2, d) for input Normalize; None -> normalize from data.
         self.bounds = bounds
         self.kernel = kernel
+        self.log = list(log or [])
         _covar_module(kernel, 1)  # validate early
 
     def build(
@@ -94,11 +122,7 @@ class SingleTaskGPConstructor:
         X = X.double()
         Y = Y.double()
         d = X.shape[-1]
-        input_transform = (
-            Normalize(d=d, bounds=self.bounds.double())
-            if self.bounds is not None
-            else Normalize(d=d)
-        )
+        input_transform = _input_transform(d, self.bounds, self.log)
         gp = SingleTaskGP(
             X,
             Y,
@@ -116,15 +140,21 @@ class ModelListConstructor:
     Each column of Y gets its own ``SingleTaskGP``. This is the rewrite target for
     multibax's independent-sklearn-GP ``MGPR`` and the base for multi-output θ
     models in the SBI app. Each GP posterior is Gaussian -> calibrated variance.
+    ``log`` as for :class:`SingleTaskGPConstructor`.
     """
 
     provides_uq = "calibrated_variance"
 
     def __init__(
-        self, bounds: torch.Tensor | None = None, kernel: Kernel = "default"
+        self,
+        bounds: torch.Tensor | None = None,
+        kernel: Kernel = "default",
+        *,
+        log: list[int] | None = None,
     ) -> None:
         self.bounds = bounds
         self.kernel = kernel
+        self.log = list(log or [])
         _covar_module(kernel, 1)  # validate early
 
     def build(
@@ -135,11 +165,7 @@ class ModelListConstructor:
         d = X.shape[-1]
         gps = []
         for j in range(Y.shape[-1]):
-            input_transform = (
-                Normalize(d=d, bounds=self.bounds.double())
-                if self.bounds is not None
-                else Normalize(d=d)
-            )
+            input_transform = _input_transform(d, self.bounds, self.log)
             gps.append(
                 SingleTaskGP(
                     X,
@@ -330,7 +356,9 @@ class MultiFidelityGPConstructor:
                 likelihood=get_gaussian_likelihood_with_lognormal_prior()
                 if Yvar is None
                 else None,
-                input_transform=Normalize(d=d, indices=design, bounds=self.bounds.double()),
+                input_transform=_input_transform(
+                    d, self.bounds, self.spec.log_indices(), indices=design
+                ),
             )
             fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
             gps.append(gp)
@@ -354,8 +382,9 @@ def _pin_linear_truncated_power(gp, power: int) -> None:
 
 
 def _fidelity_transform(spec, bounds: torch.Tensor):
-    """Inputs to the unit cube, with each ordered source's accurate end at 1 (on a
-    log scale for ``log=True`` sources), as BoTorch's fidelity kernels expect."""
+    """Inputs to the unit cube, with each ordered source's accurate end at 1, as
+    BoTorch's fidelity kernels expect. ``log=True`` inputs (sources and design
+    variables) are on a log scale."""
     from botorch.models.transforms.input import (
         AffineInputTransform,
         ChainedInputTransform,
@@ -364,11 +393,10 @@ def _fidelity_transform(spec, bounds: torch.Tensor):
 
     lower, upper = bounds.double().clone()
     flip = torch.zeros_like(lower, dtype=torch.bool)
-    logged = []
+    logged = spec.log_indices()
+    for i in logged:
+        lower[i], upper[i] = lower[i].log10(), upper[i].log10()
     for i, source in zip(spec.source_indices(), spec.sources):
-        if source.log:
-            logged.append(i)
-            lower[i], upper[i] = lower[i].log10(), upper[i].log10()
         flip[i] = source.accurate == "low"
     span = (upper - lower).where(upper > lower, torch.ones_like(lower))
     # A hair wider than the range, so round-off (e.g. in the log) never puts a source
@@ -392,12 +420,14 @@ def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstr
     Keyed on ``n_outputs`` (every output is modeled, incl. OBSERVE), not objective
     count — a single-objective spec with an extra OBSERVE output needs a ModelList.
     Callers may still pass their own ``ModelConstructor`` (e.g. a correlated
-    MultiTaskGP for SBI). ``bounds`` defaults to the spec's design bounds.
+    MultiTaskGP for SBI). ``bounds`` defaults to the spec's design bounds, and
+    ``log=True`` variables are modeled on a log scale.
     """
     if spec.sources:
         return MultiFidelityGPConstructor(spec)
     if bounds is None:
         bounds = spec.bounds_tensor()
+    log = spec.log_indices()
     if spec.n_outputs == 1:
-        return SingleTaskGPConstructor(bounds=bounds)
-    return ModelListConstructor(bounds=bounds)
+        return SingleTaskGPConstructor(bounds=bounds, log=log)
+    return ModelListConstructor(bounds=bounds, log=log)

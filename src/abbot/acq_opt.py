@@ -53,7 +53,9 @@ class Continuous:
     integer input. Integer inputs are optimized as continuous and rounded;
     enumerated inputs alongside them are enumerated (``optimize_acqf_mixed``, one
     sub-problem per combination of their values, up to
-    ``MAX_MIXED_COMBINATIONS``)."""
+    ``MAX_MIXED_COMBINATIONS``). With ``log=True`` inputs (and no enumerated ones
+    to enumerate), the restarts start from the best of ``raw_samples`` log-uniform
+    designs, so the search covers every decade rather than mostly the top one."""
 
     def __init__(self, num_restarts: int = 10, raw_samples: int = 256) -> None:
         self.num_restarts = num_restarts
@@ -101,6 +103,9 @@ class Continuous:
             "post_processing_func": round_integers,
         }
         if not enum:
+            if set(spec.log_indices()) - set(fixed):
+                kwargs["batch_initial_conditions"] = self._log_uniform_starts(acq, spec, n, fixed)
+                kwargs.pop("raw_samples")
             candidates, _ = optimize_acqf(fixed_features=fixed or None, **kwargs)
             return candidates.detach()
         combos = list(product(*(inputs[j].values for j in enum)))
@@ -114,6 +119,19 @@ class Continuous:
         fixed_list = [{**fixed, **dict(zip(enum, map(float, c)))} for c in combos]
         candidates, _ = optimize_acqf_mixed(fixed_features_list=fixed_list, **kwargs)
         return candidates.detach()
+
+
+    def _log_uniform_starts(self, acq, spec: ProblemSpec, n: int, fixed: dict[int, float]):
+        """``(num_restarts, n, d)`` starting batches: the best of ``raw_samples``
+        batches drawn by ``spec.sample_designs`` (log-uniform on log axes)."""
+        names = spec.variable_names
+        X = spec.sample_designs(
+            self.raw_samples * n, fixed={names[j]: v for j, v in fixed.items()}
+        ).reshape(self.raw_samples, n, -1)
+        with torch.no_grad():
+            value = acq(X).reshape(-1)
+        best = value.nan_to_num(float("-inf")).topk(min(self.num_restarts, len(value))).indices
+        return X[best]
 
 
 class DiscreteArgmax:

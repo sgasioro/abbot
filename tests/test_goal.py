@@ -25,7 +25,7 @@ def test_percentile_set_top_fraction():
 
 def test_percentile_set_rejects_multioutput():
     f = torch.rand(5, 2)
-    with pytest.raises(ValueError, match="single-output"):
+    with pytest.raises(ValueError, match="scores one output"):
         PercentileSet(80.0).identify_subspace(f)
 
 

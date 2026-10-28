@@ -30,11 +30,24 @@ from pydantic import BaseModel, Field, model_validator
 # are featurized to floats for the model but enumerated for proposal.
 
 
+def _check_log(kind: str, name: str, log: bool, lower: float) -> None:
+    if log and lower <= 0:
+        raise ValueError(f"{kind} {name!r}: log=True needs a positive lower bound, got {lower}")
+
+
 class ContinuousDomain(BaseModel):
+    """A real-valued variable from ``lower`` to ``upper``.
+
+    ``log=True`` for quantities that span orders of magnitude (concentrations,
+    rates, sizes): the model sees the variable on a log scale, and initial designs
+    and searches spread over its decades rather than crowding the top one.
+    """
+
     kind: Literal["continuous"] = "continuous"
     name: str
     lower: float
     upper: float
+    log: bool = False
 
     @model_validator(mode="after")
     def _check_bounds(self) -> ContinuousDomain:
@@ -43,18 +56,21 @@ class ContinuousDomain(BaseModel):
                 f"ContinuousDomain {self.name!r}: upper ({self.upper}) must exceed "
                 f"lower ({self.lower})"
             )
+        _check_log("ContinuousDomain", self.name, self.log, self.lower)
         return self
 
 
 class IntegerDomain(BaseModel):
     """Whole numbers from ``lower`` to ``upper`` inclusive (atom counts, replicates,
     grid sizes). The surrogate treats it as continuous; proposals are rounded.
+    ``log=True`` as for :class:`ContinuousDomain`.
     """
 
     kind: Literal["integer"] = "integer"
     name: str
     lower: int
     upper: int
+    log: bool = False
 
     @model_validator(mode="after")
     def _check_bounds(self) -> IntegerDomain:
@@ -63,6 +79,7 @@ class IntegerDomain(BaseModel):
                 f"IntegerDomain {self.name!r}: upper ({self.upper}) must exceed "
                 f"lower ({self.lower})"
             )
+        _check_log("IntegerDomain", self.name, self.log, self.lower)
         return self
 
 
@@ -140,6 +157,11 @@ class Source(BaseModel):
         return self.domain.name
 
     @property
+    def is_log(self) -> bool:
+        """``log=True`` on the source or on its domain."""
+        return self.log or bool(getattr(self.domain, "log", False))
+
+    @property
     def is_ordered(self) -> bool:
         if self.ordered is not None:
             return self.ordered
@@ -157,7 +179,7 @@ class Source(BaseModel):
             )
         if isinstance(d, IntegerDomain) and t != int(t):
             raise ValueError(f"Source {d.name!r}: target {t} must be a whole number")
-        if self.log:
+        if self.is_log:
             low = min(d.values) if isinstance(d, EnumeratedDomain) else d.lower
             if low <= 0:
                 raise ValueError(f"Source {d.name!r}: log=True needs positive values")
@@ -172,7 +194,7 @@ class Source(BaseModel):
                     f"Source {d.name!r}: label unordered sources with whole numbers, "
                     f"got {d.values}"
                 )
-            if self.accurate != "high" or self.log:
+            if self.accurate != "high" or self.is_log:
                 raise ValueError(
                     f"Source {d.name!r}: accurate= and log= apply to ordered sources only"
                 )
@@ -223,23 +245,63 @@ ObjectiveSpec = OutputSpec
 
 
 class Box(BaseModel):
-    """A target band (per-dimension lower/upper) in output or theta space.
+    """A target band on the outputs: a design is in the box when every banded
+    output lies within its ``(low, high)``.
 
-    A list of boxes drives a BoxMembershipGoal (see goal.py). ``lower``/``upper``
-    are per-dimension vectors of equal length.
+    Name the outputs::
+
+        Box({"yield": (0.4, 0.6), "purity": (0.9, 1.0)})
+
+    Outputs left out are unconstrained. The older positional form,
+    ``Box(lower=[...], upper=[...])`` with one entry per output in ``outputs``
+    order, still works. A list of boxes drives a goal (see ``goals_from_spec``):
+    a design in any box is in the target set.
     """
 
-    lower: list[float]
-    upper: list[float]
+    bands: dict[str, tuple[float, float]] | None = None
+    lower: list[float] | None = None
+    upper: list[float] | None = None
+
+    def __init__(self, bands: dict[str, tuple[float, float]] | None = None, /, **data) -> None:
+        if bands is not None:
+            data["bands"] = bands
+        super().__init__(**data)
 
     @model_validator(mode="after")
     def _check(self) -> Box:
+        if self.bands is not None:
+            if self.lower is not None or self.upper is not None:
+                raise ValueError("Box takes named bands or lower/upper, not both")
+            if not self.bands:
+                raise ValueError("Box needs at least one band")
+            for name, (lo, hi) in self.bands.items():
+                if hi <= lo:
+                    raise ValueError(f"Box band {name!r}: high ({hi}) must exceed low ({lo})")
+            return self
+        if self.lower is None or self.upper is None:
+            raise ValueError("Box needs named bands, e.g. Box({'yield': (0.4, 0.6)})")
         if len(self.lower) != len(self.upper):
             raise ValueError("Box lower/upper must have equal length")
         for j, (lo, hi) in enumerate(zip(self.lower, self.upper)):
             if hi <= lo:
                 raise ValueError(f"Box dim {j}: upper ({hi}) must exceed lower ({lo})")
         return self
+
+    def band_dict(self, output_names: list[str]) -> dict[str, tuple[float, float]]:
+        """The bands by output name (the positional form mapped onto
+        ``output_names``)."""
+        if self.bands is not None:
+            return {k: (float(lo), float(hi)) for k, (lo, hi) in self.bands.items()}
+        if len(self.lower) != len(output_names):
+            raise ValueError(
+                f"Box has {len(self.lower)} bands but the spec has {len(output_names)} "
+                f"outputs {output_names}; name them instead, e.g. "
+                f"Box({{{output_names[0]!r}: (low, high)}})"
+            )
+        return {
+            name: (float(lo), float(hi))
+            for name, lo, hi in zip(output_names, self.lower, self.upper)
+        }
 
 
 def _check_range(what: str, lo: float | None, hi: float | None) -> None:
@@ -389,6 +451,12 @@ class ProblemSpec(BaseModel):
         for c in self.output_constraints or []:
             _check_names(c, onames, "output", names, "output_constraints",
                          "a design variable: put it in domain_constraints")
+        for box in self.boxes or []:
+            for name in box.bands or {}:
+                if name not in onames:
+                    raise ValueError(
+                        f"Box band {name!r} is not an output (outputs: {onames})"
+                    )
         return self
 
     @property
@@ -430,6 +498,42 @@ class ProblemSpec(BaseModel):
         """Positions of the sources in a design vector."""
         n = len(self.domain)
         return list(range(n, n + len(self.sources or [])))
+
+    def log_indices(self) -> list[int]:
+        """Positions of the inputs on a log scale (``log=True`` design variables and
+        sources)."""
+        out = [j for j, d in enumerate(self.domain) if getattr(d, "log", False)]
+        out += [i for i, s in zip(self.source_indices(), self.sources or []) if s.is_log]
+        return out
+
+    def resolve_fixed(self, fixed: dict[str, float] | None) -> dict[int, float]:
+        """``{name: value}`` for inputs held fixed in a proposal, checked against
+        their domains, as ``{position: value}``."""
+        if not fixed:
+            return {}
+        position = {name: j for j, name in enumerate(self.variable_names)}
+        out = {}
+        for name, value in fixed.items():
+            if name not in position:
+                where = " (an output; only inputs can be fixed)" if name in self.output_names else ""
+                raise ValueError(
+                    f"fixed: {name!r} is not a variable{where} (variables: "
+                    f"{self.variable_names})"
+                )
+            j = position[name]
+            d = self.inputs[j]
+            value = float(value)
+            if isinstance(d, EnumeratedDomain):
+                if value not in d.values:
+                    raise ValueError(f"fixed: {name}={value} is not one of {d.values}")
+            elif not d.lower <= value <= d.upper:
+                raise ValueError(
+                    f"fixed: {name}={value} is outside [{d.lower}, {d.upper}]"
+                )
+            elif isinstance(d, IntegerDomain) and value != int(value):
+                raise ValueError(f"fixed: {name}={value} must be a whole number")
+            out[j] = value
+        return out
 
     def target_features(self) -> dict[int, float]:
         """``{position: target}`` for every source; empty without sources."""
@@ -604,7 +708,9 @@ class ProblemSpec(BaseModel):
         A = torch.stack(rows) if rows else torch.zeros(0, self.n_outputs, **kw)
         return A, torch.tensor(lower, **kw), torch.tensor(upper, **kw)
 
-    def sample_designs(self, n: int, *, seed: int | None = None):
+    def sample_designs(
+        self, n: int, *, seed: int | None = None, fixed: dict[str, float] | None = None
+    ):
         """Draw ``n`` designs as an (n, d) tensor.
 
         Unconstrained, they are space-filling (scrambled Sobol): continuous axes
@@ -616,30 +722,44 @@ class ProblemSpec(BaseModel):
         filtered by rejection.
 
         ``seed=None`` draws the seed from torch's global RNG, so
-        ``torch.manual_seed`` reproduces it.
+        ``torch.manual_seed`` reproduces it. ``fixed`` (``{name: value}``) holds
+        inputs at given values.
         """
         import torch
         from torch.quasirandom import SobolEngine
 
         if seed is None:
             seed = int(torch.randint(2**31 - 1, (1,)))
+        pinned = self.resolve_fixed(fixed)
         if self.domain_constraints and all(isinstance(d, ContinuousDomain) for d in self.inputs):
             from botorch.utils.sampling import get_polytope_samples
 
+            equality = [
+                (torch.tensor([j]), torch.tensor([1.0], dtype=torch.double), v)
+                for j, v in pinned.items()
+            ]
             return get_polytope_samples(
                 n,
                 self.bounds_tensor(),
                 inequality_constraints=self.inequality_constraints(),
+                equality_constraints=equality or None,
                 seed=seed,
             )
         engine = SobolEngine(dimension=len(self.inputs), scramble=True, seed=seed)
+
+        def draw(k):
+            x = self._from_unit(engine.draw(k).double())
+            for j, v in pinned.items():
+                x[:, j] = v
+            return x
+
         if not self.domain_constraints:
-            return self._from_unit(engine.draw(n).double())
+            return draw(n)
 
         kept: list = []
         n_kept = 0
         for _ in range(100):
-            x = self._from_unit(engine.draw(max(n, 64)).double())
+            x = draw(max(n, 64))
             x = x[self._feasible(x)]
             kept.append(x)
             n_kept += x.shape[0]
@@ -651,13 +771,15 @@ class ProblemSpec(BaseModel):
             "Pass initial designs explicitly."
         )
 
-    def _from_unit(self, u):
-        """Map (n, d) points in [0, 1]^d onto the design space."""
+    def _from_unit(self, u, inputs: list | None = None):
+        """Map (n, k) points in [0, 1]^k onto the design space: every input, or the
+        first k (``inputs``, e.g. the design variables alone)."""
         import torch
 
-        log_cols = {i for i, s in zip(self.source_indices(), self.sources or []) if s.log}
+        inputs = self.inputs if inputs is None else inputs
+        log_cols = set(self.log_indices())
         cols = []
-        for j, d in enumerate(self.inputs):
+        for j, d in enumerate(inputs):
             if isinstance(d, (ContinuousDomain, IntegerDomain)) and j in log_cols:
                 # log-uniform: a size-like source spends its draws across scales
                 lo, hi = math.log(d.lower), math.log(d.upper)
