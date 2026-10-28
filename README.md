@@ -69,7 +69,8 @@ Ax, Xopt and Bluesky/blop.
 ```
 src/abbot/
   problem.py      # ProblemSpec (type-polymorphic domains + OutputSpec: objectives
-                  #   MAX/MIN vs OBSERVE-only) + bounds/constraints
+                  #   MAX/MIN vs OBSERVE-only, output bounds) + domain/output constraints
+  feasibility.py  # output constraints: observed feasibility, the model's probability
   model.py        # ModelConstructor seam: (X,Y,Yvar) -> botorch.Model  [the SBI seam]
   models/
     ensemble.py   # ToyEnsembleModel — the non-GP smoke test for the ModelConstructor seam
@@ -153,7 +154,11 @@ A `ProblemSpec` declares **outputs** (`OutputSpec(name, direction)`): the surrog
 models every output (one column per output, in `spec.outputs` order — the
 `evaluate`/history contract). `direction` is `MAXIMIZE`/`MINIMIZE` for an *optimized
 objective*, or `OBSERVE` for a **modeled-but-not-optimized** output (a feature a BAX
-`Goal` consumes, or a future constraint). `spec.objectives` is the non-OBSERVE
+`Goal` consumes, or an output that only has to stay within bounds). Any output can
+carry bounds, `OutputSpec(name, direction, min_val=, max_val=)`, which make it a
+constraint; `output_constraints=` and `domain_constraints=` take
+`LinearConstraint`s over output and design-variable names (see
+[`docs/API.md`](docs/API.md#constraints)). `spec.objectives` is the non-OBSERVE
 subset; BO/MO optimize it (selecting its columns from the possibly-wider model),
 BAX reads all outputs. (`objectives=[...]` is still accepted as a constructor
 alias; `ObjectiveSpec` aliases `OutputSpec`.)
@@ -290,8 +295,12 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   3. **Peer audit** *(done; internal)*: functionality and UX against BoTorch,
      Ax, Xopt and blop. What to build and what to borrow is in
      [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md#build-or-borrow). From it, in order:
-     - **Output constraints** by name (feasibility-weighted acquisition, BAX and
-       multi-fidelity aware, recommending feasible points only).
+     - **Output constraints** *(done)*: `OutputSpec(min_val=, max_val=)`,
+       `output_constraints` and named `domain_constraints` (`LinearConstraint`);
+       feasibility-weighted BO, feasibility search until a run satisfies them, BAX
+       target sets and multi-fidelity entropy search that respect them, and
+       recommending only designs likely to satisfy them. Later: UI support and a
+       feasibility stopping rule.
      - **Spec ergonomics:** names instead of indices (linear constraints, boxes,
        goals), string categories, `log=True` on design variables,
        `suggest(fixed=...)`.

@@ -91,11 +91,13 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 #   # continuous,<name>,<lower>,<upper>
 #   # integer,<name>,<lower>,<upper>
 #   # enumerated,<name>,<v1>,<v2>,...
-#   # output,<name>,MINIMIZE|MAXIMIZE|OBSERVE   (OBSERVE = modeled, not optimized)
+#   # output,<name>,MINIMIZE|MAXIMIZE|OBSERVE[,<min_val>,<max_val>]
+#                                     (OBSERVE = modeled, not optimized; a bound
+#                                     left empty is absent)
 #   # box,<lo1>,<lo2>,...,|,<hi1>,<hi2>,...     (lower vector | upper vector)
 # Legacy ``# objective,<name>,<DIR>`` rows are still READ (mapped to an output).
-# NOT representable here (raises on write): StructuredDomain, inequality
-# constraints, source variables, cached aux. Use the JSON spec / DataStore for those.
+# NOT representable here (raises on write): StructuredDomain, domain constraints,
+# output constraints over several outputs, source variables, cached aux. Use the JSON spec / DataStore for those.
 
 CSV_FORMAT_VERSION = 1
 
@@ -104,7 +106,7 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
     """Write a self-describing CSV: ``#`` config rows + the measurement table.
 
     Raises ``ValueError`` if the spec has parts CSV can't hold (structured domains,
-    inequality constraints) — be honest rather than silently dropping them; use the
+    domain constraints, output constraints over several outputs) — be honest rather than silently dropping them; use the
     JSON spec for those campaigns.
     """
     from abbot.problem import ContinuousDomain, EnumeratedDomain, IntegerDomain
@@ -114,10 +116,15 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
             "self-describing CSV cannot represent source variables "
             f"{spec.source_names}; use the JSON spec (spec_to_json) for this campaign."
         )
-    if spec.constraints:
+    if spec.domain_constraints:
         raise ValueError(
             "self-describing CSV cannot represent inequality constraints; use the "
             "JSON spec (spec_to_json) for this campaign."
+        )
+    if spec.output_constraints:
+        raise ValueError(
+            "self-describing CSV cannot represent output constraints over several "
+            "outputs; use the JSON spec (spec_to_json) for this campaign."
         )
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -135,7 +142,10 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
                 f"({d.name!r}); use the JSON spec for this campaign."
             )
     for o in spec.outputs:
-        w.writerow(["# output", o.name, o.direction])
+        bounds = [] if not o.is_constrained else [
+            "" if v is None else v for v in (o.min_val, o.max_val)
+        ]
+        w.writerow(["# output", o.name, o.direction, *bounds])
     for box in spec.boxes or []:
         w.writerow(["# box", *box.lower, "|", *box.upper])
     # Measurement table (reuse the flat writer's columns = all outputs).
@@ -194,7 +204,10 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
             domain.append(EnumeratedDomain(name=cells[1], values=[float(v) for v in cells[2:] if v]))
         elif key in ("output", "objective"):  # "objective" = legacy read-compat
             direction = cells[2].upper() if len(cells) > 2 else "MAXIMIZE"
-            outputs.append(OutputSpec(name=cells[1], direction=direction))
+            bounds = [float(v) if v else None for v in (cells[3:5] + ["", ""])[:2]]
+            outputs.append(OutputSpec(
+                name=cells[1], direction=direction, min_val=bounds[0], max_val=bounds[1]
+            ))
         elif key == "box":
             if "|" not in cells:
                 raise ValueError(

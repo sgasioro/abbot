@@ -10,7 +10,7 @@ under Xopt's orchestrator.
 Surface:
   - ``spec_to_vocs`` / ``vocs_to_spec`` — field map between abbot ``ProblemSpec``
     and gest ``VOCS`` (ContinuousVariable/DiscreteVariable, Minimize/Maximize
-    objectives, Less/GreaterThan constraints).
+    objectives, output bounds as Less/GreaterThan/Bounds constraints).
   - ``CorePolicyGenerator`` — a gest ``Generator`` wrapping an abbot ``Campaign``,
     so a problem defined in abbot runs under ``Xopt(generator=...)`` on Xopt's
     (async/parallel) evaluator WITHOUT the core depending on Xopt. This is the
@@ -41,11 +41,20 @@ from abbot.session import Campaign
 
 
 def spec_to_vocs(spec: ProblemSpec):
-    """abbot ``ProblemSpec`` -> gest ``VOCS`` (== ``xopt.VOCS``)."""
+    """abbot ``ProblemSpec`` -> gest ``VOCS`` (== ``xopt.VOCS``).
+
+    An output's ``min_val`` / ``max_val`` become a VOCS constraint on it (an
+    OBSERVE output with bounds is a constraint only, not also an observable).
+    VOCS has no linear constraints, so a spec with ``domain_constraints`` or
+    ``output_constraints`` is refused rather than silently loosened.
+    """
     from gest_api.vocs import (
         VOCS,
+        BoundsConstraint,
         ContinuousVariable,
         DiscreteVariable,
+        GreaterThanConstraint,
+        LessThanConstraint,
         MaximizeObjective,
         MinimizeObjective,
     )
@@ -54,6 +63,11 @@ def spec_to_vocs(spec: ProblemSpec):
         raise NotImplementedError(
             f"spec_to_vocs: VOCS has no source variables {spec.source_names} (no "
             "target); use the JSON spec for this campaign."
+        )
+    if spec.domain_constraints or spec.output_constraints:
+        raise NotImplementedError(
+            "spec_to_vocs: VOCS has no linear constraints (domain_constraints, "
+            "output_constraints); use the JSON spec for this campaign."
         )
     variables: dict[str, Any] = {}
     for d in spec.domain:
@@ -71,19 +85,41 @@ def spec_to_vocs(spec: ProblemSpec):
         for o in spec.outputs
         if o.direction != "OBSERVE"
     }
-    observables = [o.name for o in spec.outputs if o.direction == "OBSERVE"]
-    return VOCS(variables=variables, objectives=objectives, observables=observables)
+    constraints = {}
+    for o in spec.outputs:
+        if o.min_val is not None and o.max_val is not None:
+            constraints[o.name] = BoundsConstraint(range=[o.min_val, o.max_val])
+        elif o.min_val is not None:
+            constraints[o.name] = GreaterThanConstraint(value=o.min_val)
+        elif o.max_val is not None:
+            constraints[o.name] = LessThanConstraint(value=o.max_val)
+    observables = [
+        o.name for o in spec.outputs if o.direction == "OBSERVE" and not o.is_constrained
+    ]
+    return VOCS(
+        variables=variables, objectives=objectives, constraints=constraints,
+        observables=observables,
+    )
 
 
 def vocs_to_spec(vocs, boxes=None) -> ProblemSpec:
     """gest ``VOCS`` -> abbot ``ProblemSpec`` (continuous + discrete variables).
 
     ``boxes`` (optional) carries abbot target bands, which VOCS has no field for.
-    Note: VOCS stores objectives and observables separately, so the merged
-    ``outputs`` are canonicalized objectives-first then observables — a VOCS
-    round-trip may reorder columns relative to an interleaved original.
+    A VOCS constraint becomes ``min_val`` / ``max_val`` on the output: on the
+    objective of the same name if there is one, else on a new OBSERVE output.
+    Note: VOCS stores objectives, constraints and observables separately, so the
+    merged ``outputs`` are canonicalized in that order — a VOCS round-trip may
+    reorder columns relative to an interleaved original.
     """
-    from gest_api.vocs import ContinuousVariable, DiscreteVariable, MinimizeObjective
+    from gest_api.vocs import (
+        BoundsConstraint,
+        ContinuousVariable,
+        DiscreteVariable,
+        GreaterThanConstraint,
+        LessThanConstraint,
+        MinimizeObjective,
+    )
 
     domain = []
     for name, var in vocs.variables.items():
@@ -103,7 +139,28 @@ def vocs_to_spec(vocs, boxes=None) -> ProblemSpec:
         )
         for name, obj in vocs.objectives.items()
     ]
-    outputs += [OutputSpec(name=name, direction="OBSERVE") for name in (vocs.observables or {})]
+    position = {o.name: i for i, o in enumerate(outputs)}
+    for name, con in (vocs.constraints or {}).items():
+        if isinstance(con, BoundsConstraint):
+            bounds = {"min_val": float(con.range[0]), "max_val": float(con.range[1])}
+        elif isinstance(con, GreaterThanConstraint):
+            bounds = {"min_val": float(con.value)}
+        elif isinstance(con, LessThanConstraint):
+            bounds = {"max_val": float(con.value)}
+        else:
+            raise NotImplementedError(
+                f"vocs_to_spec does not support constraint type {type(con).__name__} ({name!r})."
+            )
+        if name in position:
+            o = outputs[position[name]]
+            outputs[position[name]] = OutputSpec(name=name, direction=o.direction, **bounds)
+        else:
+            outputs.append(OutputSpec(name=name, direction="OBSERVE", **bounds))
+    known = {o.name for o in outputs}
+    outputs += [
+        OutputSpec(name=name, direction="OBSERVE")
+        for name in (vocs.observables or {}) if name not in known
+    ]
     return ProblemSpec(domain=domain, outputs=outputs, boxes=boxes)
 
 

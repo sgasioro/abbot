@@ -16,7 +16,7 @@ without a deprecation period.
 
 | Area | Public surface |
 | --- | --- |
-| Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `IntegerDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `InequalitySpec`, `Source` (provisional, see below) |
+| Problem definition | `ProblemSpec`, `OutputSpec`, `ContinuousDomain`, `IntegerDomain`, `EnumeratedDomain`, `StructuredDomain`, `Box`, `LinearConstraint`, `InequalitySpec` (soft-deprecated), `Source` (provisional, see below) |
 | Session (ask/tell) | `Campaign` (`suggest`, `ingest`, `fail`, `cancel`, `outstanding`, `step`, `record`, `seed`, `load_history`, `recommend`, `result`, `state`, `current_model`, `scored_history`, `pending_count`, `add_hook`), `Candidate`, `CampaignResult`, `CampaignState` |
 | Training targets | `Campaign(..., targets=)` / `Targets` (`(history, spec) -> Y` or `(Y, Yvar)`), `apply_targets` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, batch_size, ...)`, `drive(campaign, experiment, evaluate, *, n_total, batch_size, on_persistent_fault, should_continue)` (the one blocking loop; `run_campaign` and the UI `RunController` run on it), `PersistentFaultError` |
@@ -87,7 +87,7 @@ ProblemSpec(domain=[...], outputs=[OutputSpec(name="yield", direction="MAXIMIZE"
 
 `direction` is `"MAXIMIZE"` / `"MINIMIZE"` for an **optimized objective**, or
 `"OBSERVE"` for a **modeled-but-not-optimized** output (a feature a BAX `Goal`
-consumes, or a future constraint).
+consumes, or an output that only has to stay within bounds).
 
 - `ObjectiveSpec` and the `objectives=` constructor keyword are **soft-deprecated
   aliases**, kept for backward compatibility. They still work and will not be
@@ -99,6 +99,47 @@ consumes, or a future constraint).
   `output_signs()` (all columns) / `objective_signs()` (the optimized subset). A
   pure-BAX spec is all-`OBSERVE`: `n_objectives == 0`, and `recommend()` returns
   `[]` (handover is the goal's job, not a single best point).
+
+## Constraints
+
+Constraints sit next to what they constrain, and are named by name:
+
+```python
+ProblemSpec(
+    domain=[ContinuousDomain(name="temp", ...), ContinuousDomain(name="conc", ...)],
+    outputs=[
+        OutputSpec(name="yield", direction="MAXIMIZE"),
+        OutputSpec(name="purity", direction="OBSERVE", min_val=0.9),
+    ],
+    domain_constraints=[LinearConstraint({"temp": 1, "conc": 2}, max_val=100)],
+    output_constraints=[LinearConstraint({"yield": 1, "purity": -50}, min_val=0)],
+)
+```
+
+- **A bound on one output** is `OutputSpec(min_val=..., max_val=...)`, in raw
+  units. Any output can carry one; an `OBSERVE` output with bounds is a pure
+  constraint.
+- **`output_constraints`**: `LinearConstraint`s over output names, for bounds on a
+  combination of outputs.
+- **`domain_constraints`**: `LinearConstraint`s over design variable (or source)
+  names. These are hard: no proposal or seed breaks them. `constraints=` is the old
+  name and `InequalitySpec` (positions instead of names) the old form; both are
+  still accepted.
+- A name in the wrong list is an error that says which list it belongs in.
+
+Output constraints are learned like the outputs: a design's chance of satisfying
+them comes from the model (`abbot.feasibility`). What uses them:
+
+| | With output constraints |
+| --- | --- |
+| `SimpleBO`, `ParetoBO` | Constrained log-NEI / log-NEHVI: improvement only counts where the constraints hold, weighted by the chance they do. Until a run at the target satisfies them (and without a `ref_point` for `ParetoBO`), proposals maximize the chance that a design will, favoring designs where that chance is uncertain. `ParetoBO` infers the reference point from the runs that satisfy them. |
+| `SimpleBO` with sources | Entropy search weighted by the chance of satisfying the constraints at the target, with the best value sampled over designs likely to (an approximation). |
+| `BAXPolicy` | The goal's target set keeps only designs whose outputs satisfy the constraints: on the posterior mean (MeanBAX) and on each posterior sample (InfoBAX). |
+| `recommend` / `result()` | Only designs with at least a 50% chance (observed: that satisfied them) are ranked. If none, the design with the best chance (smallest observed violation) is returned, `CampaignResult.feasible` is `[False]`, and `Campaign.last_warning` says so. `CampaignResult.p_feasible` holds the chances. |
+| `convergence`, `hypervolume` | Count only runs that satisfied the constraints. |
+| VOCS, self-describing CSV | Output bounds round-trip. Linear constraints are refused rather than dropped (VOCS has none; use the JSON spec). |
+
+`UncertaintySampling` ignores output constraints: it explores the model.
 
 ## Outstanding candidates
 
@@ -267,7 +308,7 @@ are derived from the spec:
 | --- | --- |
 | `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the inputs support (`DiscreteArgmax` if all enumerated, else `Continuous`). No objectives (all `OBSERVE`) raises — pass a policy. |
 | `model_constructor` | `default_constructor(spec)`: `MultiFidelityGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds. |
-| `initial_designs` (`Campaign`, `run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and inequality constraints, two of them moved to the target when the spec has sources. `Campaign` queues them on its first `suggest`, unless the history isn't empty (a resume, or data you `record` first) or you `seed` your own; an empty tensor gives a cold start (random probes until a model can be fitted). Ignored on resume. |
+| `initial_designs` (`Campaign`, `run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and domain constraints, two of them moved to the target when the spec has sources. `Campaign` queues them on its first `suggest`, unless the history isn't empty (a resume, or data you `record` first) or you `seed` your own; an empty tensor gives a cold start (random probes until a model can be fitted). Ignored on resume. |
 | `evaluate` (`Campaign.step`, `drive`, `run_campaign`) | none — the experiment returns the outputs directly. |
 
 The function names and signatures are Stable; the specific choices they make
@@ -328,16 +369,15 @@ explicitly if you need it pinned.
 
 - `abbot` is `0.1.0` — pre-release. The **Stable** tier above is the compatibility
   promise; **Provisional** may change on any release; **Private** has no promise.
-- Soft-deprecated aliases (`ObjectiveSpec`, `objectives=`, `_safe_fit`,
-  `_ensure_grid`) are kept at least one minor version after a replacement ships.
+- Soft-deprecated aliases (`ObjectiveSpec`, `objectives=`, `constraints=`,
+  `InequalitySpec`, `_safe_fit`, `_ensure_grid`) are kept at least one minor version after a replacement ships.
 - Breaking changes to Stable names happen only on a minor-version bump and are
   called out in the changelog.
 
 ## Planned, not yet built
 
 Named here so you don't design around their absence as if permanent:
-output-constraint enforcement for BO (feasibility-weighted acquisition over an
-`OBSERVE` column), a run-level JSON serializer including the SBI `aux` payload, a
+output constraints in the UI, a feasibility stopping rule, a run-level JSON serializer including the SBI `aux` payload, a
 `TARGET` objective direction, continuous BAX (pathwise / seeded-ascent), the full
 `sbi`-backed benchmark, and a blop backend for Bluesky.
 
