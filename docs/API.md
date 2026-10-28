@@ -179,6 +179,37 @@ campaign.suggest(2, fixed={"temp": 30})
   in a `candidates=` grid, and says so otherwise. A custom policy without `fixed=`
   is refused when it's used.
 
+## Categories (labeled values)
+
+```python
+EnumeratedDomain(name="solvent", values=["water", "ethanol", "dmso"])
+campaign.suggest(1)                               # [{"temp": 41.2, "solvent": "ethanol"}]
+campaign.suggest(1, fixed={"solvent": "water"})
+Source(domain=EnumeratedDomain(name="code", values=["dft", "xtb"]), target="dft")
+```
+
+- **Numbers or labels.** An `EnumeratedDomain` with numbers is an ordered grid
+  (nearby values are expected to behave alike). One with labels is a set of
+  categories. The default models give categories a categorical kernel
+  (BoTorch's `MixedSingleTaskGP`; inside the multi-fidelity models, a categorical
+  kernel times the fidelity kernel), which learns how alike each pair of labels is
+  instead of assuming an order.
+- **Designs carry labels**: `suggest`, `outstanding`, `state().pending`,
+  `experiment.run(design)`, `record({...}, y)`, `fixed=`, `seed([...])` /
+  `initial_designs=[...]` (lists of dicts) and the CSVs. Tensors inside the loop
+  (history records, `CampaignResult.designs`, policies, models) carry each label's
+  **code**, its position in `values`. `spec.as_dict(x)` and `spec.as_tensor(design)`
+  convert; `EnumeratedDomain.encode` / `decode` do one value.
+- **`TensorExperiment(experiment, spec=spec)`** hands a vector experiment the codes;
+  without `spec=` it refuses labels.
+- **Domain constraints** can't name a labeled variable (a linear constraint can't
+  weigh labels).
+- **Sources** can be labeled; they are unordered, and `target` is a label.
+- **Files:** a CSV enumerated row is labels if any value isn't a number. VOCS keeps
+  values as a set, so `vocs_to_spec` sorts labels for a stable order. Changing the
+  order of `values` changes the codes, so a store won't resume across it (the
+  fingerprint differs).
+
 ## Outstanding candidates
 
 `suggest(n)` returns `n` `Candidate`s: `{variable name: value}` dicts with an
@@ -322,8 +353,8 @@ Everything else works *at the target*:
 
 `target` is a recommendation-time setting: it's left out of the resume fingerprint,
 so it can change between runs. `ordered` defaults to yes for continuous / integer
-sources and no for enumerated ones; an unordered source is enumerated with
-whole-number labels. `accurate="high"` (default) or `"low"` says which end of an
+sources and no for enumerated ones; an unordered source is enumerated, with
+labels (`["dft", "xtb"]`, `target="dft"`) or whole numbers. `accurate="high"` (default) or `"low"` says which end of an
 ordered source is more accurate (system size vs a tolerance), and `log=True` puts it
 on a log scale for the model. The self-describing CSV, VOCS and the UI editor refuse
 specs with sources; use the JSON spec.
@@ -345,7 +376,7 @@ are derived from the spec:
 | Omitted | Default |
 | --- | --- |
 | `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the inputs support (`DiscreteArgmax` if all enumerated, else `Continuous`). No objectives (all `OBSERVE`) raises — pass a policy. |
-| `model_constructor` | `default_constructor(spec)`: `MultiFidelityGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds. |
+| `model_constructor` | `default_constructor(spec)`: `MultiFidelityGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds, with a log scale for `log=True` variables and a categorical kernel for labeled ones. |
 | `initial_designs` (`Campaign`, `run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and domain constraints, two of them moved to the target when the spec has sources. `Campaign` queues them on its first `suggest`, unless the history isn't empty (a resume, or data you `record` first) or you `seed` your own; an empty tensor gives a cold start (random probes until a model can be fitted). Ignored on resume. |
 | `evaluate` (`Campaign.step`, `drive`, `run_campaign`) | none — the experiment returns the outputs directly. |
 

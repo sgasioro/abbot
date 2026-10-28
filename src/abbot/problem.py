@@ -19,9 +19,12 @@ by registry key + config, never embedded here.
 from __future__ import annotations
 
 import math
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:
+    import torch
 
 # --- Domains -----------------------------------------------------------------
 # A Domain describes ONE design variable. The surrogate always sees a (..., d)
@@ -84,20 +87,55 @@ class IntegerDomain(BaseModel):
 
 
 class EnumeratedDomain(BaseModel):
-    """A finite, enumerable set of allowed values (categorical or discrete grid).
+    """A finite set of allowed values: numbers (an ordered grid of settings) or
+    labels (unordered categories: solvents, catalysts, codes).
 
-    Proposal enumerates ``values``; the surrogate sees the featurized form.
+    Numbers are modeled as points on a line, so nearby values are expected to
+    behave alike. Labels are categories: the model learns how alike each pair is
+    rather than assuming an order. Designs carry the labels (``{"solvent":
+    "water"}``); inside the loop each label is a code, its position in ``values``
+    (see :meth:`encode`). Proposals enumerate the values either way.
     """
 
     kind: Literal["enumerated"] = "enumerated"
     name: str
-    values: list[float]
+    values: list[float] | list[str]
 
     @model_validator(mode="after")
     def _check_values(self) -> EnumeratedDomain:
         if len(self.values) < 1:
             raise ValueError(f"EnumeratedDomain {self.name!r} needs at least one value")
+        if len(set(self.values)) != len(self.values):
+            raise ValueError(f"EnumeratedDomain {self.name!r} has repeated values: {self.values}")
         return self
+
+    @property
+    def is_categorical(self) -> bool:
+        """Whether the values are labels (unordered categories)."""
+        return isinstance(self.values[0], str)
+
+    @property
+    def codes(self) -> list[float]:
+        """The values as the loop's tensors hold them: the numbers themselves, or
+        each label's position in ``values``."""
+        if self.is_categorical:
+            return [float(i) for i in range(len(self.values))]
+        return [float(v) for v in self.values]
+
+    def encode(self, value: float | str) -> float:
+        """A value (a label or a number) as its code. Raises if not allowed."""
+        if self.is_categorical:
+            if isinstance(value, str) and value in self.values:
+                return float(self.values.index(value))
+        elif not isinstance(value, str) and float(value) in self.values:
+            return float(value)
+        raise ValueError(f"{self.name}={value!r} is not one of {self.values}")
+
+    def decode(self, code: float) -> float | str:
+        """A code as the value a design carries: its label, or the number."""
+        if self.is_categorical:
+            return self.values[round(code)]
+        return float(code)
 
 
 class StructuredDomain(BaseModel):
@@ -138,7 +176,7 @@ class Source(BaseModel):
     ``ordered`` says whether nearby values are related (fidelity levels) or not
     (different codes); it defaults to True for continuous and integer domains and
     False for enumerated ones. An unordered source must be enumerated, with
-    whole-number labels (``0`` for one code, ``1`` for another). ``log=True`` asks
+    labels (``["dft", "experiment"]``) or whole numbers. ``log=True`` asks
     the model to see the source on a log scale (size-like knobs). ``accurate`` says
     which end of an ordered source is the more accurate one: ``"high"`` for knobs
     like system size or iteration count, ``"low"`` for knobs like a tolerance or a
@@ -147,7 +185,7 @@ class Source(BaseModel):
     """
 
     domain: SourceDomain
-    target: float
+    target: float | str
     ordered: bool | None = None
     log: bool = False
     accurate: Literal["high", "low"] = "high"
@@ -167,12 +205,27 @@ class Source(BaseModel):
             return self.ordered
         return not isinstance(self.domain, EnumeratedDomain)
 
+    @property
+    def target_code(self) -> float:
+        """The target as the loop's tensors hold it (see ``EnumeratedDomain.codes``)."""
+        d = self.domain
+        return d.encode(self.target) if isinstance(d, EnumeratedDomain) else float(self.target)
+
     @model_validator(mode="after")
     def _check(self) -> Source:
         d, t = self.domain, self.target
         if isinstance(d, EnumeratedDomain):
-            if t not in d.values:
-                raise ValueError(f"Source {d.name!r}: target {t} is not one of {d.values}")
+            try:
+                d.encode(t)
+            except ValueError:
+                raise ValueError(f"Source {d.name!r}: target {t!r} is not one of {d.values}") from None
+            if d.is_categorical and self.ordered:
+                raise ValueError(
+                    f"Source {d.name!r}: labels are unordered; use numbers for ordered levels"
+                )
+        elif isinstance(t, str):
+            # pydantic reports a ValueError as a validation error; a TypeError escapes.
+            raise ValueError(f"Source {d.name!r}: target must be a number, got {t!r}")  # noqa: TRY004
         elif not d.lower <= t <= d.upper:
             raise ValueError(
                 f"Source {d.name!r}: target {t} is outside [{d.lower}, {d.upper}]"
@@ -180,7 +233,7 @@ class Source(BaseModel):
         if isinstance(d, IntegerDomain) and t != int(t):
             raise ValueError(f"Source {d.name!r}: target {t} must be a whole number")
         if self.is_log:
-            low = min(d.values) if isinstance(d, EnumeratedDomain) else d.lower
+            low = min(d.codes) if isinstance(d, EnumeratedDomain) else d.lower
             if low <= 0:
                 raise ValueError(f"Source {d.name!r}: log=True needs positive values")
         if not self.is_ordered:
@@ -189,10 +242,10 @@ class Source(BaseModel):
                     f"Source {d.name!r}: an unordered source must be enumerated "
                     "(one value per code or source)"
                 )
-            if any(v != int(v) for v in d.values):
+            if any(v != int(v) for v in d.codes):
                 raise ValueError(
-                    f"Source {d.name!r}: label unordered sources with whole numbers, "
-                    f"got {d.values}"
+                    f"Source {d.name!r}: label unordered sources with names or whole "
+                    f"numbers, got {d.values}"
                 )
             if self.accurate != "high" or self.is_log:
                 raise ValueError(
@@ -376,6 +429,16 @@ def _check_names(c, allowed, kind, other, where, other_hint) -> None:
 # --- The spec ----------------------------------------------------------------
 
 
+def _encode(d, value) -> float:
+    """One input's value as a code: an enumerated value via its domain, else the
+    number."""
+    if isinstance(d, EnumeratedDomain):
+        return d.encode(value)
+    if isinstance(value, str):
+        raise ValueError(f"{d.name}={value!r}: expected a number")  # noqa: TRY004 - like a bad label
+    return float(value)
+
+
 class ProblemSpec(BaseModel):
     """The full, round-trippable problem definition.
 
@@ -436,6 +499,9 @@ class ProblemSpec(BaseModel):
         onames = [o.name for o in self.outputs]
         if len(onames) != len(set(onames)):
             raise ValueError(f"Duplicate output names: {onames}")
+        labeled = {
+            d.name for d in self.inputs if isinstance(d, EnumeratedDomain) and d.is_categorical
+        }
         for c in self.domain_constraints or []:
             if isinstance(c, InequalitySpec):
                 bad = [i for i in c.indices if not 0 <= i < len(names)]
@@ -444,10 +510,17 @@ class ProblemSpec(BaseModel):
                         f"InequalitySpec indices {bad} are out of range for the "
                         f"{len(names)} variables {names}"
                     )
-                continue
-            _check_names(c, names, "variable", onames, "domain_constraints",
-                         "an output: put it in output_constraints, or set min_val/max_val on "
-                         "its OutputSpec")
+                used = [names[i] for i in c.indices]
+            else:
+                _check_names(c, names, "variable", onames, "domain_constraints",
+                             "an output: put it in output_constraints, or set min_val/max_val "
+                             "on its OutputSpec")
+                used = list(c.coeffs)
+            if labeled & set(used):
+                raise ValueError(
+                    f"domain_constraints: {sorted(labeled & set(used))} take labels, which "
+                    "a linear constraint can't weigh"
+                )
         for c in self.output_constraints or []:
             _check_names(c, onames, "output", names, "output_constraints",
                          "a design variable: put it in domain_constraints")
@@ -506,9 +579,40 @@ class ProblemSpec(BaseModel):
         out += [i for i, s in zip(self.source_indices(), self.sources or []) if s.is_log]
         return out
 
-    def resolve_fixed(self, fixed: dict[str, float] | None) -> dict[int, float]:
+    def categorical_indices(self) -> list[int]:
+        """Positions of the design variables whose values are labels (categories).
+        A labeled source is a source, not a category: the source-aware model
+        handles it."""
+        return [
+            j for j, d in enumerate(self.domain)
+            if isinstance(d, EnumeratedDomain) and d.is_categorical
+        ]
+
+    def as_tensor(self, design) -> torch.Tensor:
+        """A design ``{name: value}`` (labels for categories) as the ``(d,)`` tensor
+        the loop works with, in ``variable_names`` order. Raises on a missing
+        variable or a value its domain doesn't allow (an enumerated value)."""
+        import torch
+
+        missing = [n for n in self.variable_names if n not in design]
+        if missing:
+            raise ValueError(f"design is missing {missing} (variables: {self.variable_names})")
+        return torch.tensor(
+            [_encode(d, design[d.name]) for d in self.inputs], dtype=torch.double
+        )
+
+    def as_dict(self, x) -> dict:
+        """A ``(d,)`` design tensor as ``{name: value}``, with labels for
+        categories: the form ``Campaign.suggest`` hands out."""
+        values = x.reshape(-1).tolist()
+        return {
+            d.name: d.decode(v) if isinstance(d, EnumeratedDomain) else v
+            for d, v in zip(self.inputs, values, strict=True)
+        }
+
+    def resolve_fixed(self, fixed: dict[str, float | str] | None) -> dict[int, float]:
         """``{name: value}`` for inputs held fixed in a proposal, checked against
-        their domains, as ``{position: value}``."""
+        their domains, as ``{position: value}`` (a label as its code)."""
         if not fixed:
             return {}
         position = {name: j for j, name in enumerate(self.variable_names)}
@@ -522,11 +626,14 @@ class ProblemSpec(BaseModel):
                 )
             j = position[name]
             d = self.inputs[j]
-            value = float(value)
             if isinstance(d, EnumeratedDomain):
-                if value not in d.values:
-                    raise ValueError(f"fixed: {name}={value} is not one of {d.values}")
-            elif not d.lower <= value <= d.upper:
+                try:
+                    out[j] = d.encode(value)
+                except ValueError as e:
+                    raise ValueError(f"fixed: {e}") from None
+                continue
+            value = float(value)
+            if not d.lower <= value <= d.upper:
                 raise ValueError(
                     f"fixed: {name}={value} is outside [{d.lower}, {d.upper}]"
                 )
@@ -537,7 +644,7 @@ class ProblemSpec(BaseModel):
 
     def target_features(self) -> dict[int, float]:
         """``{position: target}`` for every source; empty without sources."""
-        return {i: float(s.target) for i, s in zip(self.source_indices(), self.sources or [])}
+        return {i: s.target_code for i, s in zip(self.source_indices(), self.sources or [])}
 
     def at_target(self, X):
         """``X (..., d)`` with every source column set to its target (a copy)."""
@@ -626,7 +733,7 @@ class ProblemSpec(BaseModel):
     def bounds_tensor(self, dtype=None, device=None):
         """Return a (2, d) lower/upper bounds tensor for ``optimize_acqf``.
 
-        Continuous → (lower, upper); Enumerated → (min, max) of its values (the
+        Continuous → (lower, upper); Enumerated → (min, max) of its codes (the
         proposer still enumerates — these bounds are only a containing box).
         StructuredDomain is not yet supported here (deferred).
         """
@@ -639,8 +746,8 @@ class ProblemSpec(BaseModel):
                 lowers.append(d.lower)
                 uppers.append(d.upper)
             elif isinstance(d, EnumeratedDomain):
-                lowers.append(min(d.values))
-                uppers.append(max(d.values))
+                lowers.append(min(d.codes))
+                uppers.append(max(d.codes))
             else:
                 raise NotImplementedError(
                     f"bounds_tensor does not yet support {type(d).__name__} "
@@ -725,12 +832,15 @@ class ProblemSpec(BaseModel):
         ``torch.manual_seed`` reproduces it. ``fixed`` (``{name: value}``) holds
         inputs at given values.
         """
+        return self._sample(n, seed, self.resolve_fixed(fixed))
+
+    def _sample(self, n: int, seed: int | None, pinned: dict[int, float]):
+        """``sample_designs`` with the fixed inputs as ``{position: code}``."""
         import torch
         from torch.quasirandom import SobolEngine
 
         if seed is None:
             seed = int(torch.randint(2**31 - 1, (1,)))
-        pinned = self.resolve_fixed(fixed)
         if self.domain_constraints and all(isinstance(d, ContinuousDomain) for d in self.inputs):
             from botorch.utils.sampling import get_polytope_samples
 
@@ -791,7 +901,7 @@ class ProblemSpec(BaseModel):
             elif isinstance(d, ContinuousDomain):
                 cols.append(d.lower + u[:, j] * (d.upper - d.lower))
             elif isinstance(d, EnumeratedDomain):
-                values = torch.tensor(d.values, dtype=torch.double)
+                values = torch.tensor(d.codes, dtype=torch.double)
                 idx = (u[:, j] * len(values)).long().clamp(max=len(values) - 1)
                 cols.append(values[idx])
             else:
