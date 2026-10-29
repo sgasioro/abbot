@@ -135,7 +135,10 @@ def vocs_to_spec(vocs, boxes=None) -> ProblemSpec:
             lo, hi = var.domain
             domain.append(ContinuousDomain(name=name, lower=float(lo), upper=float(hi)))
         elif isinstance(var, DiscreteVariable):
-            domain.append(EnumeratedDomain(name=name, values=[float(v) for v in var.values]))
+            # VOCS keeps a set, so sort for a stable order (labels' codes depend on it).
+            labels = any(isinstance(v, str) for v in var.values)
+            values = sorted(str(v) for v in var.values) if labels else sorted(float(v) for v in var.values)
+            domain.append(EnumeratedDomain(name=name, values=values))
         else:
             raise NotImplementedError(
                 f"vocs_to_spec does not support variable type {type(var).__name__} ({name!r})."

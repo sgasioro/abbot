@@ -28,7 +28,9 @@ def build_spec(variable_rows: list[dict], output_rows: list[dict]) -> ProblemSpe
     """Build a ``ProblemSpec`` from UI rows.
 
     ``variable_rows``: each ``{"kind": "continuous", "name", "lower", "upper"}`` or
-    ``{"kind": "enumerated", "name", "values": [...]}``.
+    ``{"kind": "enumerated", "name", "values": [...]}``. Enumerated values are
+    numbers, or labels (categories) if any isn't a number; as text they are
+    separated by commas, or by spaces when there are no commas.
     ``output_rows``: each ``{"name", "direction": "MINIMIZE"|"MAXIMIZE"|"OBSERVE"}``.
     Pydantic validation raises with field-level messages the UI surfaces inline.
     """
@@ -47,20 +49,16 @@ def build_spec(variable_rows: list[dict], output_rows: list[dict]) -> ProblemSpe
         elif kind == "enumerated":
             values = row.get("values")
             if isinstance(values, str):
-                tokens = values.replace(",", " ").split()
+                sep = "," if "," in values else None
+                tokens = [t.strip() for t in values.split(sep) if t.strip()]
             else:
                 tokens = list(values or [])
             if not tokens:
                 raise ValueError(f"Variable {name!r}: list at least one allowed value.")
-            parsed = []
-            for tok in tokens:
-                try:
-                    parsed.append(float(tok))
-                except (TypeError, ValueError):
-                    raise ValueError(
-                        f"Variable {name!r}: {tok!r} is not a number. Enter numeric "
-                        "values separated by commas (e.g. 0, 1, 2)."
-                    ) from None
+            try:
+                parsed = [float(tok) for tok in tokens]
+            except (TypeError, ValueError):
+                parsed = [str(tok) for tok in tokens]  # labels: categories
             domain.append(EnumeratedDomain(name=row["name"], values=parsed))
         else:
             raise ValueError(f"unknown variable kind {kind!r}")

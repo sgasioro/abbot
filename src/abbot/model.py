@@ -92,13 +92,49 @@ def _input_transform(d: int, bounds: torch.Tensor | None, log: list[int] | None,
     return ChainedInputTransform(log=Log10(indices=list(log)), normalize=normalize)
 
 
+def _cont_kernel_factory(kernel: Kernel):
+    """``MixedSingleTaskGP``'s kernel over the numeric inputs, for ``kernel``."""
+    if kernel == "default":
+        return None
+    from gpytorch.kernels import MaternKernel
+
+    return lambda batch_shape, ard_num_dims, active_dims: MaternKernel(
+        nu=2.5, batch_shape=batch_shape, ard_num_dims=ard_num_dims, active_dims=active_dims
+    )
+
+
+def _gp(X, Y, Yvar, bounds, log, kernel: Kernel, categorical: list[int]) -> SingleTaskGP:
+    """One unfitted GP on ``(X, Y)``: a ``SingleTaskGP``, or with ``categorical``
+    columns (codes of labeled values) a ``MixedSingleTaskGP``, whose categorical
+    kernel learns how alike each pair of labels is instead of assuming an order.
+    Codes skip normalization; the kernel only asks whether two are equal."""
+    d = X.shape[-1]
+    Yvar = Yvar.double() if Yvar is not None else None
+    if not categorical:
+        return SingleTaskGP(
+            X, Y, train_Yvar=Yvar, input_transform=_input_transform(d, bounds, log),
+            covar_module=_covar_module(kernel, d),
+        )
+    from botorch.models import MixedSingleTaskGP
+
+    numeric = [j for j in range(d) if j not in categorical]
+    return MixedSingleTaskGP(
+        X, Y, cat_dims=list(categorical), train_Yvar=Yvar,
+        cont_kernel_factory=_cont_kernel_factory(kernel),
+        input_transform=_input_transform(d, bounds, log, indices=numeric) if numeric else None,
+    )
+
+
 class SingleTaskGPConstructor:
     """Scalar / independent-output GP with input normalization and MLL fit.
 
     The GP infers the noise level unless Yvar is supplied, and inputs are
     normalized to the problem bounds, after a log of the ``log`` columns (the
-    spec's ``log=True`` variables; see ``ProblemSpec.log_indices``). A GP posterior
-    is a full Gaussian, so it provides calibrated variance (the strongest UQ tier).
+    spec's ``log=True`` variables; see ``ProblemSpec.log_indices``).
+    ``categorical`` columns hold the codes of labeled values (see
+    ``ProblemSpec.categorical_indices``) and get a categorical kernel. A GP
+    posterior is a full Gaussian, so it provides calibrated variance (the
+    strongest UQ tier).
     """
 
     provides_uq = "calibrated_variance"
@@ -109,27 +145,19 @@ class SingleTaskGPConstructor:
         kernel: Kernel = "default",
         *,
         log: list[int] | None = None,
+        categorical: list[int] | None = None,
     ) -> None:
         # bounds: (2, d) for input Normalize; None -> normalize from data.
         self.bounds = bounds
         self.kernel = kernel
         self.log = list(log or [])
+        self.categorical = list(categorical or [])
         _covar_module(kernel, 1)  # validate early
 
     def build(
         self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None
     ) -> SingleTaskGP:
-        X = X.double()
-        Y = Y.double()
-        d = X.shape[-1]
-        input_transform = _input_transform(d, self.bounds, self.log)
-        gp = SingleTaskGP(
-            X,
-            Y,
-            train_Yvar=Yvar.double() if Yvar is not None else None,
-            input_transform=input_transform,
-            covar_module=_covar_module(self.kernel, d),
-        )
+        gp = _gp(X.double(), Y.double(), Yvar, self.bounds, self.log, self.kernel, self.categorical)
         fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
         return gp
 
@@ -140,7 +168,7 @@ class ModelListConstructor:
     Each column of Y gets its own ``SingleTaskGP``. This is the rewrite target for
     multibax's independent-sklearn-GP ``MGPR`` and the base for multi-output θ
     models in the SBI app. Each GP posterior is Gaussian -> calibrated variance.
-    ``log`` as for :class:`SingleTaskGPConstructor`.
+    ``log`` and ``categorical`` as for :class:`SingleTaskGPConstructor`.
     """
 
     provides_uq = "calibrated_variance"
@@ -151,10 +179,12 @@ class ModelListConstructor:
         kernel: Kernel = "default",
         *,
         log: list[int] | None = None,
+        categorical: list[int] | None = None,
     ) -> None:
         self.bounds = bounds
         self.kernel = kernel
         self.log = list(log or [])
+        self.categorical = list(categorical or [])
         _covar_module(kernel, 1)  # validate early
 
     def build(
@@ -162,19 +192,13 @@ class ModelListConstructor:
     ) -> ModelListGP:
         X = X.double()
         Y = Y.double()
-        d = X.shape[-1]
-        gps = []
-        for j in range(Y.shape[-1]):
-            input_transform = _input_transform(d, self.bounds, self.log)
-            gps.append(
-                SingleTaskGP(
-                    X,
-                    Y[..., j : j + 1],
-                    train_Yvar=Yvar[..., j : j + 1].double() if Yvar is not None else None,
-                    input_transform=input_transform,
-                    covar_module=_covar_module(self.kernel, d),
-                )
+        gps = [
+            _gp(
+                X, Y[..., j : j + 1], Yvar[..., j : j + 1] if Yvar is not None else None,
+                self.bounds, self.log, self.kernel, self.categorical,
             )
+            for j in range(Y.shape[-1])
+        ]
         model = ModelListGP(*gps)
         fit_gpytorch_mll(SumMarginalLogLikelihood(model.likelihood, model))
         return model
@@ -330,6 +354,9 @@ class MultiFidelityGPConstructor:
             linear_truncated=self.linear_truncated,
             input_transform=_fidelity_transform(spec, self.bounds),
         )
+        if spec.categorical_indices():
+            _add_categories(gp, spec.categorical_indices(), iteration, positions.values(),
+                            self.linear_truncated)
         _pin_linear_truncated_power(gp, self.power)
         fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
         return gp
@@ -343,7 +370,8 @@ class MultiFidelityGPConstructor:
         (source,) = self.spec.sources
         (t,) = self.spec.source_indices()
         d = X.shape[-1]
-        design = [i for i in range(d) if i != t]
+        categorical = self.spec.categorical_indices()
+        design = [i for i in range(d) if i != t and i not in categorical]
         gps = []
         for j in range(Y.shape[-1]):
             gp = MultiTaskGP(
@@ -351,18 +379,86 @@ class MultiFidelityGPConstructor:
                 Y[..., j : j + 1],
                 train_Yvar=Yvar[..., j : j + 1] if Yvar is not None else None,
                 task_feature=t,
-                output_tasks=[int(source.target)],
-                all_tasks=sorted(int(v) for v in source.domain.values),
+                output_tasks=[int(source.target_code)],
+                all_tasks=sorted(int(v) for v in source.domain.codes),
                 likelihood=get_gaussian_likelihood_with_lognormal_prior()
                 if Yvar is None
                 else None,
                 input_transform=_input_transform(
                     d, self.bounds, self.spec.log_indices(), indices=design
-                ),
+                ) if design else None,
+                covar_module=_design_kernel(design, categorical, d) if categorical else None,
             )
             fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
             gps.append(gp)
         return gps[0] if len(gps) == 1 else ModelListGP(*gps)
+
+
+def _design_kernel(numeric: list[int], categorical: list[int], d: int):
+    """A ``MultiTaskGP`` data kernel for designs with labeled variables: BoTorch's
+    default kernel on the ``numeric`` columns times a categorical kernel on the
+    ``categorical`` ones, indexed into the full ``d`` columns."""
+    from botorch.models.kernels.categorical import CategoricalKernel
+    from botorch.models.utils.gpytorch_modules import (
+        get_covar_module_with_dim_scaled_prior,
+    )
+    from gpytorch.kernels import ScaleKernel
+
+    cat = CategoricalKernel(ard_num_dims=len(categorical), active_dims=categorical)
+    if not numeric:
+        kernel = ScaleKernel(cat)
+    else:
+        kernel = ScaleKernel(
+            get_covar_module_with_dim_scaled_prior(ard_num_dims=len(numeric), active_dims=numeric)
+            * cat
+        )
+    kernel.active_dims = torch.arange(d)  # columns are absolute; MultiTaskGP keeps a set one
+    return kernel
+
+
+def _add_categories(gp, categorical: list[int], iteration, data_fidelities, linear_truncated) -> None:
+    """Give a ``SingleTaskMultiFidelityGP`` a categorical kernel on the
+    ``categorical`` columns (codes of labeled values): its fidelity kernel is
+    rebuilt on the other columns, times a categorical kernel on these. The
+    per-output parameter map (``_subset_batch_dict``) is rebuilt to match, so
+    ``subset_output`` still works."""
+    from botorch.models.gp_regression_fidelity import _setup_multifidelity_covar_module
+    from botorch.models.kernels.categorical import CategoricalKernel
+    from gpytorch.kernels import ScaleKernel
+
+    d = gp.train_inputs[0].shape[-1]
+    keep = [i for i in range(d) if i not in categorical]
+    at = {j: i for i, j in enumerate(keep)}
+    data = [at[i] for i in data_fidelities if i != iteration]
+    covar, subset = _setup_multifidelity_covar_module(
+        dim=len(keep),
+        aug_batch_shape=gp._aug_batch_shape,
+        iteration_fidelity=at[iteration] if iteration is not None else None,
+        data_fidelities=data or None,
+        linear_truncated=linear_truncated,
+        nu=2.5,
+    )
+    product, prefix = (
+        (covar.base_kernel, "covar_module.base_kernel.kernels")
+        if isinstance(covar, ScaleKernel)
+        else (covar, "covar_module.kernels")
+    )
+    keep_t = torch.tensor(keep)
+    for k in product.kernels:  # their columns are positions among ``keep``
+        k.active_dims = keep_t if k.active_dims is None else keep_t[k.active_dims]
+    product.kernels.append(
+        CategoricalKernel(
+            batch_shape=gp._aug_batch_shape, ard_num_dims=len(categorical), active_dims=categorical
+        )
+    )
+    subset[f"{prefix}.{len(product.kernels) - 1}.raw_lengthscale"] = -3
+    if isinstance(covar, ScaleKernel):
+        subset["covar_module.raw_outputscale"] = -1
+    gp.covar_module = covar.to(gp.train_inputs[0])
+    gp._subset_batch_dict = {
+        **{k: v for k, v in gp._subset_batch_dict.items() if not k.startswith("covar_module")},
+        **subset,
+    }
 
 
 def _pin_linear_truncated_power(gp, power: int) -> None:
@@ -420,14 +516,15 @@ def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstr
     Keyed on ``n_outputs`` (every output is modeled, incl. OBSERVE), not objective
     count — a single-objective spec with an extra OBSERVE output needs a ModelList.
     Callers may still pass their own ``ModelConstructor`` (e.g. a correlated
-    MultiTaskGP for SBI). ``bounds`` defaults to the spec's design bounds, and
-    ``log=True`` variables are modeled on a log scale.
+    MultiTaskGP for SBI). ``bounds`` defaults to the spec's design bounds,
+    ``log=True`` variables are modeled on a log scale, and labeled variables get a
+    categorical kernel.
     """
     if spec.sources:
         return MultiFidelityGPConstructor(spec)
     if bounds is None:
         bounds = spec.bounds_tensor()
-    log = spec.log_indices()
+    kw = {"log": spec.log_indices(), "categorical": spec.categorical_indices()}
     if spec.n_outputs == 1:
-        return SingleTaskGPConstructor(bounds=bounds, log=log)
-    return ModelListConstructor(bounds=bounds, log=log)
+        return SingleTaskGPConstructor(bounds=bounds, **kw)
+    return ModelListConstructor(bounds=bounds, **kw)

@@ -599,7 +599,7 @@ def _manual_controls(state: UIState) -> None:
                 for name, val in cand.items():
                     with ui.column().classes("gap-0"):
                         ui.label(name).classes("text-xs text-gray-500")
-                        ui.label(f"{val:.4g}").classes("font-mono")
+                        ui.label(_fmt(val)).classes("font-mono")
             inputs = {}
             with ui.row().classes("gap-2 flex-wrap"):
                 for o in state.spec.outputs:  # every modeled output, incl. OBSERVE
@@ -833,12 +833,17 @@ def _update_recommendation(state: UIState) -> None:
         for i in rec:
             r = hist.records[i]
             setting = ", ".join(
-                f"{n} = {v:.4g}" for n, v in zip(spec.variable_names, r.candidate.reshape(-1).tolist())
+                f"{n} = {_fmt(v)}" for n, v in spec.as_dict(r.candidate).items()
             )
             outs = ", ".join(
                 f"{o.name} = {float(r.outputs[j]):.4g}" for j, o in enumerate(spec.outputs)
             )
             ui.label(f"{setting}  →  {outs}").classes("font-mono text-sm")
+
+
+def _fmt(value) -> str:
+    """A design value for display: a label as is, a number to 4 significant figures."""
+    return value if isinstance(value, str) else f"{value:.4g}"
 
 
 def _history_columns(spec) -> list[dict]:
@@ -854,7 +859,7 @@ def _history_rows(state: UIState) -> list[dict]:
     return [
         {
             "step": i,
-            **{n: round(float(v), 4) for n, v in zip(spec.variable_names, r.candidate.reshape(-1).tolist())},
+            **{n: v if isinstance(v, str) else round(v, 4) for n, v in spec.as_dict(r.candidate).items()},
             **{o.name: round(float(r.outputs[j]), 4) for j, o in enumerate(spec.outputs)},
         }
         for i, r in enumerate(hist.records)

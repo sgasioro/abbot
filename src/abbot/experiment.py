@@ -69,11 +69,17 @@ class TensorExperiment:
     ``dtype`` (double by default). A wrapped ``run_batch(X)`` gets the ``(q, d)``
     tensor instead, and the wrapper is then a :class:`BatchExperiment`. A wrapped
     ``cost(x)`` gets the ``(d,)`` tensor.
+
+    A spec with labeled values (``EnumeratedDomain(values=["water", ...])``) needs
+    ``spec=``: the tensor then holds each label's code, its position in ``values``.
     """
 
-    def __init__(self, experiment: Any, dtype: torch.dtype = torch.double) -> None:
+    def __init__(
+        self, experiment: Any, dtype: torch.dtype = torch.double, *, spec: Any = None
+    ) -> None:
         self.experiment = experiment
         self.dtype = dtype
+        self.spec = spec
         if hasattr(experiment, "run_batch"):
             self.run_batch = self._run_batch
         else:
@@ -81,15 +87,24 @@ class TensorExperiment:
         if hasattr(experiment, "cost"):
             self.cost = self._cost
 
+    def _tensor(self, design: Design) -> torch.Tensor:
+        if self.spec is not None:
+            return self.spec.as_tensor(design).to(self.dtype)
+        if any(isinstance(v, str) for v in design.values()):
+            raise TypeError(
+                f"design {dict(design)} has labels; pass TensorExperiment(..., spec=spec) "
+                "so they become codes"
+            )
+        return torch.tensor(list(design.values()), dtype=self.dtype)
+
     def _cost(self, design: Design) -> Any:
-        return self.experiment.cost(torch.tensor(list(design.values()), dtype=self.dtype))
+        return self.experiment.cost(self._tensor(design))
 
     def _run(self, design: Design) -> Any:
-        x = torch.tensor(list(design.values()), dtype=self.dtype)
-        return self.experiment.run(x)
+        return self.experiment.run(self._tensor(design))
 
     def _run_batch(self, designs: list[Design]) -> Any:
-        X = torch.tensor([list(d.values()) for d in designs], dtype=self.dtype)
+        X = torch.stack([self._tensor(d) for d in designs])
         return self.experiment.run_batch(X)
 
 
@@ -218,7 +233,7 @@ class MockAnalyticExperiment:
         self._bias_widths = 0.15 + 0.25 * torch.rand(m, n_design, generator=g, dtype=torch.double)
         self._level_bias = [
             {v: 0.5 + 0.5 * float(torch.rand(1, generator=g, dtype=torch.double))
-             for v in s.domain.values}
+             for v in s.domain.codes}
             if not s.is_ordered else None
             for s in spec.sources or []
         ]
@@ -233,16 +248,17 @@ class MockAnalyticExperiment:
         import math
 
         out = []
-        for source in self.spec.sources or []:
-            v = float(design[source.name])
+        x = self.spec.as_tensor(design).tolist()
+        for i, source in zip(self.spec.source_indices(), self.spec.sources or []):
+            v = x[i]
             if not source.is_ordered:
-                out.append(1.0 if v == source.target else 0.0)
+                out.append(1.0 if v == source.target_code else 0.0)
                 continue
             from abbot.problem import EnumeratedDomain
 
             d = source.domain
             if isinstance(d, EnumeratedDomain):
-                lo, hi = min(d.values), max(d.values)
+                lo, hi = min(d.codes), max(d.codes)
             else:
                 lo, hi = d.lower, d.upper
             if source.is_log:
@@ -252,7 +268,7 @@ class MockAnalyticExperiment:
         return out
 
     def run(self, design: Design) -> torch.Tensor:
-        x = torch.tensor(list(design.values()), dtype=torch.double)
+        x = self.spec.as_tensor(design)
         span = (self._hi - self._lo).clamp(min=1e-9)
         xn = ((x - self._lo) / span).clamp(0.0, 1.0)  # normalized to [0, 1]^d
         n_design = len(self.spec.design_names)
@@ -262,7 +278,8 @@ class MockAnalyticExperiment:
             for source, u, levels in zip(
                 self.spec.sources, self._accuracy(design), self._level_bias, strict=True
             ):
-                size = (1.0 - u) if levels is None else levels[float(design[source.name])] * (1.0 - u)
+                code = source.domain.encode(design[source.name]) if levels else None
+                size = (1.0 - u) if levels is None else levels[code] * (1.0 - u)
                 bias += self.source_bias * size
             vals = vals + bias * self._bump(xn[:n_design], self._bias_centers, self._bias_widths)
         if self.noise > 0.0:
@@ -328,7 +345,7 @@ class MockDatasetExperiment:
         return self._X
 
     def run(self, design: Design) -> torch.Tensor:
-        x = torch.tensor([float(design[name]) for name in self.spec.variable_names], dtype=torch.double)
+        x = self.spec.as_tensor(design)
         hits = torch.isclose(self._X, x.unsqueeze(0)).all(dim=-1).nonzero()
         if len(hits) == 0:
             raise ValueError(f"design {dict(design)} is not in this dataset")

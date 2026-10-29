@@ -108,7 +108,7 @@ class Continuous:
                 kwargs.pop("raw_samples")
             candidates, _ = optimize_acqf(fixed_features=fixed or None, **kwargs)
             return candidates.detach()
-        combos = list(product(*(inputs[j].values for j in enum)))
+        combos = list(product(*(inputs[j].codes for j in enum)))
         if len(combos) > MAX_MIXED_COMBINATIONS:
             raise ValueError(
                 f"{len(combos)} combinations of enumerated values "
@@ -124,10 +124,7 @@ class Continuous:
     def _log_uniform_starts(self, acq, spec: ProblemSpec, n: int, fixed: dict[int, float]):
         """``(num_restarts, n, d)`` starting batches: the best of ``raw_samples``
         batches drawn by ``spec.sample_designs`` (log-uniform on log axes)."""
-        names = spec.variable_names
-        X = spec.sample_designs(
-            self.raw_samples * n, fixed={names[j]: v for j, v in fixed.items()}
-        ).reshape(self.raw_samples, n, -1)
+        X = spec._sample(self.raw_samples * n, None, fixed).reshape(self.raw_samples, n, -1)
         with torch.no_grad():
             value = acq(X).reshape(-1)
         best = value.nan_to_num(float("-inf")).topk(min(self.num_restarts, len(value))).indices
@@ -152,7 +149,7 @@ class DiscreteArgmax:
         axes = []
         for d in spec.inputs:
             if isinstance(d, EnumeratedDomain):
-                axes.append(d.values)
+                axes.append(d.codes)
             elif isinstance(d, IntegerDomain):
                 axes.append(list(range(d.lower, d.upper + 1)))
             else:

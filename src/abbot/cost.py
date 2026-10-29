@@ -220,7 +220,7 @@ class SourceCost(FittedCost):
         for source, (low, high) in zip(spec.sources, source_bounds):
             name = source.name
             if not source.is_ordered:
-                levels = [v for v in source.domain.values if v != source.target]
+                levels = [v for v in source.domain.codes if v != source.target_code]
                 for v in levels:
                     params[f"f_{name}_{int(v)}"] = 0.0
                 terms.append(("level", name, levels))

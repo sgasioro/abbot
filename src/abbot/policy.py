@@ -875,9 +875,12 @@ class BAXPolicy:
         for source in spec.sources:
             d = source.domain
             if source.name in explicit:
-                values = [float(v) for v in explicit[source.name]]
+                values = [
+                    d.encode(v) if isinstance(d, EnumeratedDomain) else float(v)
+                    for v in explicit[source.name]
+                ]
             elif isinstance(d, EnumeratedDomain):
-                values = list(d.values)
+                values = list(d.codes)
             else:
                 k = 5 if isinstance(self.source_levels, dict) else int(self.source_levels)
                 if k < 2:
@@ -890,7 +893,7 @@ class BAXPolicy:
                     values = [d.lower + u * (d.upper - d.lower) for u in t]
                 if isinstance(d, IntegerDomain):
                     values = [float(round(v)) for v in values]
-            target = float(source.target)
+            target = source.target_code
             levels.append([target, *sorted({v for v in values if v != target})])
         return levels
 

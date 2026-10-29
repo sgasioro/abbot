@@ -521,7 +521,7 @@ class Campaign:
         fingerprint: dict | None = None,
         allow_resume_mismatch: bool = False,
         targets: Targets | None = None,
-        initial_designs: torch.Tensor | None = None,
+        initial_designs: torch.Tensor | list[Mapping] | None = None,
     ) -> None:
         if policy is None:
             policy = default_policy(spec)
@@ -591,14 +591,17 @@ class Campaign:
     def add_hook(self, hook: StepHook) -> None:
         self._hooks.append(hook)
 
-    def seed(self, designs: torch.Tensor) -> None:
-        """Queue initial designs to measure before the policy proposes. No-op (with
-        a log) if the campaign resumed from a store — its seeds are already in the
-        history or the saved queue.
+    def seed(self, designs: torch.Tensor | list[Mapping]) -> None:
+        """Queue initial designs to measure before the policy proposes: an ``(n, d)``
+        tensor, or a list of ``{name: value}`` dicts (labels for labeled
+        variables). No-op (with a log) if the campaign resumed from a store — its
+        seeds are already in the history or the saved queue.
         """
         if len(self.history) or self._queue_restored:
             logger.info("seed() ignored: campaign resumed with %d steps.", len(self.history))
             return
+        if len(designs) and isinstance(designs[0], Mapping):
+            designs = [self.spec.as_tensor(d) for d in designs]
         self._seed_queue.extend(list(designs))
         self._save_queue()
 
@@ -956,7 +959,7 @@ class Campaign:
         supervisor/hooks). Returns the resulting :class:`CampaignState`.
         """
         if isinstance(x, Mapping):
-            x = [float(x[n]) for n in self.spec.variable_names]
+            x = self.spec.as_tensor(x)
         xt = torch.as_tensor(x, dtype=torch.double).reshape(-1)
         item = next(
             (it for it in self._inflight.values() if torch.equal(it.x, xt)), None
@@ -1187,8 +1190,7 @@ class Campaign:
             x[..., j] = v
         if self.spec._feasible(x.double().reshape(1, -1))[0]:
             return x
-        names = self.spec.variable_names
-        return self.spec.sample_designs(1, fixed={names[j]: v for j, v in pinned.items()})[0].to(x)
+        return self.spec._sample(1, None, pinned)[0].to(x)
 
     def _fit_now(self):
         """Fit the surrogate on the current clean history (uncached), or None."""
@@ -1329,7 +1331,7 @@ class Campaign:
         return True
 
     def _to_dict(self, x: torch.Tensor) -> dict:
-        return dict(zip(self.spec.variable_names, x.reshape(-1).tolist()))
+        return self.spec.as_dict(x)
 
     @staticmethod
     def _as_list(results: object) -> list:

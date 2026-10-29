@@ -58,6 +58,8 @@ model_constructor)` to choose your own. A few variations:
   `LevelSet(0.9, output="purity")`), and use `BAXPolicy(goal)`.
 - **Hold a knob fixed** — `campaign.suggest(1, fixed={"temp": 30})` proposes with
   `temp` at 30 and chooses the rest.
+- **Categories** — `EnumeratedDomain(name="solvent", values=["water", "ethanol"])`;
+  designs carry the labels, and the model learns how alike they are.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
 
@@ -304,9 +306,9 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        target sets and multi-fidelity entropy search that respect them, and
        recommending only designs likely to satisfy them. Later: UI support and a
        feasibility stopping rule.
-     - **Spec ergonomics:** names instead of positions in boxes and goals,
-       `log=True` on design variables and `suggest(fixed=...)` *(done)*; string
-       categories next (with a categorical kernel).
+     - **Spec ergonomics** *(done)*: names instead of positions in boxes and
+       goals, `log=True` on design variables, `suggest(fixed=...)`, and labeled
+       categories (`values=["water", "ethanol"]`) with a categorical kernel.
      - **Xopt generators in abbot's loop:** `GestGeneratorPolicy` (TuRBO,
        Nelder-Mead, RCDS, genetic algorithms, time-dependent BO), with policies
        able to skip abbot's model fit.

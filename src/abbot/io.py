@@ -37,7 +37,8 @@ def history_to_csv(history: History, spec: ProblemSpec) -> str:
     """Flat CSV: ``step, <variable names...>, <output names...>``.
 
     One column per modeled output (the full set, incl. OBSERVE), in spec.outputs
-    order. Only records with outputs are written. Raw (physical) output units.
+    order. Only records with outputs are written. Raw (physical) output units, and
+    labels for labeled variables.
     """
     var_names = spec.variable_names
     out_names = spec.output_names
@@ -47,7 +48,7 @@ def history_to_csv(history: History, spec: ProblemSpec) -> str:
     for i, r in enumerate(history.records):
         if r.outputs is None:
             continue
-        xs = r.candidate.reshape(-1).tolist()
+        xs = list(spec.as_dict(r.candidate).values())
         ys = r.outputs.reshape(-1).tolist()
         writer.writerow([i, *xs, *ys])
     return buf.getvalue()
@@ -58,8 +59,11 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 
     Column matching is by name against the spec (a ``step`` column, if present, is
     ignored). Raises a clear error if a required variable/output column is missing.
-    Imported records carry no observation/aux (they are prior data).
+    A labeled variable's column holds its labels. Imported records carry no
+    observation/aux (they are prior data).
     """
+    from abbot.problem import EnumeratedDomain
+
     var_names = spec.variable_names
     out_names = spec.output_names
     reader = csv.DictReader(io.StringIO(text))
@@ -74,10 +78,18 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
     history = History()
     for row_num, row in enumerate(reader, start=2):  # row 1 is the header
         try:
-            x = torch.tensor([float(row[n]) for n in var_names], dtype=torch.double)
+            x = torch.tensor(
+                [
+                    d.encode(row[d.name].strip())
+                    if isinstance(d, EnumeratedDomain) and d.is_categorical
+                    else float(row[d.name])
+                    for d in spec.inputs
+                ],
+                dtype=torch.double,
+            )
             y = torch.tensor([float(row[n]) for n in out_names], dtype=torch.double)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"CSV row {row_num}: could not parse numbers ({exc})") from exc
+            raise ValueError(f"CSV row {row_num}: could not parse a value ({exc})") from exc
         history.append(Record(candidate=x, observation=None, outputs=y))
     return history
 
@@ -91,7 +103,7 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 #   # version,1
 #   # continuous,<name>,<lower>,<upper>[,log]
 #   # integer,<name>,<lower>,<upper>[,log]
-#   # enumerated,<name>,<v1>,<v2>,...
+#   # enumerated,<name>,<v1>,<v2>,...   (numbers, or labels if any isn't a number)
 #   # output,<name>,MINIMIZE|MAXIMIZE|OBSERVE[,<min_val>,<max_val>]
 #                                     (OBSERVE = modeled, not optimized; a bound
 #                                     left empty is absent)
@@ -160,6 +172,15 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
     return buf.getvalue()
 
 
+def _values(cells: list[str]) -> list[float] | list[str]:
+    """Enumerated values from text: numbers if every one parses as a number, else
+    labels."""
+    try:
+        return [float(v) for v in cells]
+    except ValueError:
+        return cells
+
+
 def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
     """Parse a self-describing CSV back into ``(ProblemSpec, History)``.
 
@@ -183,7 +204,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
     outputs: list = []
     boxes: list = []
     for raw in config_lines:
-        cells = [c.strip() for c in raw.lstrip().lstrip("#").strip().split(",")]
+        cells = [c.strip() for c in next(csv.reader([raw.lstrip().lstrip("#")]))]
         key = cells[0].lower()
         if key == "continuous":
             if len(cells) < 4:
@@ -211,7 +232,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
                     f"self-describing CSV: malformed `# enumerated` row {raw!r}; "
                     "expected `# enumerated,<name>,<v1>,<v2>,...`."
                 )
-            domain.append(EnumeratedDomain(name=cells[1], values=[float(v) for v in cells[2:] if v]))
+            domain.append(EnumeratedDomain(name=cells[1], values=_values([v for v in cells[2:] if v])))
         elif key in ("output", "objective"):  # "objective" = legacy read-compat
             direction = cells[2].upper() if len(cells) > 2 else "MAXIMIZE"
             bounds = [float(v) if v else None for v in (cells[3:5] + ["", ""])[:2]]

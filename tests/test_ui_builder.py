@@ -45,12 +45,13 @@ def test_build_spec_blank_continuous_bound_names_the_variable():
         )
 
 
-def test_build_spec_non_numeric_enumerated_value_shows_token():
-    with pytest.raises(ValueError, match="foo"):
-        build_spec(
-            [{"kind": "enumerated", "name": "catalyst", "values": "0, 1, foo"}],
-            [{"name": "f", "direction": "MAXIMIZE"}],
-        )
+def test_build_spec_non_numeric_enumerated_values_are_labels():
+    spec = build_spec(
+        [{"kind": "enumerated", "name": "solvent", "values": "water, acetic acid, 1"}],
+        [{"name": "f", "direction": "MAXIMIZE"}],
+    )
+    assert spec.domain[0].values == ["water", "acetic acid", "1"]
+    assert spec.categorical_indices() == [0]
 
 
 def test_build_spec_empty_enumerated_values_errors():
