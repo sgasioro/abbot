@@ -54,7 +54,7 @@ problem itself:
 - abbot's proposals in Xopt's loop: `CorePolicyGenerator` wraps a `Campaign` as
   a gest `Generator`, so an abbot problem runs under `Xopt(generator=...)` on
   Xopt's parallel evaluators, Badger and control systems;
-- Xopt's proposals in abbot's loop (planned): `GestGeneratorPolicy` wraps any
+- Xopt's proposals in abbot's loop: `GestGeneratorPolicy` wraps any
   gest generator (TuRBO, Nelder-Mead, RCDS, genetic algorithms, time-dependent
   BO) as an abbot `Policy`, under abbot's supervisors, resume, cost tracking and
   UI.
@@ -123,7 +123,7 @@ algorithms that are self-contained and run on their own data.
 
 | Neighbour | Status |
 |---|---|
-| Xopt | `abbot.interop.xopt` (`abbot[xopt]`): abbot in Xopt's loop; Xopt's generators in abbot's loop planned |
+| Xopt | `abbot.interop.xopt` (`abbot[xopt]`): abbot in Xopt's loop, and Xopt's generators in abbot's loop |
 | blop | Planned: a `Campaign`-backed blop `Optimizer`. abbot requires BoTorch 0.18, the same line as blop and Ax |
 | Ax | None planned; complementary rather than integrated |
 | bluesky-adaptive | Not planned unless blop doesn't cover a need |

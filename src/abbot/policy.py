@@ -53,6 +53,10 @@ UQRequirement = Literal["point", "samples", "calibrated_variance"]
 class Policy(Protocol):
     """ask/tell acquisition policy over a botorch Model (gest-api-aligned).
 
+    A policy that brings its own model, or needs none, sets ``needs_model = False``:
+    the campaign then skips its fit when proposing and passes ``model=None``
+    (``abbot.interop.xopt.GestGeneratorPolicy`` does).
+
     Optionally, a policy sets ``last_acquisition_value`` after each ``suggest``: its
     acquisition value per pick, ``(n,)`` (or one value for a joint batch), in its
     own units. The campaign stores it on each record (``Record.acquisition``), which

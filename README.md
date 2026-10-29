@@ -309,9 +309,9 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
      - **Spec ergonomics** *(done)*: names instead of positions in boxes and
        goals, `log=True` on design variables, `suggest(fixed=...)`, and labeled
        categories (`values=["water", "ethanol"]`) with a categorical kernel.
-     - **Xopt generators in abbot's loop:** `GestGeneratorPolicy` (TuRBO,
-       Nelder-Mead, RCDS, genetic algorithms, time-dependent BO), with policies
-       able to skip abbot's model fit.
+     - **Xopt generators in abbot's loop** *(done)*: `GestGeneratorPolicy`
+       (TuRBO, Nelder-Mead, RCDS, genetic algorithms, time-dependent BO), with
+       policies able to skip abbot's model fit (`needs_model = False`).
      - **Diagnostics and stopping:** `campaign.check()` (leave-one-out fit,
        noise and lengthscale sanity, runs vs dimension), target and
        no-improvement supervisors, a "how do I…" docs index.
