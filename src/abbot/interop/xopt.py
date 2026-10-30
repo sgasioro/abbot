@@ -16,6 +16,9 @@ Surface:
     (async/parallel) evaluator WITHOUT the core depending on Xopt. This is the
     "never the spine" proof: a user can always walk their ``ProblemSpec`` back to
     Xopt/Badger and the HPC-scale evaluation stack.
+  - ``GestGeneratorPolicy`` — the other direction: any gest ``Generator`` (Xopt's
+    Nelder-Mead, RCDS, extremum seeking, genetic algorithms, its BO generators
+    with TuRBO) as an abbot policy, under abbot's loop, supervisors, store and UI.
 
 Known limitation (by design): composite-SBI's cached ``aux`` posterior payload has
 no DataFrame representation, so only the reduced-scalar objective form runs as a
@@ -232,10 +235,9 @@ class CorePolicyGenerator:
         """
         if not results:
             return
-        var_names = self.spec.variable_names
         out_names = self.spec.output_names  # ALL outputs (incl. OBSERVE), spec order
         for row in results:
-            x = torch.tensor([float(row[v]) for v in var_names], dtype=torch.double)
+            x = self.spec.as_tensor(row)  # labels -> codes
             y = torch.tensor([float(row[o]) for o in out_names], dtype=torch.double)
             # Xopt chose this candidate itself (no abbot suggest()), so record it.
             self._campaign.record(x, y)
@@ -253,3 +255,156 @@ class CorePolicyGenerator:
     @property
     def campaign(self) -> Campaign:
         return self._campaign
+
+
+# --- gest Generator -> abbot Policy -------------------------------------------
+
+
+class GestGeneratorPolicy:
+    """Any gest-api ``Generator`` as an abbot policy: Xopt's Nelder-Mead, RCDS,
+    extremum seeking, genetic algorithms, or its Bayesian generators (TuRBO via
+    their ``turbo_controller``), under abbot's loop, supervisors, store and UI.
+
+    ``generator`` is a generator class, built on first use with
+    ``vocs=GestGeneratorPolicy.vocs_for(spec)`` and ``**kwargs``, or a generator
+    already built on that VOCS::
+
+        from xopt.generators.sequential.neldermead import NelderMeadGenerator
+        Campaign(spec, GestGeneratorPolicy(NelderMeadGenerator, adaptive=True))
+
+    - **No abbot model.** The generator brings its own (or none), so the campaign
+      skips its fit when proposing (``needs_model = False``). Recommendations and
+      the UI still fit one on the results.
+    - **Data.** Before each proposal the generator is given every clean record it
+      hasn't seen, as ``{name: value}`` rows with every output by name. A resumed
+      campaign hands a new generator the whole history.
+    - **Sequential generators** (Nelder-Mead, RCDS, extremum seeking) propose one
+      design at a time and expect that design's result next. They start from the
+      last run they're given, so the runs they haven't seen are passed best last:
+      they start from the best run so far (the default initial designs work as a
+      start). If something else arrives while one waits on its design (a
+      ``record`` of an outside run), it is reset and restarts from the best of the
+      runs that arrived, and ``last_warning`` says so. Asking one
+      for several designs, or for another while its last is still out, is
+      refused.
+    - **Labeled variables** reach the generator as their codes (Xopt's generators
+      expect numbers), so a generator with a model treats them as ordered. Designs
+      outside the generator carry the labels as usual.
+    - **Not supported:** ``fixed=`` (a generator can't hold an input), source
+      variables, and what VOCS can't hold (see :func:`spec_to_vocs`). Outstanding
+      designs aren't passed on: the generator tracks what it proposed.
+    """
+
+    needs_model = False
+    uq_requirement = "point"
+
+    def __init__(self, generator, **kwargs) -> None:
+        if isinstance(generator, type):
+            self._factory, self.generator = generator, None
+        else:
+            if kwargs:
+                raise TypeError("pass keyword arguments with a generator class, not an instance")
+            self._factory, self.generator = None, generator
+        self.kwargs = kwargs
+        self._seen = 0  # history records already handed to the generator
+        self.last_acquisition_value = None
+        self.last_warning: str | None = None
+
+    @staticmethod
+    def vocs_for(spec: ProblemSpec):
+        """The VOCS a generator is built on: :func:`spec_to_vocs`, with each
+        labeled variable's values as codes."""
+        from gest_api.vocs import DiscreteVariable
+
+        vocs = spec_to_vocs(spec)
+        for j in spec.categorical_indices():
+            d = spec.domain[j]
+            vocs.variables[d.name] = DiscreteVariable(values=d.codes)
+        return vocs
+
+    def _build(self, spec: ProblemSpec):
+        if spec.sources:
+            raise ValueError(
+                f"GestGeneratorPolicy doesn't support source variables {spec.source_names}"
+            )
+        vocs = self.vocs_for(spec)
+        if self.generator is None:
+            self.generator = self._factory(vocs=vocs, **self.kwargs)
+        else:
+            names = set(self.generator.vocs.variable_names) | set(self.generator.vocs.output_names)
+            want = set(vocs.variable_names) | set(vocs.output_names)
+            if names != want:
+                raise ValueError(
+                    f"the generator's VOCS names {sorted(names)} don't match the spec's "
+                    f"{sorted(want)}; build it with vocs=GestGeneratorPolicy.vocs_for(spec)"
+                )
+        return self.generator
+
+    @property
+    def _sequential(self) -> bool:
+        return not getattr(self.generator, "supports_batch_generation", True)
+
+    def _feed(self, history, spec: ProblemSpec) -> None:
+        records = history.records[self._seen:]
+        self._seen = len(history.records)
+        rows = [  # codes, not labels: see vocs_for
+            {
+                **dict(zip(spec.variable_names, r.candidate.reshape(-1).tolist())),
+                **dict(zip(spec.output_names, r.outputs.reshape(-1).tolist())),
+            }
+            for r in records
+            if not r.fault and r.outputs is not None
+        ]
+        if not rows:
+            return
+        if self._sequential and not getattr(self.generator, "is_active", False):
+            rows = self._best_last(rows, spec)
+        try:
+            self.generator.ingest(rows)
+        except Exception as exc:
+            if not hasattr(self.generator, "reset") or type(exc).__name__ != "SeqGeneratorError":
+                raise
+            # An outside result arrived while the generator waited on its own design.
+            self.generator.reset()
+            self.generator.ingest(self._best_last(rows, spec))
+            self.last_warning = (
+                f"{type(self.generator).__name__} was given results it didn't propose, so "
+                "it was reset and restarts from the best of them."
+            )
+
+    @staticmethod
+    def _best_last(rows: list[dict], spec: ProblemSpec) -> list[dict]:
+        """``rows`` ordered so the best objective value is last (a sequential
+        generator starts from the last row). Unchanged without one objective."""
+        if spec.n_objectives != 1:
+            return rows
+        (j,) = spec.objective_indices()
+        name, sign = spec.output_names[j], float(spec.output_signs()[j])
+        return sorted(rows, key=lambda row: sign * row[name])
+
+    def suggest(self, history, spec: ProblemSpec, model=None, n: int = 1, *, pending=None):
+        self.last_warning = None
+        generator = self._build(spec)
+        name = type(generator).__name__
+        if self._sequential:
+            if n > 1:
+                raise ValueError(f"{name} proposes one design at a time; ask for n=1")
+            if pending is not None and len(pending):
+                raise ValueError(
+                    f"{name} proposes one design at a time and waits for its result; "
+                    f"{len(pending)} design(s) are still outstanding"
+                )
+        self._feed(history, spec)
+        try:
+            points = generator.suggest(n)
+        except Exception as exc:
+            if type(exc).__name__ in ("SeqGeneratorError", "VOCSError"):
+                raise ValueError(f"{name}: {exc}") from exc
+            raise
+        if len(points) != n:
+            raise ValueError(f"{name} returned {len(points)} designs for n={n}")
+        names = spec.variable_names
+        return torch.tensor([[float(p[k]) for k in names] for p in points], dtype=torch.double)
+
+    def ingest(self, results) -> None:
+        return None  # results reach the generator through the history, in suggest

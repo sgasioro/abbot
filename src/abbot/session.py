@@ -1126,8 +1126,10 @@ class Campaign:
     ) -> torch.Tensor:
         self._proposal_acq = [None] * n  # random probes carry no acquisition value
         self._proposal_seconds = (None, None)
-        model = self.current_model()
-        if model is None:
+        # A policy with its own model (or none) proposes without abbot's fit.
+        needs_model = getattr(self.policy, "needs_model", True)
+        model = self.current_model() if needs_model else None
+        if model is None and needs_model:
             # Cold start: too few clean points to fit yet. A uniform probe is the
             # correct behavior here (not an error) — stay quiet.
             logger.debug("no model yet (too few clean points); drawing a random probe.")
@@ -1135,7 +1137,8 @@ class Campaign:
         try:
             start = time.perf_counter()
             xs = self._policy_suggest(model, n, pending or [], fixed)
-            self._proposal_seconds = (self._model_fit_seconds, time.perf_counter() - start)
+            fit_seconds = self._model_fit_seconds if needs_model else None
+            self._proposal_seconds = (fit_seconds, time.perf_counter() - start)
             self._proposal_acq = _acquisition_values(self.policy, len(xs))
             # A policy may explain an odd proposal (e.g. BAX with an empty goal).
             warning = getattr(self.policy, "last_warning", None)

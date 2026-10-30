@@ -34,8 +34,10 @@ Useful and tested, but the surface is still settling; pin a version if you depen
 on them.
 
 - **`abbot.interop.*`** — the gest-api / Xopt field map (`spec_to_vocs`,
-  `vocs_to_spec`, `CorePolicyGenerator`) and the SBI adapter (`PosteriorSampler`,
-  `sbi_evaluate`, `TrainedPosterior`). These track external packages, which move.
+  `vocs_to_spec`), both directions of the generator bridge (`CorePolicyGenerator`:
+  abbot in Xopt's loop; `GestGeneratorPolicy`: Xopt's generators in abbot's loop,
+  see below) and the SBI adapter (`PosteriorSampler`, `sbi_evaluate`,
+  `TrainedPosterior`). These track external packages, which move.
 - **`abbot.composite`** (`composite_evaluate`, `Rescore`, `ObjectiveReducer`) —
   composite objectives; the reducer-mount API may grow
   (e.g. reducing inside the acquisition).
@@ -209,6 +211,37 @@ Source(domain=EnumeratedDomain(name="code", values=["dft", "xtb"]), target="dft"
   values as a set, so `vocs_to_spec` sorts labels for a stable order. Changing the
   order of `values` changes the codes, so a store won't resume across it (the
   fingerprint differs).
+
+## Xopt's generators in abbot's loop
+
+```python
+from abbot.interop.xopt import GestGeneratorPolicy
+from xopt.generators.sequential.neldermead import NelderMeadGenerator
+from xopt.generators.bayesian.expected_improvement import ExpectedImprovementGenerator
+
+Campaign(spec, GestGeneratorPolicy(NelderMeadGenerator))
+Campaign(spec, GestGeneratorPolicy(ExpectedImprovementGenerator, turbo_controller="optimize"))
+```
+
+`GestGeneratorPolicy` runs any gest-api generator (Nelder-Mead, RCDS, extremum
+seeking, genetic algorithms, Xopt's BO with TuRBO or time dependence) under
+abbot's loop, supervisors, store and UI. Pass a generator class (built on first
+use from the spec, with your keyword arguments) or one built on
+`GestGeneratorPolicy.vocs_for(spec)`.
+
+- **`needs_model = False`.** A policy with its own model, or none, sets this, and
+  the campaign skips its fit when proposing and passes `model=None`.
+  Recommendations and the UI still fit abbot's model on the results.
+- **Data.** Before each proposal the generator gets every clean record it hasn't
+  seen. A resumed campaign hands a new generator the whole history.
+- **Sequential generators** (Nelder-Mead, RCDS, extremum seeking) go one design at
+  a time; several at once, or another while one is outstanding, is refused. They
+  start from the best run they're given. A result they didn't propose (a
+  `record` of an outside run) resets them, with a `last_warning`.
+- **Labeled variables** reach the generator as codes, because Xopt's generators
+  expect numbers.
+- **Not supported:** `fixed=`, source variables, and what VOCS can't hold
+  (domain and output linear constraints, integer domains).
 
 ## Outstanding candidates
 
