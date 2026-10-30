@@ -32,9 +32,12 @@ from abbot.history import DataStore, History, Record
 from abbot.model import ModelConstructor, default_constructor
 from abbot.policy import Policy, default_policy
 from abbot.problem import ProblemSpec
+from abbot.supervision import bind
 
 if TYPE_CHECKING:
     from botorch.models.model import Model
+
+    from abbot.diagnostics import CheckReport
 
 logger = logging.getLogger(__name__)
 
@@ -535,7 +538,8 @@ class Campaign:
         self.policy = policy
         self.model_constructor = model_constructor
         self.store = store
-        self.supervisor = supervisor
+        # Supervisors that read the spec (target_reached, no_improvement) get it here.
+        self.supervisor = bind(supervisor, spec) if supervisor is not None else None
         self.max_retries = max_retries
         self.pre_run = pre_run
         # Optional re-derivation of the training targets from the history; the
@@ -1061,6 +1065,16 @@ class Campaign:
         if self._scored is None:
             self._scored = apply_targets(self.targets, self.history, self.spec)
         return self._scored
+
+    def check(self) -> CheckReport:
+        """Is the model a fair picture of the data? Leave-one-out fit per output,
+        runs far from their prediction, how much is read as noise, lengthscales, and
+        runs vs. inputs, as plain-language findings. Print the result; see
+        :mod:`abbot.diagnostics`. Uses the cached fit, so it costs one fit at most.
+        """
+        from abbot.diagnostics import check
+
+        return check(self.scored_history(), self.spec, self.current_model())
 
     def current_model(self) -> Model | None:
         """The surrogate fitted on the current clean history, or ``None``.

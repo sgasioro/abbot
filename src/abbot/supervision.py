@@ -4,8 +4,9 @@ A :class:`~abbot.experiment.Supervisor` is called with the full ``History`` afte
 every result and returns a :class:`~abbot.experiment.Verdict`: ``retry`` marks the
 latest shot unusable (it is kept out of the surrogate and re-run), ``halt`` says the
 apparatus needs a human (the campaign stops, resumable), and ``stop`` says the
-campaign is done without anything being wrong (a cost budget spent, the search
-converged: :func:`cost_cap`, :func:`acquisition_monitor`).
+campaign is done without anything being wrong (a cost budget spent, a target met,
+the search converged: :func:`cost_cap`, :func:`target_reached`,
+:func:`no_improvement`, :func:`acquisition_monitor`).
 
 Single-observation checks are written as ``detector(observation) -> bool`` and
 lifted with :func:`per_shot`, so their authors never touch the history and cannot
@@ -25,12 +26,15 @@ a threshold on the run it is scored on reports a detection rate the lab can't ge
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from abbot.experiment import Supervisor, Verdict
 from abbot.history import History, Record
+
+if TYPE_CHECKING:
+    from abbot.problem import ProblemSpec
 
 Detector = Callable[[Any], bool]
 Signal = Callable[[Record], Any]
@@ -78,20 +82,57 @@ def per_shot(detector: Detector) -> Supervisor:
 
 def any_of(*supervisors: Supervisor) -> Supervisor:
     """Merge supervisors: ``retry`` is an OR; the first non-None ``halt`` and the
-    first non-None ``stop`` win."""
+    first non-None ``stop`` win.
 
-    def supervisor(history: History) -> Verdict:
-        retry, halt, stop = False, None, None
-        for s in supervisors:
-            verdict = s(history)
-            retry = retry or verdict.retry
-            if halt is None:
-                halt = verdict.halt
-            if stop is None:
-                stop = getattr(verdict, "stop", None)
+    A run another supervisor rejects can't satisfy a stop: when one retries, each
+    stop is checked again with the run marked faulty, so a glitch that happens to
+    hit the target doesn't end the campaign.
+    """
+    return _AnyOf(supervisors)
+
+
+class _AnyOf:
+    def __init__(self, supervisors) -> None:
+        self.supervisors = tuple(supervisors)
+
+    def bind(self, spec) -> _AnyOf:
+        return _AnyOf(bind(s, spec) for s in self.supervisors)
+
+    def __call__(self, history: History) -> Verdict:
+        verdicts = [s(history) for s in self.supervisors]
+        if any(v.retry for v in verdicts) and any(v.stop for v in verdicts) and len(history):
+            history.records[-1].fault = True  # what the campaign is about to record
+            verdicts = [
+                Verdict(retry=v.retry, halt=v.halt, stop=s(history).stop) if v.stop else v
+                for s, v in zip(self.supervisors, verdicts)
+            ]
+        retry = any(v.retry for v in verdicts)
+        halt = next((v.halt for v in verdicts if v.halt is not None), None)
+        stop = next((v.stop for v in verdicts if getattr(v, "stop", None) is not None), None)
         return Verdict(retry=retry, halt=halt, stop=stop)
 
-    return supervisor
+
+def bind(supervisor: Supervisor, spec) -> Supervisor:
+    """``supervisor`` with the problem spec filled in, for those that read it
+    (:func:`target_reached`, :func:`no_improvement`). ``Campaign`` does this for
+    you; call it yourself only to run such a supervisor outside a campaign."""
+    return supervisor.bind(spec) if hasattr(supervisor, "bind") else supervisor
+
+
+class _NeedsSpec:
+    """A supervisor that reads the spec (output names, directions, constraints)."""
+
+    def __init__(self, name: str, make: Callable) -> None:
+        self.name, self.make = name, make
+
+    def bind(self, spec) -> Supervisor:
+        return self.make(spec)
+
+    def __call__(self, history: History) -> Verdict:
+        raise TypeError(
+            f"{self.name} needs the problem spec: pass it as Campaign(supervisor=...), "
+            "which fills it in, or call abbot.supervision.bind(supervisor, spec) first."
+        )
 
 
 def _window(history: History, window: int, signal: Signal):
@@ -298,3 +339,137 @@ def acquisition_monitor(threshold: float, window: int = 3) -> Supervisor:
         return Verdict()
 
     return supervisor
+
+
+def _runs(history: History, spec: ProblemSpec) -> list[tuple[int, torch.Tensor, bool]]:
+    """``(step, raw outputs, satisfies the output constraints)`` for each clean,
+    measured run."""
+    from abbot.feasibility import feasible
+
+    out = []
+    for step, r in enumerate(history.records):
+        if r.fault or r.outputs is None:
+            continue
+        y = r.outputs.double().reshape(-1)
+        ok = not spec.has_output_constraints or bool(feasible(spec, y.reshape(1, -1))[0])
+        out.append((step, y, ok))
+    return out
+
+
+def _directed(spec: ProblemSpec, name: str, caller: str) -> tuple[int, float]:
+    """Column and sign (+1 maximize, -1 minimize) of the output ``name``."""
+    names = spec.output_names
+    if name not in names:
+        raise ValueError(f"{caller}: no output named {name!r}; the outputs are {names}.")
+    j = names.index(name)
+    direction = spec.outputs[j].direction
+    if direction not in ("MAXIMIZE", "MINIMIZE"):
+        raise ValueError(
+            f"{caller}: output {name!r} is {direction}, so it has no better or worse; "
+            "name an output you maximize or minimize."
+        )
+    return j, 1.0 if direction == "MAXIMIZE" else -1.0
+
+
+def _the_objective(spec: ProblemSpec, caller: str, hint: str) -> str:
+    if spec.n_objectives != 1:
+        raise ValueError(f"{caller}: the spec has {spec.n_objectives} objectives; {hint}")
+    return spec.objectives[0].name
+
+
+def target_reached(target: float | Mapping[str, float]) -> Supervisor:
+    """Stop once a run reaches ``target``: at or above it for an output you
+    maximize, at or below for one you minimize.
+
+    ``target`` is a number for a spec with one objective, or ``{name: value}``: one
+    run must then reach every named value. Only clean runs count, and with output
+    constraints only runs that satisfy them. Values are the raw measurements (not
+    re-derived by ``targets=``), and a single noisy run can cross the line by luck:
+    for a noisy output, pick a target with that margin in mind.
+
+    The spec supplies the directions: pass this to ``Campaign(supervisor=...)``.
+    """
+    if isinstance(target, Mapping):
+        if not target:
+            raise ValueError("target_reached: name at least one output.")
+        wanted = {str(k): float(v) for k, v in target.items()}
+    else:
+        wanted = {None: float(target)}
+
+    def make(spec: ProblemSpec) -> Supervisor:
+        if None in wanted:
+            name = _the_objective(
+                spec, "target_reached",
+                "name the outputs, e.g. target_reached({'yield': 0.9, 'purity': 0.95}).",
+            )
+            goals = {name: wanted[None]}
+        else:
+            goals = wanted
+        cols = {name: (*_directed(spec, name, "target_reached"), value)
+                for name, value in goals.items()}
+
+        def meets(y: torch.Tensor) -> bool:
+            return all(sign * (float(y[j]) - value) >= 0 for j, sign, value in cols.values())
+
+        def supervisor(history: History) -> Verdict:
+            for step, y, ok in _runs(history, spec):
+                if ok and meets(y):
+                    got = ", ".join(
+                        f"{name} = {float(y[j]):.4g} (target {value:.4g})"
+                        for name, (j, _, value) in cols.items()
+                    )
+                    return Verdict(stop=f"target reached (target_reached): run {step} has {got}.")
+            return Verdict()
+
+        return supervisor
+
+    return _NeedsSpec("target_reached", make)
+
+
+def no_improvement(patience: int, min_delta: float = 0.0) -> Supervisor:
+    """Stop when the best value of the objective hasn't improved by more than
+    ``min_delta`` over the last ``patience`` runs.
+
+    Counts clean, measured runs, seeds included, so pick ``patience`` well above
+    the number of seeds. The best is the best measured value (raw, among runs that
+    satisfy any output constraints), so on a noisy output one lucky run counts as
+    an improvement: set ``min_delta`` to about the noise level. Nothing stops before
+    some run satisfies the constraints. For several objectives, use
+    :func:`acquisition_monitor`.
+
+    The spec supplies the direction: pass this to ``Campaign(supervisor=...)``.
+    """
+    if patience < 1:
+        raise ValueError(f"patience must be at least 1, got {patience}")
+    if min_delta < 0:
+        raise ValueError(f"min_delta must be non-negative, got {min_delta}")
+
+    def make(spec: ProblemSpec) -> Supervisor:
+        name = _the_objective(
+            spec, "no_improvement",
+            "it watches one, so use acquisition_monitor for several.",
+        )
+        j, sign = _directed(spec, name, "no_improvement")
+
+        def best(runs) -> float | None:
+            values = [sign * float(y[j]) for _, y, ok in runs if ok]
+            return max(values) if values else None
+
+        def supervisor(history: History) -> Verdict:
+            runs = _runs(history, spec)
+            if len(runs) <= patience:
+                return Verdict()
+            before, now = best(runs[:-patience]), best(runs)
+            if before is None or now - before > min_delta:
+                return Verdict()
+            return Verdict(
+                stop=(
+                    f"no improvement (no_improvement): the best {name} is "
+                    f"{sign * now:.4g}, and the last {patience} runs improved it by "
+                    f"{now - before:.4g} (min_delta {min_delta:.4g})."
+                )
+            )
+
+        return supervisor
+
+    return _NeedsSpec("no_improvement", make)

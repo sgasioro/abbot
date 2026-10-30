@@ -60,11 +60,15 @@ model_constructor)` to choose your own. A few variations:
   `temp` at 30 and chooses the rest.
 - **Categories** — `EnumeratedDomain(name="solvent", values=["water", "ethanol"])`;
   designs carry the labels, and the model learns how alike they are.
+- **Know when to stop** — `Campaign(spec, supervisor=target_reached(0.95))` or
+  `no_improvement(15)` (from `abbot.supervision`), and `print(campaign.check())` to
+  see whether the model makes sense.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
 
-See [`docs/API.md`](docs/API.md) for the stability contract (what's safe to build
-on) and [`examples/`](examples/) for a runnable notebook per capability.
+See [`docs/HOWTO.md`](docs/HOWTO.md) for "how do I…" answers, [`docs/API.md`](docs/API.md)
+for the stability contract (what's safe to build on) and [`examples/`](examples/)
+for a runnable notebook per capability.
 
 See [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) for where abbot sits next to BoTorch,
 Ax, Xopt and Bluesky/blop.
@@ -312,9 +316,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
      - **Xopt generators in abbot's loop** *(done)*: `GestGeneratorPolicy`
        (TuRBO, Nelder-Mead, RCDS, genetic algorithms, time-dependent BO), with
        policies able to skip abbot's model fit (`needs_model = False`).
-     - **Diagnostics and stopping:** `campaign.check()` (leave-one-out fit,
-       noise and lengthscale sanity, runs vs dimension), target and
-       no-improvement supervisors, a "how do I…" docs index.
+     - **Diagnostics and stopping** *(done)*: `campaign.check()` (leave-one-out
+       fit, suspicious runs, noise, lengthscales, runs vs. inputs),
+       `target_reached` and `no_improvement` supervisors, and a "how do I…" index
+       ([`docs/HOWTO.md`](docs/HOWTO.md)). Later: the check in the UI.
      - **Travel limits** per variable (with or before the blop backend), a
        prior-mean option, a high-dimensional (SAAS) default.
   4. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
