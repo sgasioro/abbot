@@ -101,9 +101,10 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 # Adopted from the bax-platform student tool; abbot adds a version tag + domain
 # types (continuous/enumerated) + boxes. Row grammar (each ``# key,value...``):
 #   # version,1
-#   # continuous,<name>,<lower>,<upper>[,log]
-#   # integer,<name>,<lower>,<upper>[,log]
-#   # enumerated,<name>,<v1>,<v2>,...   (numbers, or labels if any isn't a number)
+#   # continuous,<name>,<lower>,<upper>[,log][,max_step=<step>]
+#   # integer,<name>,<lower>,<upper>[,log][,max_step=<step>]
+#   # enumerated,<name>,<v1>,<v2>,...[,max_step=<step>]
+#                                     (numbers, or labels if any isn't a number)
 #   # output,<name>,MINIMIZE|MAXIMIZE|OBSERVE[,<min_val>,<max_val>]
 #                                     (OBSERVE = modeled, not optimized; a bound
 #                                     left empty is absent)
@@ -144,11 +145,13 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
     w.writerow(["# version", CSV_FORMAT_VERSION])
     for d in spec.domain:
         if isinstance(d, ContinuousDomain):
-            w.writerow(["# continuous", d.name, d.lower, d.upper, *(["log"] if d.log else [])])
+            w.writerow(["# continuous", d.name, d.lower, d.upper,
+                        *(["log"] if d.log else []), *_step_cell(d)])
         elif isinstance(d, IntegerDomain):
-            w.writerow(["# integer", d.name, d.lower, d.upper, *(["log"] if d.log else [])])
+            w.writerow(["# integer", d.name, d.lower, d.upper,
+                        *(["log"] if d.log else []), *_step_cell(d)])
         elif isinstance(d, EnumeratedDomain):
-            w.writerow(["# enumerated", d.name, *d.values])
+            w.writerow(["# enumerated", d.name, *d.values, *_step_cell(d)])
         else:
             raise ValueError(  # noqa: TRY004 - a format-capability limit, not a type error
                 f"self-describing CSV cannot represent {type(d).__name__} "
@@ -170,6 +173,22 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
     else:
         w.writerow(["step", *spec.variable_names, *spec.output_names])
     return buf.getvalue()
+
+
+def _step_cell(d) -> list[str]:
+    return [] if d.max_step is None else [f"max_step={d.max_step}"]
+
+
+def _split_step(cells: list[str]) -> tuple[list[str], float | None]:
+    """A row's cells without its ``max_step=<step>`` cell, and the step."""
+    step = None
+    rest = []
+    for c in cells:
+        if c.lower().startswith("max_step="):
+            step = float(c.split("=", 1)[1])
+        else:
+            rest.append(c)
+    return rest, step
 
 
 def _values(cells: list[str]) -> list[float] | list[str]:
@@ -205,6 +224,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
     boxes: list = []
     for raw in config_lines:
         cells = [c.strip() for c in next(csv.reader([raw.lstrip().lstrip("#")]))]
+        cells, step = _split_step(cells)
         key = cells[0].lower()
         if key == "continuous":
             if len(cells) < 4:
@@ -214,7 +234,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
                 )
             domain.append(ContinuousDomain(
                 name=cells[1], lower=float(cells[2]), upper=float(cells[3]),
-                log=len(cells) > 4 and cells[4].lower() == "log",
+                log=len(cells) > 4 and cells[4].lower() == "log", max_step=step,
             ))
         elif key == "integer":
             if len(cells) < 4:
@@ -224,7 +244,7 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
                 )
             domain.append(IntegerDomain(
                 name=cells[1], lower=int(cells[2]), upper=int(cells[3]),
-                log=len(cells) > 4 and cells[4].lower() == "log",
+                log=len(cells) > 4 and cells[4].lower() == "log", max_step=step,
             ))
         elif key == "enumerated":
             if len(cells) < 3:
@@ -232,7 +252,9 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
                     f"self-describing CSV: malformed `# enumerated` row {raw!r}; "
                     "expected `# enumerated,<name>,<v1>,<v2>,...`."
                 )
-            domain.append(EnumeratedDomain(name=cells[1], values=_values([v for v in cells[2:] if v])))
+            domain.append(EnumeratedDomain(
+                name=cells[1], values=_values([v for v in cells[2:] if v]), max_step=step
+            ))
         elif key in ("output", "objective"):  # "objective" = legacy read-compat
             direction = cells[2].upper() if len(cells) > 2 else "MAXIMIZE"
             bounds = [float(v) if v else None for v in (cells[3:5] + ["", ""])[:2]]

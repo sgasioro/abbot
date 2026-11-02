@@ -167,7 +167,17 @@ class DiscreteArgmax:
         *,
         fixed_features: dict[int, float] | None = None,
     ) -> torch.Tensor:
-        choices = self.choices if self.choices is not None else self._enumerate(spec)
+        if self.choices is None:
+            choices = self._enumerate(spec)
+        else:  # only those the spec allows (with travel limits, the ones in reach)
+            choices = self.choices.double()
+            bounds = spec.bounds_tensor()
+            choices = choices[((choices >= bounds[0] - 1e-9) & (choices <= bounds[1] + 1e-9)).all(-1)]
+            if not len(choices):
+                raise ValueError(
+                    "no choices lie within the bounds (with travel limits: within "
+                    "max_step of the last design)"
+                )
         choices = choices.double()
         for j, value in (fixed_features or {}).items():
             choices = choices[torch.isclose(choices[:, j], torch.tensor(value).double())]

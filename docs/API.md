@@ -46,6 +46,9 @@ on them.
   rules `cost_cap`, `acquisition_monitor`, `target_reached`, `no_improvement`,
   `min_runs` (`Verdict.stop`); `all_of`, `any_of`, and `bind`. The default fault thresholds were calibrated on
   sbido's scattering benchmark.
+- **Travel limits** — `max_step` on domains, `ProblemSpec.reach` /
+  `out_of_reach` / `has_travel_limits`, and the optional `within=` argument of
+  `Policy.suggest`. New.
 - **Diagnostics** — `Campaign.check()` and `abbot.diagnostics` (`check`,
   `CheckReport`, `Finding`, `OutputFit`; see below). New; the wording of findings
   and the thresholds may change.
@@ -215,6 +218,38 @@ Source(domain=EnumeratedDomain(name="code", values=["dft", "xtb"]), target="dft"
   values as a set, so `vocs_to_spec` sorts labels for a stable order. Changing the
   order of `values` changes the codes, so a store won't resume across it (the
   fingerprint differs).
+
+## Travel limits
+
+```python
+ContinuousDomain(name="quad_k1", lower=-5, upper=5, max_step=0.5)
+campaign = Campaign(spec, initial_designs=[{"quad_k1": 1.2, ...}])  # where it is now
+```
+
+`max_step` limits how far a design variable moves between consecutive runs, in its
+own units: hardware that can only travel so far per step. It applies to
+`ContinuousDomain`, `IntegerDomain` (at least 1) and numeric `EnumeratedDomain`s,
+not to labels or sources.
+- **From where:** the design issued (or recorded) most recently, which is where
+  the hardware is. With several designs outstanding, each new one is a step from
+  the last issued; a batch is a walk, each design a step from the one before.
+- **Every policy:** the builtins search only the designs in reach
+  (`spec.reach(position)`, passed to them as `within=`): BO, ParetoBO and
+  uncertainty sampling optimize over it, and BAX keeps to grid points in it. When
+  every grid point in reach is measured, BAX steps towards its best candidate,
+  re-measuring a nearby point on the way. A policy that doesn't take `within=`
+  (a custom one, an Xopt generator) has any design out of reach moved to the
+  nearest one in reach, with a warning; a sequential Xopt generator then resets.
+- **A start is required:** abbot can't know where the hardware is. Pass
+  `initial_designs` starting with the current settings, or `record` a run first;
+  otherwise the first `suggest` says so. There are no default seeds (they'd be
+  out of reach); until a model can be fitted, proposals are random within reach.
+- **Checks:** seeds must walk (each a step from the one before), `fixed=` values
+  must be in reach, and a queued retry whose design is out of reach by then is
+  dropped with a warning (the run stays failed).
+- **Files:** the JSON spec and the CSV keep `max_step`. VOCS has no travel limits:
+  `spec_to_vocs` warns, and in Xopt the generator's `max_travel_distances` is the
+  equivalent (a fraction of each range there).
 
 ## Xopt's generators in abbot's loop
 
@@ -494,7 +529,7 @@ are derived from the spec:
 | --- | --- |
 | `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the inputs support (`DiscreteArgmax` if all enumerated, else `Continuous`). No objectives (all `OBSERVE`) raises — pass a policy. |
 | `model_constructor` | `default_constructor(spec)`: `MultiFidelityGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds, with a log scale for `log=True` variables and a categorical kernel for labeled ones. |
-| `initial_designs` (`Campaign`, `run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and domain constraints, two of them moved to the target when the spec has sources. `Campaign` queues them on its first `suggest`, unless the history isn't empty (a resume, or data you `record` first) or you `seed` your own; an empty tensor gives a cold start (random probes until a model can be fitted). Ignored on resume. |
+| `initial_designs` (`Campaign`, `run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and domain constraints, two of them moved to the target when the spec has sources. None with travel limits (see [Travel limits](#travel-limits)). `Campaign` queues them on its first `suggest`, unless the history isn't empty (a resume, or data you `record` first) or you `seed` your own; an empty tensor gives a cold start (random probes until a model can be fitted). Ignored on resume. |
 | `evaluate` (`Campaign.step`, `drive`, `run_campaign`) | none — the experiment returns the outputs directly. |
 
 The function names and signatures are Stable; the specific choices they make

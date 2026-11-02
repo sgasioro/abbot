@@ -38,12 +38,23 @@ def _check_log(kind: str, name: str, log: bool, lower: float) -> None:
         raise ValueError(f"{kind} {name!r}: log=True needs a positive lower bound, got {lower}")
 
 
+def _check_step(kind: str, name: str, max_step: float | None, least: float = 0.0) -> None:
+    if max_step is not None and not max_step > least:
+        raise ValueError(f"{kind} {name!r}: max_step must be greater than {least:g}, got {max_step}")
+
+
+
 class ContinuousDomain(BaseModel):
     """A real-valued variable from ``lower`` to ``upper``.
 
     ``log=True`` for quantities that span orders of magnitude (concentrations,
     rates, sizes): the model sees the variable on a log scale, and initial designs
     and searches spread over its decades rather than crowding the top one.
+
+    ``max_step`` limits how far the variable may move between consecutive runs, in
+    its own units: hardware that can only travel so far per step (a motor, a magnet
+    current). Every proposal, seed and batch walks from the last design issued; see
+    :meth:`ProblemSpec.reach`.
     """
 
     kind: Literal["continuous"] = "continuous"
@@ -51,6 +62,7 @@ class ContinuousDomain(BaseModel):
     lower: float
     upper: float
     log: bool = False
+    max_step: float | None = None
 
     @model_validator(mode="after")
     def _check_bounds(self) -> ContinuousDomain:
@@ -60,13 +72,14 @@ class ContinuousDomain(BaseModel):
                 f"lower ({self.lower})"
             )
         _check_log("ContinuousDomain", self.name, self.log, self.lower)
+        _check_step("ContinuousDomain", self.name, self.max_step)
         return self
 
 
 class IntegerDomain(BaseModel):
     """Whole numbers from ``lower`` to ``upper`` inclusive (atom counts, replicates,
     grid sizes). The surrogate treats it as continuous; proposals are rounded.
-    ``log=True`` as for :class:`ContinuousDomain`.
+    ``log=True`` and ``max_step`` (at least 1) as for :class:`ContinuousDomain`.
     """
 
     kind: Literal["integer"] = "integer"
@@ -74,6 +87,7 @@ class IntegerDomain(BaseModel):
     lower: int
     upper: int
     log: bool = False
+    max_step: float | None = None
 
     @model_validator(mode="after")
     def _check_bounds(self) -> IntegerDomain:
@@ -83,6 +97,11 @@ class IntegerDomain(BaseModel):
                 f"lower ({self.lower})"
             )
         _check_log("IntegerDomain", self.name, self.log, self.lower)
+        # Below 1 it could never move.
+        if self.max_step is not None and self.max_step < 1:
+            raise ValueError(
+                f"IntegerDomain {self.name!r}: max_step must be at least 1, got {self.max_step}"
+            )
         return self
 
 
@@ -94,12 +113,14 @@ class EnumeratedDomain(BaseModel):
     behave alike. Labels are categories: the model learns how alike each pair is
     rather than assuming an order. Designs carry the labels (``{"solvent":
     "water"}``); inside the loop each label is a code, its position in ``values``
-    (see :meth:`encode`). Proposals enumerate the values either way.
+    (see :meth:`encode`). Proposals enumerate the values either way. Numbers may
+    take a ``max_step`` as for :class:`ContinuousDomain`; labels may not.
     """
 
     kind: Literal["enumerated"] = "enumerated"
     name: str
     values: list[float] | list[str]
+    max_step: float | None = None
 
     @model_validator(mode="after")
     def _check_values(self) -> EnumeratedDomain:
@@ -107,6 +128,11 @@ class EnumeratedDomain(BaseModel):
             raise ValueError(f"EnumeratedDomain {self.name!r} needs at least one value")
         if len(set(self.values)) != len(self.values):
             raise ValueError(f"EnumeratedDomain {self.name!r} has repeated values: {self.values}")
+        if self.max_step is not None and self.is_categorical:
+            raise ValueError(
+                f"EnumeratedDomain {self.name!r}: labels have no distance, so no max_step"
+            )
+        _check_step("EnumeratedDomain", self.name, self.max_step)
         return self
 
     @property
@@ -499,6 +525,12 @@ class ProblemSpec(BaseModel):
         onames = [o.name for o in self.outputs]
         if len(onames) != len(set(onames)):
             raise ValueError(f"Duplicate output names: {onames}")
+        stepped = [s.name for s in self.sources or [] if getattr(s.domain, "max_step", None)]
+        if stepped:
+            raise ValueError(
+                f"sources {stepped} have max_step; travel limits are for design "
+                "variables (a source is a setting of the run, not hardware that moves)"
+            )
         labeled = {
             d.name for d in self.inputs if isinstance(d, EnumeratedDomain) and d.is_categorical
         }
@@ -814,6 +846,68 @@ class ProblemSpec(BaseModel):
             add(c.coeffs, c.min_val, c.max_val)
         A = torch.stack(rows) if rows else torch.zeros(0, self.n_outputs, **kw)
         return A, torch.tensor(lower, **kw), torch.tensor(upper, **kw)
+
+    # --- travel limits ---------------------------------------------------------
+
+    @property
+    def has_travel_limits(self) -> bool:
+        return any(getattr(d, "max_step", None) is not None for d in self.domain)
+
+    def reach(self, x) -> ProblemSpec:
+        """The designs one step from ``x`` (a design vector), as a spec: each
+        variable with a ``max_step`` narrowed to within that distance of its value
+        (integers to whole numbers, enumerated numbers to the values in reach). The
+        rest is unchanged. Proposals search it in place of the spec."""
+        x = [float(v) for v in x.reshape(-1).tolist()] if hasattr(x, "reshape") else list(x)
+        domain = []
+        for j, d in enumerate(self.domain):
+            step = getattr(d, "max_step", None)
+            if step is None:
+                domain.append(d)
+                continue
+            v = min(max(x[j], min(d.codes) if isinstance(d, EnumeratedDomain) else d.lower),
+                    max(d.codes) if isinstance(d, EnumeratedDomain) else d.upper)
+            if isinstance(d, EnumeratedDomain):
+                values = [u for u in d.values if abs(u - v) <= step * (1 + 1e-9)]
+                domain.append(d.model_copy(update={"values": values or [min(d.values, key=lambda u: abs(u - v))]}))
+            elif isinstance(d, IntegerDomain):
+                lo = max(d.lower, math.ceil(v - step - 1e-9))
+                hi = min(d.upper, math.floor(v + step + 1e-9))
+                domain.append(d.model_copy(update={"lower": lo, "upper": hi}))
+            else:
+                domain.append(d.model_copy(update={
+                    "lower": max(d.lower, v - step), "upper": min(d.upper, v + step)
+                }))
+        return self.model_copy(update={"domain": domain})
+
+    def out_of_reach(self, start, end) -> dict[str, float]:
+        """``{name: distance}`` for each variable that moves further than its
+        ``max_step`` between designs ``start`` and ``end`` (empty if none does)."""
+        a, b = start.reshape(-1), end.reshape(-1)
+        out = {}
+        for j, d in enumerate(self.domain):
+            step = getattr(d, "max_step", None)
+            if step is not None and abs(float(b[j] - a[j])) > step * (1 + 1e-9):
+                out[d.name] = abs(float(b[j] - a[j]))
+        return out
+
+    def _into(self, x):
+        """``x`` moved to the nearest design this spec allows (bounds, whole
+        numbers, enumerated values); the travel-limit safety net, with ``self`` a
+        :meth:`reach`."""
+        import torch
+
+        x = x.clone().double().reshape(-1)
+        for j, d in enumerate(self.domain):
+            if isinstance(d, EnumeratedDomain):
+                if not d.is_categorical:
+                    values = torch.tensor(d.codes, dtype=torch.double)
+                    x[j] = values[(values - x[j]).abs().argmin()]
+            elif isinstance(d, IntegerDomain):
+                x[j] = x[j].round().clamp(d.lower, d.upper)
+            elif isinstance(d, ContinuousDomain):
+                x[j] = x[j].clamp(d.lower, d.upper)
+        return x
 
     def sample_designs(
         self, n: int, *, seed: int | None = None, fixed: dict[str, float] | None = None
