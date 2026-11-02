@@ -336,10 +336,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        (needs JAX, MCMC fits) only on demand.
   4. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
-  5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` (it fails
-     to fit sparse, partly zero data; check sbido's kernel option), flagged-shot
-     handling, an outstanding-candidates list in the UI, and reporting
-     multibax's shared random draws across outputs upstream.
+  5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` *(done)*,
+     an outstanding-designs list in the UI *(done)*, reporting multibax's shared
+     random draws across outputs upstream (drafted), and flagged-shot handling
+     (a design question: a flag confirmed on retry is the region, not a fault).
   6. **blop backend:** a `Campaign`-backed blop `Optimizer` for Bluesky
      beamlines (`abbot[blop]`; see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)).
   7. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that
