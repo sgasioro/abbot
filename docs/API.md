@@ -273,10 +273,13 @@ learns how the data differ from it. With few runs that's often a large gain.
   arrive as codes. Write it in torch: proposals are optimized by gradient, so it
   has to take batches and be differentiable. It's tried on a few designs when the
   constructor is built, so a broken one fails there.
-- **What's learned:** a constant offset from the prior, always. `fit_prior_scale=True`
-  also learns a scale (`scale · prior + offset`), so the data can shrink a prior
-  that's off in amplitude; with very few runs the scale and the GP can trade off, so
-  it's off by default.
+- **What's learned:** the model is `scale · prior(x) + offset + g(x)`, with `g` an
+  ordinary GP. `g` learns any smooth difference from the prior, but only near the
+  data: far from any run, a GP drifts back to its mean. The offset (always learned)
+  and the scale (with `fit_prior_scale=True`) carry corrections to unexplored
+  regions: a prior off by a constant, or right in shape but wrong in amplitude.
+  The scale is off by default because with very few runs, "scale the prior down"
+  and "let `g` cancel part of it" explain the same data.
 - **Uncertainty** is the GP's on the difference; the prior's own uncertainty isn't
   known. The model is still a standard BoTorch GP (the prior is its mean module,
   as with Xopt's `CustomMean`), so every policy, InfoBAX's conditioning and
