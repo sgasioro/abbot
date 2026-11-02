@@ -76,6 +76,12 @@ def spec_to_vocs(spec: ProblemSpec):
             "output_constraints); use the JSON spec for this campaign."
         )
     variables: dict[str, Any] = {}
+    stepped = [d.name for d in spec.domain if getattr(d, "max_step", None) is not None]
+    if stepped:
+        logger.warning(
+            "spec_to_vocs: VOCS has no travel limits; max_step on %s is not exported. "
+            "In Xopt, set the generator's max_travel_distances.", stepped,
+        )
     for d in spec.domain:
         if isinstance(d, ContinuousDomain):
             if d.log:
@@ -313,10 +319,13 @@ class GestGeneratorPolicy:
     @staticmethod
     def vocs_for(spec: ProblemSpec):
         """The VOCS a generator is built on: :func:`spec_to_vocs`, with each
-        labeled variable's values as codes."""
+        labeled variable's values as codes. Travel limits stay with abbot: the
+        campaign moves any proposal out of reach into reach."""
         from gest_api.vocs import DiscreteVariable
 
-        vocs = spec_to_vocs(spec)
+        unstepped = [d.model_copy(update={"max_step": None}) if hasattr(d, "max_step") else d
+                     for d in spec.domain]
+        vocs = spec_to_vocs(spec.model_copy(update={"domain": unstepped}))
         for j in spec.categorical_indices():
             d = spec.domain[j]
             vocs.variables[d.name] = DiscreteVariable(values=d.codes)

@@ -84,6 +84,11 @@ class Policy(Protocol):
         A policy may also take ``fixed: dict[str, float] | None``: inputs to hold at
         given values in every proposal (``Campaign.suggest(fixed=...)``). The
         builtins do; a policy without it is refused when ``fixed`` is used.
+
+        And ``within: ProblemSpec | None``: with travel limits, the designs in reach
+        (``spec.reach(position)``), to propose from instead of the whole space. The
+        builtins search it; a policy without it has its proposals moved into reach
+        by the campaign, with a warning.
         """
         ...
 
@@ -171,7 +176,7 @@ def _pinned(spec: ProblemSpec, fixed: dict[str, float] | None) -> dict[int, floa
     return {**spec.target_features(), **spec.resolve_fixed(fixed)}
 
 
-def _find_feasible(policy, history, spec, model, n, pending, fixed=None) -> torch.Tensor:
+def _find_feasible(policy, history, spec, model, n, pending, fixed=None, within=None) -> torch.Tensor:
     """Propose ``n`` designs at the target by the probability of satisfying every
     output constraint, while no run at the target has. Improvement and
     hypervolume have no feasible reference yet, so they would ignore the
@@ -186,7 +191,7 @@ def _find_feasible(policy, history, spec, model, n, pending, fixed=None) -> torc
     for _ in range(n):
         cond = condition_on_pending(model, _extend_pending(pending, picks))
         acq = LogProbFeasible(cond, spec, explore=True, scale=scale)
-        picks.append(optimize(policy.optimizer, acq, spec, 1, _pinned(spec, fixed)))
+        picks.append(optimize(policy.optimizer, acq, within or spec, 1, _pinned(spec, fixed)))
         values.append(_acq_value(acq, picks[-1]))
     policy.last_acquisition_value = torch.tensor(values, dtype=torch.double)
     return torch.cat(picks)
@@ -333,6 +338,7 @@ class SimpleBO:
         *,
         pending: torch.Tensor | None = None,
         fixed: dict[str, float] | None = None,
+        within: ProblemSpec | None = None,
     ) -> torch.Tensor:
         if spec.n_objectives != 1:
             raise ValueError(
@@ -340,9 +346,9 @@ class SimpleBO:
                 "objective(s); use ParetoBO for multi-objective optimization."
             )
         if spec.has_output_constraints and not any_feasible(history, spec):
-            return _find_feasible(self, history, spec, model, n, pending, fixed)
+            return _find_feasible(self, history, spec, model, n, pending, fixed, within)
         if spec.sources and self.choose_sources:
-            return self._suggest_with_sources(history, spec, model, n, pending, fixed)
+            return self._suggest_with_sources(history, spec, model, n, pending, fixed, within)
         # Improvement is judged at the target: a lucky cheap-source run must not set
         # the bar. Without sources this is the clean designs unchanged.
         X = spec.at_target(history.clean.designs.double()).unique(dim=0)
@@ -353,7 +359,7 @@ class SimpleBO:
             **_objective_kwargs(spec, history),
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
-        picks = optimize(self.optimizer, acq, spec, n, _pinned(spec, fixed))
+        picks = optimize(self.optimizer, acq, within or spec, n, _pinned(spec, fixed))
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
 
@@ -364,7 +370,7 @@ class SimpleBO:
         first proposal with sources)."""
         return self.cost_model if self.cost_model is not None else self._source_cost
 
-    def _suggest_with_sources(self, history, spec, model, n, pending, fixed=None):
+    def _suggest_with_sources(self, history, spec, model, n, pending, fixed=None, within=None):
         from botorch.acquisition.cost_aware import InverseCostWeightedUtility
         from botorch.models.deterministic import GenericDeterministicModel
 
@@ -407,7 +413,7 @@ class SimpleBO:
             )
             if spec.has_output_constraints:
                 acq = _FeasibilityWeighted(acq, model, spec)
-            x = optimize(self.optimizer, acq, spec, 1, spec.resolve_fixed(fixed))
+            x = optimize(self.optimizer, acq, within or spec, 1, spec.resolve_fixed(fixed))
             picks.append(x)
             values.append(_acq_value(acq, x))
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
@@ -509,6 +515,7 @@ class ParetoBO:
         *,
         pending: torch.Tensor | None = None,
         fixed: dict[str, float] | None = None,
+        within: ProblemSpec | None = None,
     ) -> torch.Tensor:
         m = spec.n_objectives
         if m < 2:
@@ -524,11 +531,11 @@ class ParetoBO:
                 Y.shape[0],
                 floor,
             )
-            return self._explore(history, spec, model, n, pending, fixed)
+            return self._explore(history, spec, model, n, pending, fixed, within)
         constrained = spec.has_output_constraints
         if constrained:
             if self.ref_point is None and not any_feasible(history, spec):
-                return _find_feasible(self, history, spec, model, n, pending, fixed)
+                return _find_feasible(self, history, spec, model, n, pending, fixed, within)
             Y = Y[feasible(spec, history.clean.outputs.double())]
 
         if self.ref_point is not None:
@@ -580,14 +587,14 @@ class ParetoBO:
             constraints=mc_constraints(spec, row_scale(history, spec)) if constrained else None,
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
-        picks = optimize(self.optimizer, acq, spec, n, _pinned(spec, fixed))
+        picks = optimize(self.optimizer, acq, within or spec, n, _pinned(spec, fixed))
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
 
-    def _explore(self, history, spec, model, n, pending, fixed=None) -> torch.Tensor:
+    def _explore(self, history, spec, model, n, pending, fixed=None, within=None) -> torch.Tensor:
         """Uncertainty sampling until the front can direct the search."""
         us = UncertaintySampling(self.optimizer)
-        picks = us.suggest(history, spec, model, n, pending=pending, fixed=fixed)
+        picks = us.suggest(history, spec, model, n, pending=pending, fixed=fixed, within=within)
         self.last_acquisition_value = us.last_acquisition_value
         return picks
 
@@ -620,6 +627,7 @@ class UncertaintySampling:
         *,
         pending: torch.Tensor | None = None,
         fixed: dict[str, float] | None = None,
+        within: ProblemSpec | None = None,
     ) -> torch.Tensor:
         from botorch.acquisition import PosteriorStandardDeviation
 
@@ -636,7 +644,7 @@ class UncertaintySampling:
                 acq = PosteriorStandardDeviation(cond)
             else:
                 acq = _SumPosteriorStd(cond)
-            picks.append(optimize(self.optimizer, acq, spec, 1, _pinned(spec, fixed)))
+            picks.append(optimize(self.optimizer, acq, within or spec, 1, _pinned(spec, fixed)))
             values.append(_acq_value(acq, picks[-1]))
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
         return torch.cat(picks)
@@ -956,10 +964,12 @@ class BAXPolicy:
         *,
         pending: torch.Tensor | None = None,
         fixed: dict[str, float] | None = None,
+        within: ProblemSpec | None = None,
     ) -> torch.Tensor:
         grid = self.proposal_set(spec)
         self.last_warning = None
         allowed = self._matching(spec, grid, fixed)
+        reach = self._in_reach(within, grid) if within is not None else None
         pending = _pending_or_none(pending)
         self._out_scale = _output_scale(history)
         self._cost = (
@@ -989,12 +999,43 @@ class BAXPolicy:
                         f"BAXPolicy: every candidate with {fixed} is already measured "
                         "or in flight"
                     )
-            picks.append(int(acq.argmax()))
-            values.append(float(acq[picks[-1]]))
+            best = int(acq.argmax())
+            if reach is not None and not reach[best]:
+                best = self._toward(grid, best, acq, reach if allowed is None else reach & allowed)
+            picks.append(best)
+            values.append(float(acq[best]))
         self._collected.append(picks[-1])
         self.switched = switched
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
         return grid[picks]
+
+    @staticmethod
+    def _in_reach(within: ProblemSpec, grid: torch.Tensor) -> torch.Tensor:
+        """Rows of ``grid`` one travel step away (``within`` is ``spec.reach``)."""
+        bounds = within.bounds_tensor().to(grid)
+        ok = ((grid >= bounds[0] - 1e-9) & (grid <= bounds[1] + 1e-9)).all(dim=-1)
+        if not ok.any():
+            raise ValueError(
+                "BAXPolicy proposes from its candidate grid, and no candidate is within "
+                "the travel limits (max_step) of the last design. Use a denser grid "
+                "(n_candidates=) or pass candidates= that include nearby designs."
+            )
+        return ok
+
+    def _toward(self, grid, best: int, acq, reach) -> int:
+        """With travel limits: the best candidate in reach, or if every one in reach
+        is measured or in flight, the one nearest the best candidate overall, as a
+        waypoint towards it (a repeat measurement)."""
+        open_ = reach & torch.isfinite(acq)
+        if open_.any():
+            masked = acq.clone()
+            masked[~open_] = float("-inf")
+            return int(masked.argmax())
+        span = (grid.max(dim=0).values - grid.min(dim=0).values).clamp_min(1e-12)
+        dist = ((grid - grid[best]) / span).norm(dim=-1)
+        dist[~reach] = float("inf")
+        self._warn("every candidate in reach is measured; stepping towards the best one")
+        return int(dist.argmin())
 
     @staticmethod
     def _matching(spec, grid, fixed) -> torch.Tensor | None:

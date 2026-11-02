@@ -58,6 +58,9 @@ model_constructor)` to choose your own. A few variations:
   `LevelSet(0.9, output="purity")`), and use `BAXPolicy(goal)`.
 - **Hold a knob fixed** — `campaign.suggest(1, fixed={"temp": 30})` proposes with
   `temp` at 30 and chooses the rest.
+- **Limit how far a knob moves** — `ContinuousDomain(..., max_step=0.5)`: every
+  proposal is within 0.5 of the last one, starting from the `initial_designs` you
+  give (the current settings).
 - **Categories** — `EnumeratedDomain(name="solvent", values=["water", "ethanol"])`;
   designs carry the labels, and the model learns how alike they are.
 - **Know when to stop** — `Campaign(spec, supervisor=Supervisor(stops=[
@@ -322,8 +325,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        `Supervisor(faults=, stops=)` with `target_reached`, `no_improvement` and
        `all_of` floors, and a "how do I…" index
        ([`docs/HOWTO.md`](docs/HOWTO.md)). Later: the check in the UI.
-     - **Travel limits** per variable (with or before the blop backend), a
-       prior-mean option, a high-dimensional (SAAS) default.
+     - **Travel limits** *(done)*: `max_step` per variable, walking from the
+       last issued design under every policy (BAX steps towards its target when
+       its grid runs out nearby). Later: UI support.
+     - A prior-mean option, a high-dimensional (SAAS) default.
   4. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
   5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` (it fails

@@ -144,6 +144,12 @@ def _looks_like_tensor_code(exc: Exception) -> bool:
     return isinstance(exc, KeyError) and bool(exc.args) and isinstance(exc.args[0], int)
 
 
+def _far_text(far: dict[str, float], spec: ProblemSpec) -> str:
+    """``{name: distance}`` beyond ``max_step``, as text."""
+    steps = {d.name: getattr(d, "max_step", None) for d in spec.domain}
+    return ", ".join(f"{k} moves {v:.4g} (max_step {steps[k]:.4g})" for k, v in far.items())
+
+
 def _accepts(policy: Policy, name: str) -> bool:
     """Does ``policy.suggest`` take keyword ``name``? (Policies written before
     ``pending=`` / ``fixed=`` were added don't.)"""
@@ -619,6 +625,16 @@ class Campaign:
             return
         if len(designs) and isinstance(designs[0], Mapping):
             designs = [self.spec.as_tensor(d) for d in designs]
+        if self.spec.has_travel_limits:
+            # The first seed is where the hardware starts; each next one a step on.
+            for i in range(1, len(designs)):
+                far = self.spec.out_of_reach(designs[i - 1], designs[i])
+                if far:
+                    raise ValueError(
+                        f"seed {i} is out of reach of seed {i - 1}: "
+                        f"{_far_text(far, self.spec)}. With travel limits, seeds are a "
+                        "walk from the first one (where the hardware starts)."
+                    )
         self._seed_queue.extend(list(designs))
         self._save_queue()
 
@@ -630,6 +646,8 @@ class Campaign:
         self._default_seeds_pending = False
         if len(self.history) or self._queue_restored or self._seed_queue or self._inflight:
             return
+        if self.spec.has_travel_limits:
+            return  # space-filling seeds can't be reached; _propose asks for a start
         designs = default_initial_designs(self.spec)
         self._seed_queue.extend(list(designs))
         self._save_queue()
@@ -683,11 +701,15 @@ class Campaign:
                 "can't hold inputs fixed."
             )
         self._queue_default_seeds()
+        if self.spec.has_travel_limits:
+            self._drop_retries_out_of_reach()
         retries = [i for i, (x, _, _) in enumerate(self._retry_queue) if self._matches(x, pinned)]
         n_retry = min(n, len(retries))
         n_seed = min(n - n_retry, len(self._seed_queue))
         rem = n - n_retry - n_seed
         seeds = [self._pin(x, pinned) for x in self._seed_queue[:n_seed]]
+        if self.spec.has_travel_limits:
+            self._check_walk([self._retry_queue[i][0] for i in retries[:n_retry]] + seeds, pinned)
         # Propose first: a misconfiguration raises before any queue is touched. The
         # policy sees everything in flight, incl. retries/seeds issued alongside.
         xs = []
@@ -695,7 +717,8 @@ class Campaign:
             in_flight = [it.x for it in self._inflight.values()]
             in_flight += [self._retry_queue[i][0] for i in retries[:n_retry]]
             in_flight += seeds
-            xs = self._propose(rem, in_flight, fixed)
+            issued_now = [self._retry_queue[i][0] for i in retries[:n_retry]] + seeds
+            xs = self._propose(rem, in_flight, fixed, start=issued_now[-1] if issued_now else None)
         issued = [self._issue(*self._retry_queue[i]) for i in retries[:n_retry]]
         for i in reversed(retries[:n_retry]):
             del self._retry_queue[i]
@@ -1149,7 +1172,45 @@ class Campaign:
     _MISCONFIG_ERRORS = (ValueError, NotImplementedError, TypeError)
 
     def _propose(
-        self, n: int, pending: list[torch.Tensor] | None = None, fixed: dict | None = None
+        self, n: int, pending: list[torch.Tensor] | None = None, fixed: dict | None = None,
+        *, start: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """``n`` proposals. With travel limits they walk from ``start`` (a retry or
+        seed issued alongside), else from the last design issued."""
+        if not self.spec.has_travel_limits:
+            return self._propose_from(n, pending, fixed)
+        # Travel limits: one design at a time, each searched within a step of the one
+        # before, so the hardware can visit them in order.
+        position = start.double().reshape(-1) if start is not None else self._position()
+        if position is None:
+            raise ValueError(
+                "With travel limits (max_step), abbot needs to know where the hardware "
+                "starts: pass Campaign(initial_designs=[current settings]) or record a "
+                "run first."
+            )
+        picks, acq, seconds = [], [], [0.0, 0.0]
+        for _ in range(n):
+            reach = self.spec.reach(position)
+            x = self._propose_from(1, [*(pending or []), *picks], fixed, within=reach)[0]
+            inside = reach._into(x)
+            if not torch.allclose(inside, x.double()):
+                self.last_warning = (
+                    f"{type(self.policy).__name__} proposed a design out of reach "
+                    f"({_far_text(self.spec.out_of_reach(position, x), self.spec)}); "
+                    "moved it to the nearest one in reach."
+                )
+                logger.warning("%s", self.last_warning)
+            picks.append(inside)
+            position = inside
+            acq += self._proposal_acq
+            seconds = [a + (b or 0.0) for a, b in zip(seconds, self._proposal_seconds)]
+        self._proposal_acq = acq
+        self._proposal_seconds = tuple(seconds)
+        return torch.stack(picks)
+
+    def _propose_from(
+        self, n: int, pending: list[torch.Tensor] | None = None, fixed: dict | None = None,
+        within: ProblemSpec | None = None,
     ) -> torch.Tensor:
         self._proposal_acq = [None] * n  # random probes carry no acquisition value
         self._proposal_seconds = (None, None)
@@ -1160,10 +1221,10 @@ class Campaign:
             # Cold start: too few clean points to fit yet. A uniform probe is the
             # correct behavior here (not an error) — stay quiet.
             logger.debug("no model yet (too few clean points); drawing a random probe.")
-            return self._random_draw(n, fixed)
+            return self._random_draw(n, fixed, within)
         try:
             start = time.perf_counter()
-            xs = self._policy_suggest(model, n, pending or [], fixed)
+            xs = self._policy_suggest(model, n, pending or [], fixed, within)
             fit_seconds = self._model_fit_seconds if needs_model else None
             self._proposal_seconds = (fit_seconds, time.perf_counter() - start)
             self._proposal_acq = _acquisition_values(self.policy, len(xs))
@@ -1182,12 +1243,15 @@ class Campaign:
             )
             logger.warning("%s", msg, exc_info=True)
             self.last_warning = msg
-            return self._random_draw(n, fixed)
+            return self._random_draw(n, fixed, within)
 
     def _policy_suggest(
-        self, model, n: int, pending: list[torch.Tensor], fixed: dict | None = None
+        self, model, n: int, pending: list[torch.Tensor], fixed: dict | None = None,
+        within: ProblemSpec | None = None,
     ) -> torch.Tensor:
         kwargs = {"fixed": fixed} if fixed else {}
+        if within is not None and _accepts(self.policy, "within"):
+            kwargs["within"] = within
         if not pending:
             return self.policy.suggest(self.scored_history(), self.spec, model, n=n, **kwargs)
         X_pending = torch.stack([x.reshape(-1).double() for x in pending])
@@ -1202,9 +1266,67 @@ class Campaign:
         )
         return self.policy.suggest(self.scored_history(), self.spec, model, n=n, **kwargs)
 
-    def _random_draw(self, n: int, fixed: dict | None = None) -> torch.Tensor:
+    def _random_draw(
+        self, n: int, fixed: dict | None = None, within: ProblemSpec | None = None
+    ) -> torch.Tensor:
         # Space-filling, and respects enumerated values + domain constraints.
-        return self.spec.sample_designs(n, fixed=fixed)
+        return (within or self.spec).sample_designs(n, fixed=fixed)
+
+    # -- travel limits --
+
+    def _position(self) -> torch.Tensor | None:
+        """Where the hardware is: the design issued (or recorded) most recently."""
+        latest, key = None, None
+        items = [(r.issued_at if r.issued_at is not None else r.finished_at, 0, r.candidate)
+                 for r in self.history.records]
+        items += [(it.issued_at, 1, it.x) for it in self._inflight.values()]
+        for i, (t, rank, x) in enumerate(items):
+            k = (t if t is not None else float("-inf"), rank, i)
+            if key is None or k >= key:
+                latest, key = x, k
+        return None if latest is None else latest.double().reshape(-1)
+
+    def _drop_retries_out_of_reach(self) -> None:
+        """A queued retry re-runs an earlier design; once the hardware has moved
+        more than a step from it, it can't, so the run stays failed."""
+        position = self._position()
+        if position is None:
+            return
+        keep = []
+        for entry in self._retry_queue:
+            far = self.spec.out_of_reach(position, entry[0])
+            if far:
+                self.last_warning = (
+                    f"dropped a retry: its design is out of reach ({_far_text(far, self.spec)})."
+                )
+                logger.warning("%s", self.last_warning)
+            else:
+                keep.append(entry)
+        self._retry_queue = keep
+
+    def _check_walk(self, designs: list[torch.Tensor], pinned: dict[int, float]) -> None:
+        """Retries and seeds about to be issued, and ``fixed`` values, must each be a
+        step from the one before."""
+        position = self._position()
+        for x in designs:
+            if position is not None:
+                far = self.spec.out_of_reach(position, x)
+                if far:
+                    raise ValueError(
+                        f"the next queued design is out of reach of the last one: "
+                        f"{_far_text(far, self.spec)}."
+                    )
+            position = x
+        if position is not None and pinned:
+            probe = position.clone().double().reshape(-1)
+            for j, v in pinned.items():
+                probe[j] = v
+            far = self.spec.out_of_reach(position, probe)
+            if far:
+                raise ValueError(
+                    f"fixed= puts the design out of reach of the last one: "
+                    f"{_far_text(far, self.spec)}."
+                )
 
     def _matches(self, x: torch.Tensor, pinned: dict[int, float]) -> bool:
         x = x.double().reshape(-1)
