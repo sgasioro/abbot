@@ -71,6 +71,18 @@ class RunController:
         self._sync_status()
         return state
 
+    def cancel(self, id: str) -> CampaignState:
+        """Withdraw an outstanding design: nothing recorded, no retry."""
+        state = self.campaign.cancel(id)
+        self._sync_status()
+        return state
+
+    def fail(self, id: str, error: str) -> CampaignState:
+        """Report that an outstanding design couldn't be run (retried as usual)."""
+        state = self.campaign.fail(id, error)
+        self._sync_status()
+        return state
+
     # -- auto mode: controller drives Campaign.step --
 
     def step_once(self) -> CampaignState:
@@ -138,8 +150,8 @@ class RunController:
         fault) are owned here,
         so the caller just fires this on a timer and re-renders.
         """
-        if self.status != RunStatus.RUNNING:
-            return False
+        if self.status != RunStatus.RUNNING or not self.can_auto:
+            return False  # manual mode: suggest() marks it running, the lab steps it
         if self.campaign.halted:
             self.status = RunStatus.HALTED
             return False

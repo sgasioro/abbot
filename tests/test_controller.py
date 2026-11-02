@@ -139,3 +139,17 @@ def test_a_supervisor_stop_is_done_for_run_and_tick():
                 pass
         assert len(c.history) == 1 and c.stopped
         assert ctrl.status == RunStatus.DONE
+
+
+def test_a_manual_suggest_never_auto_steps():
+    """suggest() marks a manual campaign running; a timer's tick must not then try
+    to step it with no experiment (it used to raise and stop the controller)."""
+    ctrl = RunController(_campaign())
+    ctrl.suggest(2)
+    assert ctrl.is_running
+    assert ctrl.tick() is False
+    assert ctrl.is_running and len(ctrl.campaign.outstanding()) == 2
+    first, second = ctrl.campaign.outstanding()
+    ctrl.cancel(second.id)
+    ctrl.fail(first.id, "jammed")
+    assert not ctrl.campaign.outstanding() and ctrl.campaign.history.records[-1].fault

@@ -44,7 +44,7 @@ class UIState:
         self.bax_strategy: str = "SwitchBAX"
         self.controller: RunController | None = None
         self.spec = None
-        self.pending: list[dict] | None = None
+        self.n_suggest: int = 1  # how many designs "Suggest" asks for
         self.mock: bool = False
         # Model-viz selections (which objective / which vars to slice).
         self.viz_obj = 0
@@ -83,7 +83,6 @@ class UIState:
         campaign = Campaign(spec, policy)
         campaign.seed(default_initial_designs(spec))
         self.spec = spec
-        self.pending = None
         self.viz_obj = 0
         self.viz_vx = 0
         self.viz_vy = 1 if len(spec.domain) > 1 else 0
@@ -568,59 +567,97 @@ def _import_spec_control(state: UIState) -> None:
 def _reset(state: UIState) -> None:
     state.controller = None  # drops the controller -> ctrl.is_running gate goes False
     state.spec = None
-    state.pending = None
     state._left.refresh()
     state._right.refresh()
 
 
 def _manual_controls(state: UIState) -> None:
     ctrl = state.controller
-    ui.markdown("**Manual** — suggest, run in the lab, enter the value(s).").classes(
-        "text-sm text-gray-600"
-    )
+    ui.markdown(
+        "**Manual** — suggest designs, run them in the lab, enter the value(s). "
+        "Several can be out at once (vials, jobs); each stays listed until you "
+        "submit, report or cancel it."
+    ).classes("text-sm text-gray-600")
 
     def do_suggest() -> None:
         try:
-            # Re-show an outstanding candidate rather than issuing another.
-            state.pending = ctrl.campaign.outstanding()[:1] or ctrl.suggest(1)
+            ctrl.suggest(max(1, int(state.n_suggest or 1)))
         except Exception as exc:  # noqa: BLE001
             ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
             return
         _surface_warning(state)
         state._left.refresh()
 
-    ui.button("Suggest next experiment", icon="lightbulb", on_click=do_suggest).props("color=indigo")
+    with ui.row().classes("items-center gap-2"):
+        ui.number("How many", min=1, max=20, step=1, precision=0).bind_value(
+            state, "n_suggest"
+        ).props("outlined dense").classes("w-24")
+        ui.button("Suggest", icon="lightbulb", on_click=do_suggest).props("color=indigo")
 
-    if state.pending:
-        cand = state.pending[0]
-        with ui.card().classes("bg-indigo-50 w-full"):
-            ui.label("Run at:").classes("font-semibold text-indigo-900 text-sm")
-            with ui.row().classes("gap-3 flex-wrap"):
-                for name, val in cand.items():
-                    with ui.column().classes("gap-0"):
-                        ui.label(name).classes("text-xs text-gray-500")
-                        ui.label(_fmt(val)).classes("font-mono")
-            inputs = {}
-            with ui.row().classes("gap-2 flex-wrap"):
-                for o in state.spec.outputs:  # every modeled output, incl. OBSERVE
-                    inputs[o.name] = ui.number(f"{o.name}").props("outlined dense").classes("w-28")
+    outstanding = ctrl.campaign.outstanding()
+    if not outstanding:
+        ui.label("No designs outstanding.").classes("text-sm text-gray-500")
+        return
+    ui.label(f"Outstanding ({len(outstanding)}), oldest first:").classes(
+        "font-semibold text-sm text-indigo-900"
+    )
+    for cand in outstanding:
+        _outstanding_card(state, cand)
 
-            def do_submit() -> None:
-                vals = [inputs[o.name].value for o in state.spec.outputs]
-                if any(v is None for v in vals):
-                    ui.notify("Enter all measured values first.", type="warning")
-                    return
-                ctrl.submit(torch.tensor(vals, dtype=torch.double), id=cand.id)
-                state.pending = None
-                ui.notify("Recorded.", type="positive")
-                state._left.refresh()
-                # First measurement builds the viz structure; later ones update in place.
-                if state.needs_structure_rebuild():
-                    state._right.refresh()
-                else:
-                    _update_viz(state)
 
-            ui.button("Submit", icon="check", on_click=do_submit).props("color=indigo")
+def _outstanding_card(state: UIState, cand) -> None:
+    """One outstanding design: where to run, the measured values, and what to do."""
+    ctrl = state.controller
+    with ui.card().classes("bg-indigo-50 w-full"):
+        ui.label(f"Run at ({cand.id}):").classes("font-semibold text-indigo-900 text-sm")
+        with ui.row().classes("gap-3 flex-wrap"):
+            for name, val in cand.items():
+                with ui.column().classes("gap-0"):
+                    ui.label(name).classes("text-xs text-gray-500")
+                    ui.label(_fmt(val)).classes("font-mono")
+        inputs = {}
+        with ui.row().classes("gap-2 flex-wrap"):
+            for o in state.spec.outputs:  # every modeled output, incl. OBSERVE
+                inputs[o.name] = ui.number(f"{o.name}").props("outlined dense").classes(
+                    "w-28"
+                ).mark(f"{cand.id}-{o.name}")
+
+        def done(message: str, kind: str = "positive") -> None:
+            ui.notify(message, type=kind)
+            state._left.refresh()
+            # First measurement builds the viz structure; later ones update in place.
+            if state.needs_structure_rebuild():
+                state._right.refresh()
+            else:
+                _update_viz(state)
+
+        def do_submit() -> None:
+            vals = [inputs[o.name].value for o in state.spec.outputs]
+            if any(v is None for v in vals):
+                ui.notify("Enter all measured values first.", type="warning")
+                return
+            ctrl.submit(torch.tensor(vals, dtype=torch.double), id=cand.id)
+            done("Recorded.")
+
+        def do_fail() -> None:
+            ctrl.fail(cand.id, "reported in the UI: couldn't run")
+            done("Recorded as failed; it will be retried if retries remain.", "warning")
+
+        def do_cancel() -> None:
+            ctrl.cancel(cand.id)
+            ui.notify("Withdrawn.", type="info")
+            state._left.refresh()
+
+        with ui.row().classes("gap-1"):
+            ui.button("Submit", icon="check", on_click=do_submit).props("color=indigo").mark(
+                f"{cand.id}-submit"
+            )
+            ui.button("Couldn't run", icon="report", on_click=do_fail).props(
+                "flat color=orange"
+            ).mark(f"{cand.id}-fail")
+            ui.button("Cancel", icon="close", on_click=do_cancel).props("flat color=grey").mark(
+                f"{cand.id}-cancel"
+            )
 
 
 def _auto_controls(state: UIState) -> None:
