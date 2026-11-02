@@ -235,9 +235,12 @@ not to labels or sources.
   the last issued; a batch is a walk, each design a step from the one before.
 - **Every policy:** the builtins search only the designs in reach
   (`spec.reach(position)`, passed to them as `within=`): BO, ParetoBO and
-  uncertainty sampling optimize over it, and BAX keeps to grid points in it. When
-  every grid point in reach is measured, BAX steps towards its best candidate,
-  re-measuring a nearby point on the way. A policy that doesn't take `within=`
+  uncertainty sampling optimize over it, and BAX keeps to grid points in it. Each
+  step is chosen afresh after the last measurement, greedily: the best design in
+  reach, not the one that heads furthest towards the best overall (a choice of
+  method; a far-off target is reached by following the acquisition). Only when
+  every grid point in reach is measured does BAX head for its best candidate,
+  re-measuring the nearby point closest to it on the way. A policy that doesn't take `within=`
   (a custom one, an Xopt generator) has any design out of reach moved to the
   nearest one in reach, with a warning; a sequential Xopt generator then resets.
 - **A start is required:** abbot can't know where the hardware is. Pass
