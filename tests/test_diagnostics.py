@@ -127,6 +127,15 @@ def test_bind_outside_a_campaign():
     assert supervisor(Campaign(spec).history).stop is None
 
 
+def test_a_supervisor_assigned_later_is_bound_too():
+    campaign = Campaign(_spec(), initial_designs=torch.empty(0, 2))
+    campaign.supervisor = Supervisor(stops=[target_reached(1.0)])
+    campaign.record({"a": 0.0, "b": 0.0}, [0.5])
+    assert "target reached" in campaign.stopped
+    with pytest.raises(ValueError, match="no output named 'w'"):
+        campaign.supervisor = target_reached({"w": 1.0})  # fails here, not mid-run
+
+
 # -- Supervisor --
 
 

@@ -538,8 +538,7 @@ class Campaign:
         self.policy = policy
         self.model_constructor = model_constructor
         self.store = store
-        # Rules that read the spec (target_reached, no_improvement) get it here.
-        self.supervisor = bind(supervisor, spec) if supervisor is not None else None
+        self.supervisor = supervisor  # bound to the spec by the property
         self.max_retries = max_retries
         self.pre_run = pre_run
         # Optional re-derivation of the training targets from the history; the
@@ -591,6 +590,20 @@ class Campaign:
             self.seed(initial_designs)
 
     # -- setup --
+
+    @property
+    def supervisor(self) -> Supervisor | Rule | None:
+        """What watches the campaign (see :class:`~abbot.supervision.Supervisor`).
+
+        Assigning one, here or through ``Campaign(supervisor=...)``, binds it to the
+        spec, so rules that read it (``target_reached``, ``no_improvement``) work and
+        a wrong output name fails at assignment, not mid-run.
+        """
+        return self._supervisor
+
+    @supervisor.setter
+    def supervisor(self, supervisor: Supervisor | Rule | None) -> None:
+        self._supervisor = bind(supervisor, self.spec) if supervisor is not None else None
 
     def add_hook(self, hook: StepHook) -> None:
         self._hooks.append(hook)
