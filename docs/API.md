@@ -43,8 +43,8 @@ on them.
   (e.g. reducing inside the acquisition).
 - **`abbot.supervision`** — `per_shot`, `any_of`, `stall_monitor`, `drift_monitor`,
   `consecutive_fault_monitor`, `standard_supervisor`, the stopping supervisors
-  `cost_cap`, `acquisition_monitor`, `target_reached`, `no_improvement`
-  (`Verdict.stop`), and `bind`. The default fault thresholds were calibrated on
+  `cost_cap`, `acquisition_monitor`, `target_reached`, `no_improvement`,
+  `min_runs` (`Verdict.stop`), `all_of`, and `bind`. The default fault thresholds were calibrated on
   sbido's scattering benchmark.
 - **Diagnostics** — `Campaign.check()` and `abbot.diagnostics` (`check`,
   `CheckReport`, `Finding`, `OutputFit`; see below). New; the wording of findings
@@ -269,8 +269,13 @@ spec)` does.
   One objective only; for several, use `acquisition_monitor`.
 - **Noise:** a single noisy run can cross a target, or count as an improvement, by
   luck. Leave a margin, or set `min_delta` to about the noise level.
-- **Faulted runs:** under `any_of`, a run another supervisor rejects can't satisfy
-  a stop rule.
+- **Floors:** `all_of` stops only when every rule inside says stop (a retry or
+  halt from any of them still passes through). `all_of(no_improvement(10),
+  min_runs(30))` won't stop before 30 runs, and `all_of(no_improvement(10),
+  cost_cap(50))` not before 50 is spent. Keep fault detectors outside it:
+  `any_of(per_shot(detector), all_of(...))`.
+- **Faulted runs:** under `any_of` or `all_of`, a run another supervisor rejects
+  can't satisfy a stop rule.
 
 **`campaign.check()`** asks whether the model is a fair picture of the data, and
 answers in plain words: a summary line per output, then warnings and notes. It

@@ -44,7 +44,8 @@ is shown.
 | stop at a target value | `Campaign(spec, supervisor=target_reached(0.95))` from `abbot.supervision`. [Diagnostics and stopping](API.md#diagnostics-and-stopping) |
 | stop when progress stalls | `supervisor=no_improvement(15, min_delta=...)`. |
 | stop at a budget | `supervisor=cost_cap(budget)`, in the units of the recorded costs (run time by default). [Column contract → cost and stopping](API.md#column-contract) |
-| combine stopping rules | `any_of(target_reached(0.95), no_improvement(15), cost_cap(100))`. |
+| combine stopping rules | `any_of(target_reached(0.95), no_improvement(15), cost_cap(100))` stops on the first. |
+| stop on a rule, but not too early | `all_of(no_improvement(10), min_runs(30))`, or `cost_cap(50)` in place of `min_runs` for a cost floor. |
 | tell whether the run stopped | `campaign.stopped` holds the reason (`drive` and `run_campaign` end there). |
 
 ## Checking and handing over

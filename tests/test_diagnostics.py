@@ -14,7 +14,16 @@ from abbot import (
 )
 from abbot.diagnostics import check
 from abbot.loop import drive
-from abbot.supervision import any_of, bind, cost_cap, no_improvement, target_reached
+from abbot.supervision import (
+    all_of,
+    any_of,
+    bind,
+    cost_cap,
+    min_runs,
+    no_improvement,
+    per_shot,
+    target_reached,
+)
 
 
 def _spec(*outputs, **kw):
@@ -97,8 +106,6 @@ def test_a_rejected_run_does_not_reach_the_target():
     def glitch(observation):
         return observation is not None and observation < -50  # a nonsense reading
 
-    from abbot.supervision import per_shot
-
     rule = any_of(per_shot(glitch), target_reached(0.0), cost_cap(1e9))
     campaign = Campaign(_spec(), supervisor=rule, initial_designs=torch.empty(0, 2))
     campaign.record({"a": 0.0, "b": 0.0}, [-100.0], observation=-100.0)
@@ -145,6 +152,47 @@ def test_no_improvement_ends_a_converged_campaign():
     drive(campaign, _Bowl(), n_total=80)
     assert campaign.stopped is not None and "no improvement" in campaign.stopped
     assert len(campaign.history) < 80
+
+
+# -- all_of: floors --
+
+
+def test_all_of_stops_only_when_every_rule_agrees():
+    values = [5, 4, 3, 3.5, 3.2, 3.1]  # no improvement over the last 3
+    assert _campaign(_spec(), all_of(no_improvement(3), min_runs(8)), values).stopped is None
+    stopped = _campaign(_spec(), all_of(no_improvement(3), min_runs(8)), values + [3.3, 3.4]).stopped
+    assert "no improvement" in stopped and "at least 8 runs" in stopped
+    # a cost floor
+    campaign = Campaign(_spec(), supervisor=all_of(no_improvement(3), cost_cap(10.0)),
+                        initial_designs=torch.empty(0, 2))
+    for i, v in enumerate(values):
+        campaign.record({"a": i / 100, "b": 0.0}, [v], cost=1.0)
+    assert campaign.stopped is None
+    for i in range(4):
+        campaign.record({"a": 0.5 + i / 100, "b": 0.0}, [4.0], cost=1.0)
+    assert campaign.stopped is not None
+
+
+def test_all_of_passes_faults_through_and_a_rejected_run_does_not_stop():
+    def glitch(observation):
+        return observation is not None and observation < -50
+
+    rule = any_of(per_shot(glitch), all_of(target_reached(0.0), min_runs(2)))
+    campaign = Campaign(_spec(), supervisor=rule, initial_designs=torch.empty(0, 2))
+    campaign.record({"a": 0.0, "b": 0.0}, [1.0], observation=1.0)
+    campaign.record({"a": 0.1, "b": 0.0}, [-100.0], observation=-100.0)
+    assert campaign.history.records[-1].fault and campaign.stopped is None
+    campaign.record({"a": 0.2, "b": 0.0}, [-1.0], observation=-1.0)
+    assert "target reached" in campaign.stopped
+
+    plain = Campaign(_spec(), initial_designs=torch.empty(0, 2))
+    plain.record({"a": 0.0, "b": 0.0}, [-100.0], observation=-100.0)
+    detecting = all_of(per_shot(glitch), min_runs(1))  # retries still pass through
+    assert detecting(plain.history).retry
+    with pytest.raises(ValueError, match="at least one"):
+        all_of()
+    with pytest.raises(ValueError, match="at least 1"):
+        min_runs(0)
 
 
 # -- check --

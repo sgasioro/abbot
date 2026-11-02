@@ -6,12 +6,12 @@ latest shot unusable (it is kept out of the surrogate and re-run), ``halt`` says
 apparatus needs a human (the campaign stops, resumable), and ``stop`` says the
 campaign is done without anything being wrong (a cost budget spent, a target met,
 the search converged: :func:`cost_cap`, :func:`target_reached`,
-:func:`no_improvement`, :func:`acquisition_monitor`).
+:func:`no_improvement`, :func:`acquisition_monitor`, :func:`min_runs`).
 
 Single-observation checks are written as ``detector(observation) -> bool`` and
 lifted with :func:`per_shot`, so their authors never touch the history and cannot
 accidentally condition on the trajectory. :func:`any_of` merges several supervisors
-into the one a ``Campaign`` takes.
+into the one a ``Campaign`` takes; :func:`all_of` stops only when all agree.
 
 The trajectory monitors read a numeric *signal* per record — by default the raw
 observation if it is numeric, else the record's outputs. Pass ``signal=`` to point
@@ -88,15 +88,33 @@ def any_of(*supervisors: Supervisor) -> Supervisor:
     stop is checked again with the run marked faulty, so a glitch that happens to
     hit the target doesn't end the campaign.
     """
-    return _AnyOf(supervisors)
+    return _Merge(supervisors, every=False)
 
 
-class _AnyOf:
-    def __init__(self, supervisors) -> None:
-        self.supervisors = tuple(supervisors)
+def all_of(*supervisors: Supervisor) -> Supervisor:
+    """Stop only when every supervisor says stop; ``retry`` and ``halt`` still come
+    from any one of them, since a fault doesn't wait for agreement.
 
-    def bind(self, spec) -> _AnyOf:
-        return _AnyOf(bind(s, spec) for s in self.supervisors)
+    For floors on a stopping rule: ``all_of(no_improvement(10), min_runs(30))`` stops
+    on no improvement, but not before 30 runs; ``all_of(no_improvement(10),
+    cost_cap(50))`` not before 50 is spent. Put only stopping rules inside (a fault
+    detector never says stop, so it would block the stop) and wrap fault detectors
+    around it: ``any_of(per_shot(detector), all_of(...))``. A run another supervisor
+    rejects can't satisfy a stop, as in :func:`any_of`.
+    """
+    return _Merge(supervisors, every=True)
+
+
+class _Merge:
+    """:func:`any_of` (``every=False``) or :func:`all_of` (``every=True``)."""
+
+    def __init__(self, supervisors, every: bool) -> None:
+        self.supervisors, self.every = tuple(supervisors), every
+        if every and not self.supervisors:
+            raise ValueError("all_of needs at least one supervisor.")
+
+    def bind(self, spec) -> _Merge:
+        return _Merge((bind(s, spec) for s in self.supervisors), self.every)
 
     def __call__(self, history: History) -> Verdict:
         verdicts = [s(history) for s in self.supervisors]
@@ -108,7 +126,11 @@ class _AnyOf:
             ]
         retry = any(v.retry for v in verdicts)
         halt = next((v.halt for v in verdicts if v.halt is not None), None)
-        stop = next((v.stop for v in verdicts if getattr(v, "stop", None) is not None), None)
+        stops = [getattr(v, "stop", None) for v in verdicts]
+        if self.every:
+            stop = " and ".join(stops) if all(x is not None for x in stops) else None
+        else:
+            stop = next((x for x in stops if x is not None), None)
         return Verdict(retry=retry, halt=halt, stop=stop)
 
 
@@ -307,6 +329,22 @@ def cost_cap(budget: float) -> Supervisor:
         spent = history.cost_spent
         if spent >= budget:
             return Verdict(stop=f"cost budget reached (cost_cap): spent {spent:.4g} of {budget:.4g}.")
+        return Verdict()
+
+    return supervisor
+
+
+def min_runs(n: int) -> Supervisor:
+    """Stop once ``n`` runs are recorded (every record counts, failures included, as
+    for a campaign's budget). Meant as a floor inside :func:`all_of`; on its own it is
+    a run budget.
+    """
+    if n < 1:
+        raise ValueError(f"n must be at least 1, got {n}")
+
+    def supervisor(history: History) -> Verdict:
+        if len(history) >= n:
+            return Verdict(stop=f"at least {n} runs (min_runs): {len(history)} recorded.")
         return Verdict()
 
     return supervisor
