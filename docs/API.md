@@ -24,7 +24,7 @@ without a deprecation period.
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol; optional `bind(spec)` to resolve output names), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiFidelityGPConstructor` (provisional), `default_constructor` |
-| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor` (protocols), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
+| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor(faults=, stops=)` (fault checks and stop rules, see [Supervisors](#supervisors-faults-and-stops); any callable `(history) -> Verdict` is also accepted), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
 | Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
@@ -41,10 +41,14 @@ on them.
 - **`abbot.composite`** (`composite_evaluate`, `Rescore`, `ObjectiveReducer`) —
   composite objectives; the reducer-mount API may grow
   (e.g. reducing inside the acquisition).
-- **`abbot.supervision`** — `per_shot`, `any_of`, `stall_monitor`, `drift_monitor`,
-  `consecutive_fault_monitor`, `standard_supervisor`, and the stopping supervisors
-  `cost_cap`, `acquisition_monitor` (`Verdict.stop`). The default fault thresholds
-  were calibrated on sbido's scattering benchmark.
+- **`abbot.supervision`** — the fault checks `per_shot`, `stall_monitor`,
+  `drift_monitor`, `consecutive_fault_monitor`, `standard_supervisor`; the stop
+  rules `cost_cap`, `acquisition_monitor`, `target_reached`, `no_improvement`,
+  `min_runs` (`Verdict.stop`); `all_of`, `any_of`, and `bind`. The default fault thresholds were calibrated on
+  sbido's scattering benchmark.
+- **Diagnostics** — `Campaign.check()` and `abbot.diagnostics` (`check`,
+  `CheckReport`, `Finding`, `OutputFit`; see below). New; the wording of findings
+  and the thresholds may change.
 - **`abbot.cost`** (`CostModel`, `FixedCost`, `CallableCost`, `FittedCost`,
   `PowerLawCost`, `SourceCost`), `Record.cost` / `Record.acquisition` and the timing
   fields, `SimpleBO` / `ParetoBO(cost_model=)` — new.
@@ -243,6 +247,84 @@ use from the spec, with your keyword arguments) or one built on
 - **Not supported:** `fixed=`, source variables, and what VOCS can't hold
   (domain and output linear constraints, integer domains).
 
+## Supervisors: faults and stops
+
+A `Supervisor` watches a campaign. It holds two kinds of rule:
+
+```python
+from abbot import Supervisor
+from abbot.supervision import all_of, min_runs, no_improvement, per_shot, stall_monitor, target_reached
+
+campaign = Campaign(spec, supervisor=Supervisor(
+    faults=[per_shot(detector), stall_monitor(spec.bounds_tensor())],
+    stops=[target_reached(0.95), all_of(no_improvement(10), min_runs(30))],
+))
+```
+
+- **`faults=`: fault checks.** Is the run usable? `retry` keeps the latest run out
+  of the model and re-runs it; `halt` ends the campaign until a person resumes it.
+  `standard_supervisor(bounds, detector)` is a `Supervisor` with the usual four
+  (`per_shot`, `stall_monitor`, `drift_monitor`, `consecutive_fault_monitor`).
+- **`stops=`: stop rules.** Is the campaign done? A `stop` ends it normally:
+  `drive` and `run_campaign` return, and `campaign.stopped` holds the reason.
+- **Lists mean "any".** Any fault check can reject or halt; any stop rule can end
+  the campaign. For "and", `all_of(...)` stops only when every stop rule inside
+  agrees, which sets a floor: `all_of(no_improvement(10), min_runs(30))` won't
+  stop before 30 runs. `any_of(...)` is "or", for nesting inside `all_of`. Keep
+  fault checks out of `all_of`: they never say stop, so they'd block it.
+- **Faults come first.** A run a fault check rejects is marked before the stop
+  rules look, so it can't satisfy one. On a halt, the stop rules aren't asked.
+- **Each rule is a callable `(history) -> Verdict`,** so a custom one is a
+  function. A bare rule is also accepted as `supervisor=`, as before.
+  `any_of` over fault checks still merges every field, so older code that combines
+  everything with it keeps working, without the fault-first ordering.
+
+## Diagnostics and stopping
+
+```python
+from abbot.supervision import no_improvement, target_reached
+
+campaign = Campaign(spec, supervisor=Supervisor(stops=[target_reached(0.95), no_improvement(15)]))
+print(campaign.check())
+```
+
+**Stopping on the results.** Both rules read the raw measurements of clean runs
+that satisfy any output constraints, and take the directions from the spec.
+`Campaign` fills the spec in; outside a campaign, `abbot.supervision.bind(rule,
+spec)` does.
+- **`target_reached(value)`** stops once a run reaches `value`: at or above it for
+  a maximized objective, at or below for a minimized one.
+  `target_reached({"yield": 0.9, "purity": 0.95})` needs one run to reach every
+  named value, for any number of objectives.
+- **`no_improvement(patience, min_delta=0.0)`** stops when the best value hasn't
+  improved by more than `min_delta` over the last `patience` runs (seeds count).
+  One objective only; for several, use `acquisition_monitor`.
+- **Noise:** a single noisy run can cross a target, or count as an improvement, by
+  luck. Leave a margin, or set `min_delta` to about the noise level.
+- **Floors and combinations:** see [Supervisors](#supervisors-faults-and-stops).
+
+**`campaign.check()`** asks whether the model is a fair picture of the data, and
+answers in plain words: a summary line per output, then warnings and notes. It
+reuses the cached fit, so it costs one fit at most.
+- **Leave-one-out fit:** each run predicted from all the others, with the fitted
+  settings held fixed (exact for a Gaussian process, no refits). The report gives
+  an R² per output and flags runs more than 3 standard deviations from their
+  prediction: a fault that slipped through, an outlier, or a sharp feature.
+  `fit.z[step]` holds each run's residual; positive means it came out higher than
+  predicted.
+- **Noise:** the share of each output's variation the model reads as noise. Above
+  half, the model explains little.
+- **Lengthscales,** as a fraction of each input's range (on a log scale for `log=True`
+  inputs). Below 5%, the fit may be chasing noise. Very long, and much longer than
+  the output's shortest: the output hasn't shown a dependence on that input.
+- **Runs vs. inputs:** fewer clean runs than inputs leaves the model guessing.
+- **Coverage:** the fit checks read any BoTorch exact GP (the builtin constructors,
+  model lists, categorical and source-aware GPs). For other models only the run
+  counts apply.
+- **Other entry points:** `report.ok` is `True` when there are no warnings.
+  `abbot.diagnostics.check(history, spec, model)` runs the same checks on any
+  fitted model.
+
 ## Outstanding candidates
 
 `suggest(n)` returns `n` `Candidate`s: `{variable name: value}` dicts with an
@@ -329,11 +411,13 @@ own fit and acquisition time is never counted).
 unit cost), refitting the model to the recorded costs each step. `CallableCost`
 takes a known formula; `FittedCost(fn, params)` learns a formula's parameters from
 the recorded costs (least squares on log cost), and `PowerLawCost` is a ready-made
-one for run time that scales steeply with a size-like variable. A supervisor's
-`Verdict.stop` marks the campaign done without a fault: `cost_cap(budget)` stops
+one for run time that scales steeply with a size-like variable. A stop rule
+(`Supervisor(stops=[...])`) marks the campaign done without a fault: `cost_cap(budget)` stops
 once `cost_spent` reaches the budget, and `acquisition_monitor(threshold, window)`
 once the policy's recent acquisition values (stored per record from its
-`last_acquisition_value`) all fall below `threshold`. `drive` ends normally on a
+`last_acquisition_value`) all fall below `threshold`. `target_reached` and
+`no_improvement` stop on the measured values (see
+[Diagnostics and stopping](#diagnostics-and-stopping)). `drive` ends normally on a
 stop; ask/tell callers read `campaign.stopped` and may carry on.
 
 **Source variables (fidelities, information sources).** `ProblemSpec(sources=[

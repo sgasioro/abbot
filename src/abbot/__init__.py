@@ -26,7 +26,6 @@ from abbot.experiment import (
     ManualExperiment,
     MockAnalyticExperiment,
     MockDatasetExperiment,
-    Supervisor,
     TensorExperiment,
     Verdict,
 )
@@ -82,6 +81,7 @@ from abbot.session import (
     apply_targets,
     default_initial_designs,
 )
+from abbot.supervision import Supervisor
 
 __version__ = "0.1.0"
 
