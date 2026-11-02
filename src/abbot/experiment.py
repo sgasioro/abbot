@@ -117,16 +117,6 @@ class Verdict:
     stop: str | None = None  # done (budget spent, converged); not a fault. Reason.
 
 
-@runtime_checkable
-class Supervisor(Protocol):
-    """Called once per shot with the full history. Decides retry vs halt.
-
-    Also the in-the-loop-reasoner / stopping-condition seam for later agent work.
-    """
-
-    def __call__(self, history: Any) -> Verdict: ...
-
-
 class ManualExperiment:
     """Human-in-the-loop Experiment: a person measures the proposed candidate.
 
@@ -350,3 +340,13 @@ class MockDatasetExperiment:
         if len(hits) == 0:
             raise ValueError(f"design {dict(design)} is not in this dataset")
         return self._Y[int(hits[0, 0])].clone()
+
+
+def __getattr__(name: str):
+    # ``Supervisor`` moved to abbot.supervision (a class now, not a protocol); this
+    # keeps ``from abbot.experiment import Supervisor`` working.
+    if name == "Supervisor":
+        from abbot.supervision import Supervisor
+
+        return Supervisor
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -20,7 +20,7 @@ from collections.abc import Callable
 
 import torch
 
-from abbot.experiment import BatchExperiment, Experiment, Supervisor
+from abbot.experiment import BatchExperiment, Experiment
 from abbot.history import DataStore
 from abbot.model import ModelConstructor
 from abbot.policy import Policy
@@ -42,6 +42,7 @@ from abbot.session import (  # noqa: F401
     observed_front,
     split_eval,
 )
+from abbot.supervision import Rule, Supervisor
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def run_campaign(
     evaluate: Callable[[object], object] | None = None,
     initial_designs: torch.Tensor | None = None,
     store: DataStore | None = None,
-    supervisor: Supervisor | None = None,
+    supervisor: Supervisor | Rule | None = None,
     max_retries: int = 1,
     on_persistent_fault: str = "halt",
     pre_run: PreRunCheck | None = None,

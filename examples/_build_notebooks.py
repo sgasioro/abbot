@@ -433,7 +433,7 @@ from abbot import (
     Campaign, ContinuousDomain, IntegerDomain, OutputSpec, ProblemSpec, SimpleBO,
     Source,
 )
-from abbot.supervision import cost_cap
+from abbot.supervision import Supervisor, cost_cap
 torch.manual_seed(0)
 """),
     md("""
@@ -489,7 +489,7 @@ price of 5 runs at the target.
 """),
     code("""
 budget = 5 * target_run
-campaign = Campaign(spec, supervisor=cost_cap(budget))
+campaign = Campaign(spec, supervisor=Supervisor(stops=[cost_cap(budget)]))
 while not campaign.stopped:
     campaign.step(sim)
 
@@ -521,7 +521,7 @@ budget.
 """),
     code("""
 target_only = Campaign(spec, policy=SimpleBO(choose_sources=False),
-                       supervisor=cost_cap(budget),
+                       supervisor=Supervisor(stops=[cost_cap(budget)]),
                        initial_designs=spec.at_target(spec.sample_designs(3)))
 while not target_only.stopped:
     target_only.step(sim)

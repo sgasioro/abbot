@@ -10,9 +10,11 @@ from abbot import (
     OutputSpec,
     ProblemSpec,
     Source,
+    Supervisor,
     Verdict,
 )
 from abbot.diagnostics import check
+from abbot.history import History
 from abbot.loop import drive
 from abbot.supervision import (
     all_of,
@@ -22,6 +24,7 @@ from abbot.supervision import (
     min_runs,
     no_improvement,
     per_shot,
+    standard_supervisor,
     target_reached,
 )
 
@@ -102,11 +105,12 @@ def test_target_reached_refusals():
         target_reached(1.0)(Campaign(_spec()).history)
 
 
-def test_a_rejected_run_does_not_reach_the_target():
-    def glitch(observation):
-        return observation is not None and observation < -50  # a nonsense reading
+def _glitch(observation):
+    return observation is not None and observation < -50  # a nonsense reading
 
-    rule = any_of(per_shot(glitch), target_reached(0.0), cost_cap(1e9))
+
+def test_a_rejected_run_does_not_reach_the_target():
+    rule = Supervisor(faults=[per_shot(_glitch)], stops=[target_reached(0.0), cost_cap(1e9)])
     campaign = Campaign(_spec(), supervisor=rule, initial_designs=torch.empty(0, 2))
     campaign.record({"a": 0.0, "b": 0.0}, [-100.0], observation=-100.0)
     assert campaign.stopped is None
@@ -119,6 +123,48 @@ def test_bind_outside_a_campaign():
     spec = _spec()
     supervisor = bind(any_of(target_reached(1.0), lambda h: Verdict()), spec)
     assert supervisor(Campaign(spec).history).stop is None
+    supervisor = bind(Supervisor(stops=[target_reached(1.0)]), spec)
+    assert supervisor(Campaign(spec).history).stop is None
+
+
+# -- Supervisor --
+
+
+def test_supervisor_runs_fault_checks_first():
+    calls = []
+
+    def fault(h):
+        calls.append("fault")
+        return Verdict(halt="broken") if h.records[-1].outputs.item() > 50 else Verdict()
+
+    def stop(h):
+        calls.append("stop")
+        return Verdict(stop="done")
+
+    supervisor = Supervisor(faults=[fault], stops=[stop])
+    campaign = Campaign(_spec(), supervisor=supervisor, initial_designs=torch.empty(0, 2))
+    campaign.record({"a": 0.0, "b": 0.0}, [100.0])
+    assert calls == ["fault"]  # a halt: the stop rules aren't asked
+    assert campaign.halted == "broken" and campaign.stopped is None
+    campaign.halted = None
+    campaign.record({"a": 0.1, "b": 0.0}, [1.0])
+    assert calls == ["fault", "fault", "stop"] and campaign.stopped == "done"
+
+
+def test_supervisor_takes_a_rule_or_a_list_and_stops_on_any():
+    assert Supervisor()(History()) == Verdict()
+    assert Supervisor(stops=lambda h: Verdict(stop="a"))(History()).stop == "a"
+    either = Supervisor(stops=[lambda h: Verdict(), lambda h: Verdict(stop="b")])
+    assert either(History()).stop == "b"
+    honored = Supervisor(faults=[lambda h: Verdict(stop="c")])  # nothing returned is dropped
+    assert honored(History()).stop == "c"
+    assert "faults=" in repr(standard_supervisor(_spec().bounds_tensor(), lambda obs: False))
+
+
+def test_old_style_any_of_still_merges_everything():
+    merged = any_of(lambda h: Verdict(retry=True), lambda h: Verdict(halt="x"),
+                    lambda h: Verdict(stop="y"))
+    assert merged(History()) == Verdict(retry=True, halt="x", stop="y")
 
 
 # -- no_improvement --
@@ -174,10 +220,7 @@ def test_all_of_stops_only_when_every_rule_agrees():
 
 
 def test_all_of_passes_faults_through_and_a_rejected_run_does_not_stop():
-    def glitch(observation):
-        return observation is not None and observation < -50
-
-    rule = any_of(per_shot(glitch), all_of(target_reached(0.0), min_runs(2)))
+    rule = Supervisor(faults=per_shot(_glitch), stops=all_of(target_reached(0.0), min_runs(2)))
     campaign = Campaign(_spec(), supervisor=rule, initial_designs=torch.empty(0, 2))
     campaign.record({"a": 0.0, "b": 0.0}, [1.0], observation=1.0)
     campaign.record({"a": 0.1, "b": 0.0}, [-100.0], observation=-100.0)
@@ -187,7 +230,7 @@ def test_all_of_passes_faults_through_and_a_rejected_run_does_not_stop():
 
     plain = Campaign(_spec(), initial_designs=torch.empty(0, 2))
     plain.record({"a": 0.0, "b": 0.0}, [-100.0], observation=-100.0)
-    detecting = all_of(per_shot(glitch), min_runs(1))  # retries still pass through
+    detecting = all_of(per_shot(_glitch), min_runs(1))  # retries still pass through
     assert detecting(plain.history).retry
     with pytest.raises(ValueError, match="at least one"):
         all_of()

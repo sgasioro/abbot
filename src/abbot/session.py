@@ -26,13 +26,13 @@ from typing import TYPE_CHECKING, Any
 import torch
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
-from abbot.experiment import BatchExperiment, Experiment, Supervisor, Verdict
+from abbot.experiment import BatchExperiment, Experiment, Verdict
 from abbot.feasibility import FEASIBLE_P, feasible, prob_feasible, row_scale, violation
 from abbot.history import DataStore, History, Record
 from abbot.model import ModelConstructor, default_constructor
 from abbot.policy import Policy, default_policy
 from abbot.problem import ProblemSpec
-from abbot.supervision import bind
+from abbot.supervision import Rule, Supervisor, bind
 
 if TYPE_CHECKING:
     from botorch.models.model import Model
@@ -517,7 +517,7 @@ class Campaign:
         model_constructor: ModelConstructor | None = None,
         *,
         store: DataStore | None = None,
-        supervisor: Supervisor | None = None,
+        supervisor: Supervisor | Rule | None = None,
         max_retries: int = 1,
         on_step: StepHook | list[StepHook] | None = None,
         pre_run: PreRunCheck | None = None,
@@ -538,7 +538,7 @@ class Campaign:
         self.policy = policy
         self.model_constructor = model_constructor
         self.store = store
-        # Supervisors that read the spec (target_reached, no_improvement) get it here.
+        # Rules that read the spec (target_reached, no_improvement) get it here.
         self.supervisor = bind(supervisor, spec) if supervisor is not None else None
         self.max_retries = max_retries
         self.pre_run = pre_run

@@ -1,17 +1,36 @@
-"""Supervisors: per-shot fault detectors and trajectory monitors.
+"""Supervisors: fault checks and stop rules.
 
-A :class:`~abbot.experiment.Supervisor` is called with the full ``History`` after
-every result and returns a :class:`~abbot.experiment.Verdict`: ``retry`` marks the
-latest shot unusable (it is kept out of the surrogate and re-run), ``halt`` says the
-apparatus needs a human (the campaign stops, resumable), and ``stop`` says the
-campaign is done without anything being wrong (a cost budget spent, a target met,
-the search converged: :func:`cost_cap`, :func:`target_reached`,
-:func:`no_improvement`, :func:`acquisition_monitor`, :func:`min_runs`).
+A :class:`Supervisor` watches a campaign. After every result it is called with the
+full ``History`` and returns a :class:`~abbot.experiment.Verdict`. It has two kinds
+of rule:
+
+- **Fault checks** (``faults=``) judge whether the run is usable. ``retry`` marks
+  the latest run unusable (kept out of the model and re-run); ``halt`` says the
+  apparatus needs a person (the campaign ends, resumably). :func:`per_shot`,
+  :func:`stall_monitor`, :func:`drift_monitor`, :func:`consecutive_fault_monitor`;
+  :func:`standard_supervisor` bundles them.
+- **Stop rules** (``stops=``) say the campaign is done, with nothing wrong:
+  :func:`target_reached`, :func:`no_improvement`, :func:`cost_cap`,
+  :func:`acquisition_monitor`, :func:`min_runs`. A list of them stops on the first
+  that fires; :func:`all_of` stops only when every rule inside agrees (a floor:
+  ``all_of(no_improvement(10), min_runs(30))``), and :func:`any_of` is "or", for
+  nesting inside it.
+
+::
+
+    Supervisor(
+        faults=[per_shot(detector), stall_monitor(bounds)],
+        stops=[target_reached(0.95), all_of(no_improvement(10), min_runs(30))],
+    )
+
+Fault checks come first: a run they reject can't satisfy a stop rule, and a halt
+ends the campaign whatever the stop rules say. Each rule is a plain callable
+``(history) -> Verdict``, so writing your own is a function; a plain callable is
+also accepted wherever a ``Supervisor`` is.
 
 Single-observation checks are written as ``detector(observation) -> bool`` and
 lifted with :func:`per_shot`, so their authors never touch the history and cannot
-accidentally condition on the trajectory. :func:`any_of` merges several supervisors
-into the one a ``Campaign`` takes; :func:`all_of` stops only when all agree.
+accidentally condition on the trajectory.
 
 The trajectory monitors read a numeric *signal* per record — by default the raw
 observation if it is numeric, else the record's outputs. Pass ``signal=`` to point
@@ -30,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from abbot.experiment import Supervisor, Verdict
+from abbot.experiment import Verdict
 from abbot.history import History, Record
 
 if TYPE_CHECKING:
@@ -38,6 +57,8 @@ if TYPE_CHECKING:
 
 Detector = Callable[[Any], bool]
 Signal = Callable[[Record], Any]
+# One fault check or stop rule: called with the history after every result.
+Rule = Callable[[History], Verdict]
 
 # Below this relative spread, a window of observations counts as "unchanged". On
 # sbido's benchmark a stuck episode measured 0.12 (observation noise alone) against
@@ -65,7 +86,7 @@ def default_signal(record: Record) -> torch.Tensor | None:
     return record.outputs
 
 
-def per_shot(detector: Detector) -> Supervisor:
+def per_shot(detector: Detector) -> Rule:
     """Lift a single-observation check into a supervisor.
 
     The detector judges the shot just taken and nothing else; letting it see earlier
@@ -80,63 +101,102 @@ def per_shot(detector: Detector) -> Supervisor:
     return supervisor
 
 
-def any_of(*supervisors: Supervisor) -> Supervisor:
-    """Merge supervisors: ``retry`` is an OR; the first non-None ``halt`` and the
-    first non-None ``stop`` win.
+class Supervisor:
+    """What watches a campaign: fault checks, then stop rules.
 
-    A run another supervisor rejects can't satisfy a stop: when one retries, each
-    stop is checked again with the run marked faulty, so a glitch that happens to
-    hit the target doesn't end the campaign.
+    ``faults`` and ``stops`` each take a rule or a list of rules (any one of them is
+    enough: any fault check can reject a run or halt, any stop rule can end the
+    campaign). Fault checks run first and a run they reject is marked before the
+    stop rules see the history, so it can't satisfy one; on a halt the stop rules
+    aren't asked. The roles set that order and nothing more: whatever a rule
+    returns (retry, halt or stop) is honored.
+
+    Pass it as ``Campaign(spec, supervisor=...)`` (or ``run_campaign``).
     """
-    return _Merge(supervisors, every=False)
+
+    def __init__(self, faults: Rule | list[Rule] = (), stops: Rule | list[Rule] = ()) -> None:
+        self.faults, self.stops = _rules(faults), _rules(stops)
+
+    def bind(self, spec) -> Rule:
+        return Supervisor([bind(r, spec) for r in self.faults], [bind(r, spec) for r in self.stops])
+
+    def __call__(self, history: History) -> Verdict:
+        verdict = _merge([r(history) for r in self.faults], every=False)
+        if verdict.halt is not None or not self.stops:
+            return verdict
+        if verdict.retry and len(history):
+            history.records[-1].fault = True  # what the campaign is about to record
+        stops = _merge([r(history) for r in self.stops], every=False)
+        return Verdict(
+            retry=verdict.retry or stops.retry,
+            halt=stops.halt,
+            stop=verdict.stop if verdict.stop is not None else stops.stop,
+        )
+
+    def __repr__(self) -> str:
+        return f"Supervisor(faults={self.faults!r}, stops={self.stops!r})"
 
 
-def all_of(*supervisors: Supervisor) -> Supervisor:
-    """Stop only when every supervisor says stop; ``retry`` and ``halt`` still come
-    from any one of them, since a fault doesn't wait for agreement.
+def _rules(rules) -> list:
+    if callable(rules):
+        return [rules]
+    return list(rules)
 
-    For floors on a stopping rule: ``all_of(no_improvement(10), min_runs(30))`` stops
-    on no improvement, but not before 30 runs; ``all_of(no_improvement(10),
-    cost_cap(50))`` not before 50 is spent. Put only stopping rules inside (a fault
-    detector never says stop, so it would block the stop) and wrap fault detectors
-    around it: ``any_of(per_shot(detector), all_of(...))``. A run another supervisor
-    rejects can't satisfy a stop, as in :func:`any_of`.
+
+def any_of(*rules: Rule) -> Rule:
+    """Any one of ``rules``: stops on the first stop, retries if any asks, halts on
+    the first halt.
+
+    In a :class:`Supervisor`, a list already means "any", so this is mostly for an
+    "or" inside :func:`all_of`: ``all_of(any_of(a, b), min_runs(30))``.
     """
-    return _Merge(supervisors, every=True)
+    return _Merge(rules, every=False)
+
+
+def all_of(*rules: Rule) -> Rule:
+    """Stop only when every one of ``rules`` says stop; for floors on a stop rule.
+
+    ``all_of(no_improvement(10), min_runs(30))`` stops on no improvement, but not
+    before 30 runs; ``all_of(no_improvement(10), cost_cap(50))`` not before 50 is
+    spent. Put stop rules in it: a fault check never says stop, so it would block
+    the stop (fault checks go in ``Supervisor(faults=...)``). A retry or halt from a
+    rule inside still passes through.
+    """
+    return _Merge(rules, every=True)
 
 
 class _Merge:
     """:func:`any_of` (``every=False``) or :func:`all_of` (``every=True``)."""
 
-    def __init__(self, supervisors, every: bool) -> None:
-        self.supervisors, self.every = tuple(supervisors), every
-        if every and not self.supervisors:
-            raise ValueError("all_of needs at least one supervisor.")
+    def __init__(self, rules, every: bool) -> None:
+        self.rules, self.every = tuple(rules), every
+        if every and not self.rules:
+            raise ValueError("all_of needs at least one rule.")
 
     def bind(self, spec) -> _Merge:
-        return _Merge((bind(s, spec) for s in self.supervisors), self.every)
+        return _Merge((bind(r, spec) for r in self.rules), self.every)
 
     def __call__(self, history: History) -> Verdict:
-        verdicts = [s(history) for s in self.supervisors]
-        if any(v.retry for v in verdicts) and any(v.stop for v in verdicts) and len(history):
-            history.records[-1].fault = True  # what the campaign is about to record
-            verdicts = [
-                Verdict(retry=v.retry, halt=v.halt, stop=s(history).stop) if v.stop else v
-                for s, v in zip(self.supervisors, verdicts)
-            ]
-        retry = any(v.retry for v in verdicts)
-        halt = next((v.halt for v in verdicts if v.halt is not None), None)
-        stops = [getattr(v, "stop", None) for v in verdicts]
-        if self.every:
-            stop = " and ".join(stops) if all(x is not None for x in stops) else None
-        else:
-            stop = next((x for x in stops if x is not None), None)
-        return Verdict(retry=retry, halt=halt, stop=stop)
+        return _merge([r(history) for r in self.rules], self.every)
 
 
-def bind(supervisor: Supervisor, spec) -> Supervisor:
-    """``supervisor`` with the problem spec filled in, for those that read it
-    (:func:`target_reached`, :func:`no_improvement`). ``Campaign`` does this for
+def _merge(verdicts: list[Verdict], every: bool) -> Verdict:
+    """Retry if any asks, the first halt, and the first stop (``every``: a stop only
+    if all say stop, their reasons joined)."""
+    retry = any(v.retry for v in verdicts)
+    halt = next((v.halt for v in verdicts if v.halt is not None), None)
+    stops = [getattr(v, "stop", None) for v in verdicts]
+    if every:
+        agreed = stops and all(x is not None for x in stops)
+        stop = " and ".join(x.rstrip(".") for x in stops) + "." if agreed else None
+    else:
+        stop = next((x for x in stops if x is not None), None)
+    return Verdict(retry=retry, halt=halt, stop=stop)
+
+
+def bind(supervisor: Rule, spec) -> Rule:
+    """``supervisor`` (or a rule) with the problem spec filled in, for rules that
+    read it (:func:`target_reached`, :func:`no_improvement`). ``Campaign`` does this for
     you; call it yourself only to run such a supervisor outside a campaign."""
     return supervisor.bind(spec) if hasattr(supervisor, "bind") else supervisor
 
@@ -147,12 +207,12 @@ class _NeedsSpec:
     def __init__(self, name: str, make: Callable) -> None:
         self.name, self.make = name, make
 
-    def bind(self, spec) -> Supervisor:
+    def bind(self, spec) -> Rule:
         return self.make(spec)
 
     def __call__(self, history: History) -> Verdict:
         raise TypeError(
-            f"{self.name} needs the problem spec: pass it as Campaign(supervisor=...), "
+            f"{self.name} needs the problem spec: pass it in Campaign(supervisor=...), "
             "which fills it in, or call abbot.supervision.bind(supervisor, spec) first."
         )
 
@@ -189,7 +249,7 @@ def stall_monitor(
     obs_tol: float = STALL_OBS_TOL,
     *,
     signal: Signal = default_signal,
-) -> Supervisor:
+) -> Rule:
     """Halt when the designs moved but the observations didn't (a stuck controller).
 
     ``bounds`` is the ``(2, d)`` design box (``spec.bounds_tensor()``); design spread
@@ -229,7 +289,7 @@ def drift_monitor(
     rho_threshold: float = DRIFT_RHO_THRESHOLD,
     *,
     signal: Signal = default_signal,
-) -> Supervisor:
+) -> Rule:
     """Halt when the signal trends monotonically while the designs sit still.
 
     Flux decay is the motivating case: no single observation looks wrong, but the
@@ -264,7 +324,7 @@ def drift_monitor(
     return supervisor
 
 
-def consecutive_fault_monitor(detector: Detector, k: int = 3) -> Supervisor:
+def consecutive_fault_monitor(detector: Detector, k: int = 3) -> Rule:
     """Halt after ``k`` consecutive shots the detector rejects.
 
     Without it, a detector that never lets up is a valid trajectory that nothing
@@ -304,18 +364,19 @@ def standard_supervisor(
 
     The two trajectory monitors are gated on design spread in opposite directions,
     so at most one can fire in a window; together they cover the optimizer from
-    early exploration through convergence. Compose :func:`any_of` directly for
-    anything more specific.
+    early exploration through convergence. Build a :class:`Supervisor` yourself for
+    anything more specific; add stop rules with ``Supervisor(faults=[standard_supervisor(
+    ...)], stops=[...])``.
     """
-    return any_of(
+    return Supervisor(faults=[
         per_shot(detector),
         stall_monitor(bounds, signal=signal),
         drift_monitor(bounds, signal=signal),
         consecutive_fault_monitor(detector),
-    )
+    ])
 
 
-def cost_cap(budget: float) -> Supervisor:
+def cost_cap(budget: float) -> Rule:
     """Stop once the recorded cost reaches ``budget`` (``History.cost_spent``, in the
     records' cost units; failed runs count, since they were paid for).
 
@@ -334,7 +395,7 @@ def cost_cap(budget: float) -> Supervisor:
     return supervisor
 
 
-def min_runs(n: int) -> Supervisor:
+def min_runs(n: int) -> Rule:
     """Stop once ``n`` runs are recorded (every record counts, failures included, as
     for a campaign's budget). Meant as a floor inside :func:`all_of`; on its own it is
     a run budget.
@@ -350,7 +411,7 @@ def min_runs(n: int) -> Supervisor:
     return supervisor
 
 
-def acquisition_monitor(threshold: float, window: int = 3) -> Supervisor:
+def acquisition_monitor(threshold: float, window: int = 3) -> Rule:
     """Stop when the last ``window`` policy proposals all had an acquisition value
     below ``threshold``: the policy no longer expects a run to be worth doing.
 
@@ -415,7 +476,7 @@ def _the_objective(spec: ProblemSpec, caller: str, hint: str) -> str:
     return spec.objectives[0].name
 
 
-def target_reached(target: float | Mapping[str, float]) -> Supervisor:
+def target_reached(target: float | Mapping[str, float]) -> Rule:
     """Stop once a run reaches ``target``: at or above it for an output you
     maximize, at or below for one you minimize.
 
@@ -434,7 +495,7 @@ def target_reached(target: float | Mapping[str, float]) -> Supervisor:
     else:
         wanted = {None: float(target)}
 
-    def make(spec: ProblemSpec) -> Supervisor:
+    def make(spec: ProblemSpec) -> Rule:
         if None in wanted:
             name = _the_objective(
                 spec, "target_reached",
@@ -464,7 +525,7 @@ def target_reached(target: float | Mapping[str, float]) -> Supervisor:
     return _NeedsSpec("target_reached", make)
 
 
-def no_improvement(patience: int, min_delta: float = 0.0) -> Supervisor:
+def no_improvement(patience: int, min_delta: float = 0.0) -> Rule:
     """Stop when the best value of the objective hasn't improved by more than
     ``min_delta`` over the last ``patience`` runs.
 
@@ -482,7 +543,7 @@ def no_improvement(patience: int, min_delta: float = 0.0) -> Supervisor:
     if min_delta < 0:
         raise ValueError(f"min_delta must be non-negative, got {min_delta}")
 
-    def make(spec: ProblemSpec) -> Supervisor:
+    def make(spec: ProblemSpec) -> Rule:
         name = _the_objective(
             spec, "no_improvement",
             "it watches one, so use acquisition_monitor for several.",

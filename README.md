@@ -60,9 +60,9 @@ model_constructor)` to choose your own. A few variations:
   `temp` at 30 and chooses the rest.
 - **Categories** — `EnumeratedDomain(name="solvent", values=["water", "ethanol"])`;
   designs carry the labels, and the model learns how alike they are.
-- **Know when to stop** — `Campaign(spec, supervisor=target_reached(0.95))` or
-  `no_improvement(15)` (from `abbot.supervision`), and `print(campaign.check())` to
-  see whether the model makes sense.
+- **Know when to stop** — `Campaign(spec, supervisor=Supervisor(stops=[
+  target_reached(0.95), no_improvement(15)]))` (rules from `abbot.supervision`),
+  and `print(campaign.check())` to see whether the model makes sense.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
 
@@ -90,13 +90,14 @@ src/abbot/
   loop.py         # run_campaign / drive — thin blocking drivers over a Campaign
   analysis.py     # live-analysis built-ins (convergence, hypervolume, recommended_set)
   history.py      # Record{candidate, observation, outputs, aux, fault} + History + DataStore
-  experiment.py   # Experiment / Supervisor protocols, Verdict, ManualExperiment
+  experiment.py   # Experiment protocols, Verdict, ManualExperiment
   config.py       # name -> class registries
   goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
                   #   FunctionGoal (arbitrary fn(f, X) -> indices — nn-bax-style flexibility)
   composite.py    # composite objectives: composite_evaluate, Rescore (targets hook),
                   #   the ObjectiveReducer protocol
-  supervision.py  # per-shot detectors + stall / drift / consecutive-fault monitors
+  supervision.py  # Supervisor: fault checks (per-shot, stall, drift) + stop rules
+  diagnostics.py  # campaign.check(): leave-one-out fit, noise, lengthscales
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
     builder.py    # form rows -> ProblemSpec; optimizer selection
@@ -318,7 +319,8 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        policies able to skip abbot's model fit (`needs_model = False`).
      - **Diagnostics and stopping** *(done)*: `campaign.check()` (leave-one-out
        fit, suspicious runs, noise, lengthscales, runs vs. inputs),
-       `target_reached` and `no_improvement` supervisors, and a "how do I…" index
+       `Supervisor(faults=, stops=)` with `target_reached`, `no_improvement` and
+       `all_of` floors, and a "how do I…" index
        ([`docs/HOWTO.md`](docs/HOWTO.md)). Later: the check in the UI.
      - **Travel limits** per variable (with or before the blop backend), a
        prior-mean option, a high-dimensional (SAAS) default.
