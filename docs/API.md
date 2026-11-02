@@ -270,9 +270,8 @@ campaign = Campaign(spec, supervisor=Supervisor(
 - **Lists mean "any".** Any fault check can reject or halt; any stop rule can end
   the campaign. For "and", `all_of(...)` stops only when every stop rule inside
   agrees, which sets a floor: `all_of(no_improvement(10), min_runs(30))` won't
-  stop before 30 runs, `all_of(no_improvement(10), cost_cap(50))` not before 50 is
-  spent. `any_of(...)` is "or", for nesting inside `all_of`. Keep fault checks out
-  of `all_of`: they never say stop, so they'd block it.
+  stop before 30 runs. `any_of(...)` is "or", for nesting inside `all_of`. Keep
+  fault checks out of `all_of`: they never say stop, so they'd block it.
 - **Faults come first.** A run a fault check rejects is marked before the stop
   rules look, so it can't satisfy one. On a halt, the stop rules aren't asked.
 - **Each rule is a callable `(history) -> Verdict`,** so a custom one is a

@@ -157,10 +157,9 @@ def all_of(*rules: Rule) -> Rule:
     """Stop only when every one of ``rules`` says stop; for floors on a stop rule.
 
     ``all_of(no_improvement(10), min_runs(30))`` stops on no improvement, but not
-    before 30 runs; ``all_of(no_improvement(10), cost_cap(50))`` not before 50 is
-    spent. Put stop rules in it: a fault check never says stop, so it would block
-    the stop (fault checks go in ``Supervisor(faults=...)``). A retry or halt from a
-    rule inside still passes through.
+    before 30 runs. Put stop rules in it: a fault check never says stop, so it would
+    block the stop (fault checks go in ``Supervisor(faults=...)``). A retry or halt
+    from a rule inside still passes through.
     """
     return _Merge(rules, every=True)
 

@@ -208,7 +208,7 @@ def test_all_of_stops_only_when_every_rule_agrees():
     assert _campaign(_spec(), all_of(no_improvement(3), min_runs(8)), values).stopped is None
     stopped = _campaign(_spec(), all_of(no_improvement(3), min_runs(8)), values + [3.3, 3.4]).stopped
     assert "no improvement" in stopped and "at least 8 runs" in stopped
-    # a cost floor
+    # any stop rule can hold another open, cost_cap included
     campaign = Campaign(_spec(), supervisor=all_of(no_improvement(3), cost_cap(10.0)),
                         initial_designs=torch.empty(0, 2))
     for i, v in enumerate(values):
