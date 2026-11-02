@@ -328,7 +328,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
      - **Travel limits** *(done)*: `max_step` per variable, walking from the
        last issued design under every policy (BAX steps towards its target when
        its grid runs out nearby). Later: UI support.
-     - A prior-mean option, a high-dimensional (SAAS) default.
+     - **Prior means** *(done)*: `default_constructor(spec, prior_mean={...})`,
+       with a learned offset (and optionally a scale), and warm-start guidance:
+       prior mean vs. an earlier system as a source.
+     - A high-dimensional (SAAS) default.
   4. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
   5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` (it fails

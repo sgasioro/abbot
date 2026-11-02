@@ -17,6 +17,7 @@ Modelled on Xopt's ``ModelConstructor`` ABC.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal, Protocol, runtime_checkable
 
 import torch
@@ -24,6 +25,7 @@ from botorch.fit import fit_gpytorch_mll
 from botorch.models import ModelListGP, SingleTaskGP
 from botorch.models.model import Model
 from botorch.models.transforms.input import Normalize
+from gpytorch.means import Mean
 from gpytorch.mlls import ExactMarginalLogLikelihood, SumMarginalLogLikelihood
 
 # The UQ quality a model's posterior actually provides. This is a property of the
@@ -56,6 +58,38 @@ class ModelConstructor(Protocol):
 
 
 Kernel = Literal["default", "matern52"]
+
+# A prior mean as the GP sees it: raw inputs (..., n, d) -> one output's values
+# (..., n) in maximize-canonical space. ``default_constructor(spec, prior_mean=...)``
+# builds these from named functions in raw units.
+PriorMean = Callable[[torch.Tensor], torch.Tensor]
+
+
+class _PriorMean(Mean):
+    """A GP mean that follows a prior model: ``scale * prior(x) + offset``, in the
+    GP's standardized space. ``offset`` is learned with the other settings, and
+    ``scale`` is 1 unless ``fit_scale``. The GP then models how the data differ from
+    the prior, and its uncertainty is that difference's (the prior's own isn't
+    known). Like Xopt's ``CustomMean``, it maps the GP's transformed inputs back to
+    raw units and the prior's values into the GP's scaled outputs."""
+
+    def __init__(self, prior: PriorMean, input_transform, y_mean, y_std, fit_scale: bool) -> None:
+        super().__init__()
+        self.prior = prior
+        self._untransform = (input_transform,)  # kept out of the module tree
+        self.register_buffer("y_mean", y_mean.reshape(()).detach().clone())
+        self.register_buffer("y_std", y_std.reshape(()).detach().clone())
+        self.offset = torch.nn.Parameter(torch.zeros((), dtype=torch.double))
+        if fit_scale:
+            self.scale = torch.nn.Parameter(torch.ones((), dtype=torch.double))
+        else:
+            self.register_buffer("scale", torch.ones((), dtype=torch.double))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        transform = self._untransform[0]
+        raw = transform.untransform(x) if transform is not None else x
+        value = torch.as_tensor(self.prior(raw), dtype=x.dtype).expand(x.shape[:-1])
+        return self.scale * (value - self.y_mean) / self.y_std + self.offset
 
 
 def _covar_module(kernel: Kernel, d: int):
@@ -103,26 +137,35 @@ def _cont_kernel_factory(kernel: Kernel):
     )
 
 
-def _gp(X, Y, Yvar, bounds, log, kernel: Kernel, categorical: list[int]) -> SingleTaskGP:
+def _gp(X, Y, Yvar, bounds, log, kernel: Kernel, categorical: list[int],
+        prior: PriorMean | None = None, fit_scale: bool = False) -> SingleTaskGP:
     """One unfitted GP on ``(X, Y)``: a ``SingleTaskGP``, or with ``categorical``
     columns (codes of labeled values) a ``MixedSingleTaskGP``, whose categorical
     kernel learns how alike each pair of labels is instead of assuming an order.
-    Codes skip normalization; the kernel only asks whether two are equal."""
+    Codes skip normalization; the kernel only asks whether two are equal. With a
+    ``prior``, its mean follows the prior (see :class:`_PriorMean`)."""
     d = X.shape[-1]
     Yvar = Yvar.double() if Yvar is not None else None
     if not categorical:
-        return SingleTaskGP(
+        gp = SingleTaskGP(
             X, Y, train_Yvar=Yvar, input_transform=_input_transform(d, bounds, log),
             covar_module=_covar_module(kernel, d),
         )
-    from botorch.models import MixedSingleTaskGP
+    else:
+        from botorch.models import MixedSingleTaskGP
 
-    numeric = [j for j in range(d) if j not in categorical]
-    return MixedSingleTaskGP(
-        X, Y, cat_dims=list(categorical), train_Yvar=Yvar,
-        cont_kernel_factory=_cont_kernel_factory(kernel),
-        input_transform=_input_transform(d, bounds, log, indices=numeric) if numeric else None,
-    )
+        numeric = [j for j in range(d) if j not in categorical]
+        gp = MixedSingleTaskGP(
+            X, Y, cat_dims=list(categorical), train_Yvar=Yvar,
+            cont_kernel_factory=_cont_kernel_factory(kernel),
+            input_transform=_input_transform(d, bounds, log, indices=numeric) if numeric else None,
+        )
+    if prior is not None:
+        gp.mean_module = _PriorMean(
+            prior, getattr(gp, "input_transform", None),
+            gp.outcome_transform.means, gp.outcome_transform.stdvs, fit_scale,
+        )
+    return gp
 
 
 class SingleTaskGPConstructor:
@@ -135,6 +178,11 @@ class SingleTaskGPConstructor:
     ``ProblemSpec.categorical_indices``) and get a categorical kernel. A GP
     posterior is a full Gaussian, so it provides calibrated variance (the
     strongest UQ tier).
+
+    ``prior_mean`` makes the GP start from a prior model instead of a constant: a
+    function of the raw inputs ``(..., n, d) -> (..., n)`` in maximize-canonical
+    space. ``default_constructor(spec, prior_mean=...)`` builds it from a named
+    function in raw units, which is the usual way in.
     """
 
     provides_uq = "calibrated_variance"
@@ -146,18 +194,24 @@ class SingleTaskGPConstructor:
         *,
         log: list[int] | None = None,
         categorical: list[int] | None = None,
+        prior_mean: PriorMean | list[PriorMean | None] | None = None,
+        fit_prior_scale: bool = False,
     ) -> None:
         # bounds: (2, d) for input Normalize; None -> normalize from data.
         self.bounds = bounds
         self.kernel = kernel
         self.log = list(log or [])
         self.categorical = list(categorical or [])
+        self.prior_mean = prior_mean
+        self.fit_prior_scale = fit_prior_scale
         _covar_module(kernel, 1)  # validate early
 
     def build(
         self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None
     ) -> SingleTaskGP:
-        gp = _gp(X.double(), Y.double(), Yvar, self.bounds, self.log, self.kernel, self.categorical)
+        prior = self.prior_mean[0] if isinstance(self.prior_mean, list) else self.prior_mean
+        gp = _gp(X.double(), Y.double(), Yvar, self.bounds, self.log, self.kernel,
+                 self.categorical, prior, self.fit_prior_scale)
         fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
         return gp
 
@@ -168,7 +222,8 @@ class ModelListConstructor:
     Each column of Y gets its own ``SingleTaskGP``. This is the rewrite target for
     multibax's independent-sklearn-GP ``MGPR`` and the base for multi-output θ
     models in the SBI app. Each GP posterior is Gaussian -> calibrated variance.
-    ``log`` and ``categorical`` as for :class:`SingleTaskGPConstructor`.
+    ``log`` and ``categorical`` as for :class:`SingleTaskGPConstructor`;
+    ``prior_mean`` is a list with one entry per output (``None`` for none).
     """
 
     provides_uq = "calibrated_variance"
@@ -180,11 +235,15 @@ class ModelListConstructor:
         *,
         log: list[int] | None = None,
         categorical: list[int] | None = None,
+        prior_mean: PriorMean | list[PriorMean | None] | None = None,
+        fit_prior_scale: bool = False,
     ) -> None:
         self.bounds = bounds
         self.kernel = kernel
         self.log = list(log or [])
         self.categorical = list(categorical or [])
+        self.prior_mean = prior_mean
+        self.fit_prior_scale = fit_prior_scale
         _covar_module(kernel, 1)  # validate early
 
     def build(
@@ -192,10 +251,14 @@ class ModelListConstructor:
     ) -> ModelListGP:
         X = X.double()
         Y = Y.double()
+        priors = self.prior_mean or [None] * Y.shape[-1]
+        if callable(priors):
+            raise TypeError("ModelListConstructor: prior_mean is a list, one entry per output")
         gps = [
             _gp(
                 X, Y[..., j : j + 1], Yvar[..., j : j + 1] if Yvar is not None else None,
                 self.bounds, self.log, self.kernel, self.categorical,
+                priors[j], self.fit_prior_scale,
             )
             for j in range(Y.shape[-1])
         ]
@@ -509,7 +572,13 @@ def _fidelity_transform(spec, bounds: torch.Tensor):
     return ChainedInputTransform(log=Log10(indices=logged), scale=affine)
 
 
-def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstructor:
+def default_constructor(
+    spec,
+    bounds: torch.Tensor | None = None,
+    *,
+    prior_mean: dict[str, Callable] | None = None,
+    fit_prior_scale: bool = False,
+) -> ModelConstructor:
     """Pick a sensible builtin: single-output GP for one OUTPUT, else ModelList, and
     a :class:`MultiFidelityGPConstructor` when the spec has sources.
 
@@ -519,12 +588,65 @@ def default_constructor(spec, bounds: torch.Tensor | None = None) -> ModelConstr
     MultiTaskGP for SBI). ``bounds`` defaults to the spec's design bounds,
     ``log=True`` variables are modeled on a log scale, and labeled variables get a
     categorical kernel.
+
+    ``prior_mean={output name: fn}`` starts an output's GP from a prior model (a
+    physics model, a fit to an earlier dataset) instead of a constant; the GP learns
+    how the data differ from it. ``fn`` takes ``{variable name: tensor}`` in raw units
+    (labeled variables as codes) and returns the output's raw values, as torch
+    operations: proposals are optimized by gradient. Never pre-negate a minimized
+    output. A constant offset from the prior is learned; ``fit_prior_scale=True``
+    also learns a scale, so data can shrink a prior that's off in amplitude.
     """
     if spec.sources:
+        if prior_mean:
+            raise ValueError(
+                "prior_mean isn't supported with source variables yet "
+                f"({spec.source_names})"
+            )
         return MultiFidelityGPConstructor(spec)
     if bounds is None:
         bounds = spec.bounds_tensor()
     kw = {"log": spec.log_indices(), "categorical": spec.categorical_indices()}
+    if prior_mean:
+        priors = _priors(spec, prior_mean)
+        kw.update(prior_mean=priors if spec.n_outputs > 1 else priors[0],
+                  fit_prior_scale=fit_prior_scale)
     if spec.n_outputs == 1:
         return SingleTaskGPConstructor(bounds=bounds, **kw)
     return ModelListConstructor(bounds=bounds, **kw)
+
+
+def _priors(spec, prior_mean: dict[str, Callable]) -> list[PriorMean | None]:
+    """Named raw-unit prior functions as the GPs take them, one per output, each
+    checked on a few designs so a broken one fails here rather than in a fit."""
+    unknown = sorted(set(prior_mean) - set(spec.output_names))
+    if unknown:
+        raise ValueError(f"prior_mean: no output named {unknown}; the outputs are {spec.output_names}")
+    names = spec.variable_names
+    signs = spec.output_signs().tolist()
+
+    def canonical(fn, sign):
+        def prior(X: torch.Tensor) -> torch.Tensor:
+            return sign * torch.as_tensor(fn({n: X[..., k] for k, n in enumerate(names)}),
+                                          dtype=X.dtype)
+        return prior
+
+    out: list[PriorMean | None] = []
+    probe = spec.sample_designs(4)
+    for name, sign in zip(spec.output_names, signs):
+        fn = prior_mean.get(name)
+        if fn is None:
+            out.append(None)
+            continue
+        prior = canonical(fn, sign)
+        try:
+            value = torch.as_tensor(prior(probe)).expand(probe.shape[:-1])
+        except Exception as exc:
+            raise ValueError(
+                f"prior_mean for {name!r} failed on sample designs: {type(exc).__name__}: "
+                f"{exc}. It takes {{variable name: tensor}} and returns a tensor of values."
+            ) from exc
+        if not torch.isfinite(value).all():
+            raise ValueError(f"prior_mean for {name!r} returned non-finite values")
+        out.append(prior)
+    return out

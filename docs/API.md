@@ -46,6 +46,8 @@ on them.
   rules `cost_cap`, `acquisition_monitor`, `target_reached`, `no_improvement`,
   `min_runs` (`Verdict.stop`); `all_of`, `any_of`, and `bind`. The default fault thresholds were calibrated on
   sbido's scattering benchmark.
+- **Prior means** — `default_constructor(spec, prior_mean=, fit_prior_scale=)`
+  and the constructors' `prior_mean=`. New.
 - **Travel limits** — `max_step` on domains, `ProblemSpec.reach` /
   `out_of_reach` / `has_travel_limits`, and the optional `within=` argument of
   `Policy.suggest`. New.
@@ -253,6 +255,57 @@ not to labels or sources.
 - **Files:** the JSON spec and the CSV keep `max_step`. VOCS has no travel limits:
   `spec_to_vocs` warns, and in Xopt the generator's `max_travel_distances` is the
   equivalent (a fraction of each range there).
+
+## Prior means
+
+```python
+def yield_model(x):                      # {variable name: tensor}, raw units
+    return 0.9 - ((x["temp"] - 55) / 20) ** 2
+
+Campaign(spec, model_constructor=default_constructor(spec, prior_mean={"yield": yield_model}))
+```
+
+A GP normally starts from a constant. With `prior_mean`, an output's GP starts
+from a model you supply instead (a physics model, a fit to an earlier dataset) and
+learns how the data differ from it. With few runs that's often a large gain.
+- **The function** takes `{variable name: tensor}` in raw units and returns the
+  output's raw values; never pre-negate a minimized output. Labeled variables
+  arrive as codes. Write it in torch: proposals are optimized by gradient, so it
+  has to take batches and be differentiable. It's tried on a few designs when the
+  constructor is built, so a broken one fails there.
+- **What's learned:** a constant offset from the prior, always. `fit_prior_scale=True`
+  also learns a scale (`scale · prior + offset`), so the data can shrink a prior
+  that's off in amplitude; with very few runs the scale and the GP can trade off, so
+  it's off by default.
+- **Uncertainty** is the GP's on the difference; the prior's own uncertainty isn't
+  known. The model is still a standard BoTorch GP (the prior is its mean module,
+  as with Xopt's `CustomMean`), so every policy, InfoBAX's conditioning and
+  `campaign.check()` work unchanged.
+- **Scope:** `default_constructor` without sources; `SingleTaskGPConstructor` and
+  `ModelListConstructor` take `prior_mean=` too, as functions of the raw input
+  tensor in maximize-canonical space.
+
+**Warm start from an earlier campaign.** An earlier campaign's model can be the
+prior:
+
+```python
+earlier = old_campaign.current_model()          # maximize-canonical
+sign = float(spec.output_signs()[0])            # back to raw units
+
+def prior(x):
+    X = torch.stack([x[n] for n in spec.variable_names], dim=-1)
+    return sign * earlier.posterior(X).mean[..., 0]
+```
+
+When you have the earlier data, a source is often the better choice: declare
+`sources=[Source(domain=EnumeratedDomain(name="batch", values=["2025", "2026"]),
+target="2026")]` and load the old runs with `batch="2025"`. The model then learns
+how closely the two relate and leans on the old data only as far as it holds,
+whereas a prior mean trusts it fully, up to the offset (and scale). Prefer a prior
+mean when the old knowledge is a model rather than data, the old dataset is too
+large to refit alongside, or the two are known to differ only slightly. With a
+source, pass `BAXPolicy(..., choose_sources=False)` or `SimpleBO(choose_sources=False)`
+so the campaign never proposes the old system.
 
 ## Xopt's generators in abbot's loop
 

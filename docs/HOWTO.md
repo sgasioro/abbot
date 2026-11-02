@@ -63,6 +63,8 @@ is shown.
 
 | How do I… | |
 | --- | --- |
+| start the model from a physics model | `default_constructor(spec, prior_mean={"yield": fn})`, with `fn({name: tensor})` in raw units, written in torch. [Prior means](API.md#prior-means) |
+| reuse data from an earlier, similar system | A labeled source for the system, with the old runs loaded under its old label; or a prior mean from the old campaign's model. [Prior means](API.md#prior-means) |
 | use my own model | Anything with `build(X, Y, Yvar) -> Model` and `provides_uq`; pass it as `Campaign(spec, policy, model_constructor)`. See `examples/custom_models.py`. |
 | fit the model to something derived from the raw data | `Campaign(..., targets=fn)`, with `fn(history, spec) -> Y`. |
 | use an Xopt generator (TuRBO, Nelder-Mead, …) in abbot | `Campaign(spec, GestGeneratorPolicy(NelderMeadGenerator))` from `abbot.interop.xopt`. [Xopt's generators](API.md#xopts-generators-in-abbots-loop) |
