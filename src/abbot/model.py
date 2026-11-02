@@ -94,13 +94,19 @@ class _PriorMean(Mean):
 
 def _covar_module(kernel: Kernel, d: int):
     """``None`` keeps BoTorch's default kernel; ``"matern52"`` is a scaled ARD
-    Matern-5/2 (the sklearn ``ConstantKernel * Matern(nu=2.5)`` multibax used)."""
+    Matern-5/2 (the sklearn ``ConstantKernel * Matern(nu=2.5)`` multibax used), with
+    BoTorch's dimension-scaled lengthscale prior. Without the prior it failed to fit
+    sparse data with many exact zeros (2 of 10 fits at 10 runs of BAXstics'
+    parabola data, 36% zero yields; 0 of 10 with it)."""
     if kernel == "default":
         return None
     if kernel == "matern52":
-        from gpytorch.kernels import MaternKernel, ScaleKernel
+        from botorch.models.utils.gpytorch_modules import (
+            get_covar_module_with_dim_scaled_prior,
+        )
+        from gpytorch.kernels import ScaleKernel
 
-        return ScaleKernel(MaternKernel(nu=2.5, ard_num_dims=d))
+        return ScaleKernel(get_covar_module_with_dim_scaled_prior(ard_num_dims=d, use_rbf_kernel=False))
     raise ValueError(f"kernel must be 'default' or 'matern52', got {kernel!r}")
 
 
@@ -130,10 +136,13 @@ def _cont_kernel_factory(kernel: Kernel):
     """``MixedSingleTaskGP``'s kernel over the numeric inputs, for ``kernel``."""
     if kernel == "default":
         return None
-    from gpytorch.kernels import MaternKernel
+    from botorch.models.utils.gpytorch_modules import (
+        get_covar_module_with_dim_scaled_prior,
+    )
 
-    return lambda batch_shape, ard_num_dims, active_dims: MaternKernel(
-        nu=2.5, batch_shape=batch_shape, ard_num_dims=ard_num_dims, active_dims=active_dims
+    return lambda batch_shape, ard_num_dims, active_dims: get_covar_module_with_dim_scaled_prior(
+        ard_num_dims=ard_num_dims, batch_shape=batch_shape, use_rbf_kernel=False,
+        active_dims=active_dims,
     )
 
 

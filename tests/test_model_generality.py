@@ -111,3 +111,22 @@ def test_ensemble_constructor_drives_meanbax():
         x = c.suggest(1)[0]["x"]
         c.ingest(torch.tensor([-((x - 0.5) ** 2)]))
     assert len(c.history) == 4
+
+
+def test_matern52_has_a_dimension_scaled_lengthscale_prior():
+    """Without one it failed to fit sparse data with many exact zeros (BAXstics'
+    clipped yields); the prior keeps the fit well posed."""
+    from gpytorch.kernels import MaternKernel
+
+    from abbot import ModelListConstructor, SingleTaskGPConstructor
+
+    torch.manual_seed(0)
+    X = torch.rand(10, 3, dtype=torch.double)
+    Y = torch.clamp(10 * (X[:, :1] * X[:, 1:2]) - 3, min=0)  # mostly zero
+    for ctor in (SingleTaskGPConstructor, ModelListConstructor):
+        model = ctor(kernel="matern52").build(X, torch.cat([Y, X[:, 2:]], -1)
+                                              if ctor is ModelListConstructor else Y)
+        gps = model.models if ctor is ModelListConstructor else [model]
+        for gp in gps:
+            matern = next(m for m in gp.covar_module.modules() if isinstance(m, MaternKernel))
+            assert matern.nu == 2.5 and matern.lengthscale_prior is not None
