@@ -308,6 +308,17 @@ def test_check_runs_vs_inputs_and_no_model():
                for f in campaign.check().findings)
 
 
+def test_check_points_to_turbo_with_many_inputs_and_few_runs():
+    spec = _spec(domain=[ContinuousDomain(name=f"x{i}", lower=0, upper=1) for i in range(20)])
+    campaign = Campaign(spec, initial_designs=torch.empty(0, 20))
+    for i, row in enumerate(spec.sample_designs(45, seed=0).tolist()):
+        campaign.record(dict(zip(spec.variable_names, row)), [float(row[0] + i % 3)])
+    notes = [f.message for f in campaign.check().findings]
+    assert any("20 inputs and 45 runs" in m and "TuRBO" in m for m in notes), notes
+    few = _spec(domain=[ContinuousDomain(name=f"x{i}", lower=0, upper=1) for i in range(3)])
+    assert not any("TuRBO" in f.message for f in Campaign(few).check().findings)
+
+
 @pytest.mark.parametrize("kind", ["categories", "ordered source", "unordered source"])
 def test_check_reads_the_other_builtin_models(kind):
     if kind == "categories":

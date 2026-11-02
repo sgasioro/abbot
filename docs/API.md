@@ -412,6 +412,8 @@ reuses the cached fit, so it costs one fit at most.
   inputs). Below 5%, the fit may be chasing noise. Very long, and much longer than
   the output's shortest: the output hasn't shown a dependence on that input.
 - **Runs vs. inputs:** fewer clean runs than inputs leaves the model guessing.
+  With 15 or more inputs and fewer than 10 runs per input, a note points to TuRBO
+  (`GestGeneratorPolicy`) and neural-network surrogates (`EnsembleConstructor`).
 - **Coverage:** the fit checks read any BoTorch exact GP (the builtin constructors,
   model lists, categorical and source-aware GPs). For other models only the run
   counts apply.

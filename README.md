@@ -331,7 +331,9 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
      - **Prior means** *(done)*: `default_constructor(spec, prior_mean={...})`,
        with a learned offset (and optionally a scale), and warm-start guidance:
        prior mean vs. an earlier system as a source.
-     - A high-dimensional (SAAS) default.
+     - **High dimensions** *(parked)*: `campaign.check()` points to TuRBO and
+       neural-network surrogates when there are many inputs and few runs. SAAS
+       (needs JAX, MCMC fits) only on demand.
   4. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
      related tasks / data sources, sharing the spec design from 2.
   5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` (it fails

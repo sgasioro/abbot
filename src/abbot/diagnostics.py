@@ -12,7 +12,8 @@ plain words, what's worth a second look:
   an output to change. A very short one usually means the fit is chasing noise or
   an outlier; a very long one, that the output hasn't shown a dependence on it.
 - **Runs vs. inputs.** Too few runs for the number of inputs leaves the model
-  mostly guessing.
+  mostly guessing. With many inputs (15 or more) and fewer than 10 runs per input,
+  a note points to TuRBO and neural-network surrogates.
 
 The checks read any BoTorch exact GP (the builtin constructors, model lists,
 categorical and source-aware GPs). For other models only the run counts apply.
@@ -58,6 +59,12 @@ LONG_RATIO = 10.0
 
 # Leave-one-out needs a few runs to mean anything.
 MIN_RUNS_FOR_LOO = 5
+
+# Many inputs and few runs per input: where a GP struggles if only some inputs
+# matter. With 30 runs and 3 relevant inputs, BoTorch's default GP had a relative
+# error of 0.24 at 10 inputs, 0.53 at 30 and 0.72 at 60.
+MANY_INPUTS = 15
+RUNS_PER_INPUT = 10
 
 
 @dataclass
@@ -159,6 +166,12 @@ def check(history: History, spec: ProblemSpec, model: Model | None) -> CheckRepo
     elif n < 2 * d:
         add(Finding("note", f"{n} clean runs for {d} inputs: expect a rough model "
                             f"until about {2 * d}."))
+    if d >= MANY_INPUTS and n < RUNS_PER_INPUT * d:
+        add(Finding("note", f"{d} inputs and {n} runs: a GP needs many runs per input "
+                            "in this many dimensions. If only some inputs matter, "
+                            "consider TuRBO (GestGeneratorPolicy with Xopt's "
+                            "ExpectedImprovementGenerator, turbo_controller=\"optimize\") "
+                            "or a neural-network surrogate (EnsembleConstructor)."))
     if model is None:
         if n:
             add(Finding("warning", "No model: the fit failed (see the log)."))

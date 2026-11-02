@@ -94,7 +94,8 @@ algorithms that are self-contained and run on their own data.
 | Output constraints, named spec references, string categories, log-scaled design variables, pinning a variable at proposal time | Native: they are the spec, and constraints must work with BAX, multi-fidelity and recommendation |
 | Model diagnostics, stopping on a target or on no improvement | Native: small, and part of the loop |
 | Per-variable travel limits (hardware safety) | Native: they wrap every policy, BAX and multi-fidelity included |
-| Physics prior mean, a high-dimensional model (SAAS) | Native: BoTorch models behind the `ModelConstructor` seam |
+| Physics prior mean | Native: `default_constructor(spec, prior_mean=...)` |
+| Many inputs, few that matter | TuRBO through `GestGeneratorPolicy`, or a neural-network surrogate (nn-bax style, `EnsembleConstructor`); `campaign.check()` points there. SAAS (BoTorch, needs JAX) only on demand, through the `ModelConstructor` seam |
 | TuRBO, non-BO optimizers (Nelder-Mead, RCDS, extremum seeking, genetic algorithms), time-dependent BO, MGGPO | Xopt, through `GestGeneratorPolicy` |
 | Parallel and asynchronous evaluation at scale, control systems, Badger | Xopt, through `CorePolicyGenerator` |
 | Bluesky devices, plans, queue server, moving to the best setting, baselines | blop, with abbot as a backend |
