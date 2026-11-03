@@ -474,6 +474,7 @@ def _control_panel(state: UIState) -> None:
             ui.button(icon="restart_alt", on_click=lambda: _reset(state)).props(
                 "flat dense round color=grey"
             ).tooltip("New campaign")
+        _halt_actions(state)
 
         spec = state.spec
         if isinstance(ctrl.campaign.policy, BAXPolicy):
@@ -849,7 +850,55 @@ def _status_chip(ctrl: RunController) -> None:
     color, text = colors.get(ctrl.status, ("grey", str(ctrl.status)))
     ui.badge(text).props(f"color={color}")
     if ctrl.campaign.halted:
-        ui.label(f"⚠ {ctrl.campaign.halted}").classes("text-red-600 text-sm")
+        # The buttons below replace the API hint.
+        why = "\n".join(
+            line for line in ctrl.campaign.halted.split("\n")
+            if not line.startswith("Decide with resolve()")
+        )
+        ui.label(f"⚠ {why}").classes("text-red-600 text-sm whitespace-pre-line")
+
+
+def _halt_actions(state: UIState) -> None:
+    """A halted campaign's answers: retry (fixed), exclude the design, or mark it a
+    bad region; a halt not about a design only resumes."""
+    ctrl = state.controller
+    if not ctrl.campaign.halted:
+        return
+
+    def answer(choice: str, reason: str | None = None) -> None:
+        try:
+            ctrl.resolve(choice, reason=reason or None)
+        except Exception as exc:  # noqa: BLE001
+            ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
+            return
+        state._left.refresh()
+
+    with ui.card().classes("w-full bg-red-50"):
+        if not ctrl.campaign.halted_on:
+            ui.label("Fix the cause, then resume.").classes("text-sm")
+            ui.button("Resume", icon="play_arrow", on_click=lambda: answer("retry")).props(
+                "color=indigo"
+            ).mark("halt-retry")
+            return
+        designs = "; ".join(
+            ", ".join(f"{k} = {_fmt(v)}" for k, v in d.items()) for d in ctrl.campaign.halted_on
+        )
+        ui.label(f"What went wrong at {designs}?").classes("text-sm font-semibold")
+        with ui.row().classes("items-center gap-2 flex-wrap"):
+            ui.button(
+                "Apparatus fixed: retry", icon="replay", on_click=lambda: answer("retry")
+            ).props("color=indigo").mark("halt-retry")
+            ui.button(
+                "Skip this design", icon="block", on_click=lambda: answer("exclude")
+            ).props("outline").mark("halt-exclude")
+        with ui.row().classes("items-center gap-2 flex-wrap"):
+            reason = ui.input("Why (optional)", placeholder="dark: flat profile").props(
+                "outlined dense"
+            ).mark("halt-reason")
+            ui.button(
+                "The design is the cause: bad region", icon="report",
+                on_click=lambda: answer("bad_region", reason.value),
+            ).props("outline color=red").mark("halt-bad-region")
 
 
 def _update_recommendation(state: UIState) -> None:
