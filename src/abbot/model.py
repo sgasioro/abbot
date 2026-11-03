@@ -5,8 +5,9 @@ surrogate-agnostic layer, so abbot does NOT define a bespoke Posterior protocol 
 a constructor just builds a botorch ``Model`` and every policy composes over its
 ``.posterior(X)`` unchanged.
 
-Builtins cover single-output GP, multi-output ``ModelListGP``, and a
-multi-fidelity GP for specs with source variables. Involved SBI
+Builtins cover single-output GP, multi-output ``ModelListGP``, a GP over
+correlated outputs (``MultiTaskGPConstructor``), and a multi-source GP for specs
+with source variables (``MultiSourceGPConstructor``). Involved SBI
 construction (correlated ``MultiTaskGP``/LCM, per-shot posterior variance via
 ``train_Yvar``, custom GPyTorch likelihoods) plugs in here WITHOUT touching the
 loop or the policy. NN surrogates are botorch ``EnsembleModel`` subclasses (see
@@ -22,9 +23,10 @@ from typing import Literal, Protocol, runtime_checkable
 
 import torch
 from botorch.fit import fit_gpytorch_mll
-from botorch.models import ModelListGP, SingleTaskGP
+from botorch.models import ModelListGP, MultiTaskGP, SingleTaskGP
 from botorch.models.model import Model
 from botorch.models.transforms.input import Normalize
+from botorch.models.transforms.outcome import Standardize, StratifiedStandardize
 from gpytorch.means import Mean
 from gpytorch.mlls import ExactMarginalLogLikelihood, SumMarginalLogLikelihood
 
@@ -337,9 +339,13 @@ class EnsembleConstructor:
         return ToyEnsembleModel(members, num_outputs=m)
 
 
-class MultiFidelityGPConstructor:
-    """A GP over designs and sources, so cheap runs inform the target: the model for
-    a spec with source variables.
+class MultiSourceGPConstructor:
+    """A GP over designs and sources, so runs at other sources inform the target:
+    the model for a spec with source variables. Sources are fidelities (ordered:
+    cheaper, less accurate versions of the target) or related systems (unordered:
+    another code, an earlier catalyst, neither an approximation of the other). The
+    general setting is multi-information-source optimization (Poloczek, Wang &
+    Frazier, 2017); multi-fidelity is its ordered case.
 
     - **Ordered sources** (fidelity knobs): BoTorch's ``SingleTaskMultiFidelityGP``.
       Each source is mapped to [0, 1] with its accurate end (``Source.accurate``) at
@@ -353,13 +359,17 @@ class MultiFidelityGPConstructor:
       the design kernel by a per-source kernel, with ``iteration`` naming a source
       whose results settle towards a limit along it (an exponential-decay kernel;
       iteration counts, epochs).
-    - **One unordered source** (different codes, simulation vs experiment): a
-      ``MultiTaskGP`` that learns how the sources correlate. The noise level is
+    - **One unordered source** (related systems: different codes, simulation vs
+      experiment, data from an earlier system as a warm start): a ``MultiTaskGP``
+      that learns how the sources correlate. The noise level is
       shared across sources unless ``Yvar`` is given. (BoTorch's per-source noise
       likelihood fails in conditioning and in entropy search as of 0.18.)
 
     Ordered and unordered sources together, or several unordered sources, aren't
-    supported yet. A multi-output spec gets one model per output where needed.
+    supported yet. A multi-output spec gets one model per output where needed
+    (correlated outputs *and* sources in one model aren't supported yet).
+
+    Formerly ``MultiFidelityGPConstructor``, which remains an alias.
     """
 
     provides_uq = "calibrated_variance"
@@ -379,18 +389,18 @@ class MultiFidelityGPConstructor:
             )
         sources = list(spec.sources or [])
         if not sources:
-            raise ValueError("MultiFidelityGPConstructor needs a spec with sources")
+            raise ValueError("MultiSourceGPConstructor needs a spec with sources")
         ordered = [s for s in sources if s.is_ordered]
         unordered = [s for s in sources if not s.is_ordered]
         if ordered and unordered:
             raise ValueError(
-                "MultiFidelityGPConstructor doesn't yet model ordered and unordered "
+                "MultiSourceGPConstructor doesn't yet model ordered and unordered "
                 f"sources together (ordered: {[s.name for s in ordered]}, unordered: "
                 f"{[s.name for s in unordered]})"
             )
         if len(unordered) > 1:
             raise ValueError(
-                "MultiFidelityGPConstructor models one unordered source; got "
+                "MultiSourceGPConstructor models one unordered source; got "
                 f"{[s.name for s in unordered]}"
             )
         if iteration is not None and iteration not in [s.name for s in ordered]:
@@ -434,7 +444,6 @@ class MultiFidelityGPConstructor:
         return gp
 
     def _multitask_gp(self, X, Y, Yvar):
-        from botorch.models import MultiTaskGP
         from botorch.models.utils.gpytorch_modules import (
             get_gaussian_likelihood_with_lognormal_prior,
         )
@@ -464,6 +473,177 @@ class MultiFidelityGPConstructor:
             fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
             gps.append(gp)
         return gps[0] if len(gps) == 1 else ModelListGP(*gps)
+
+
+# The name before sources covered related systems, not only fidelities.
+MultiFidelityGPConstructor = MultiSourceGPConstructor
+
+
+class MultiTaskGPConstructor:
+    """One GP over every output that learns how they correlate, so a run's result
+    for one output informs the others (BoTorch's ``MultiTaskGP``, the output as the
+    task). For outputs driven by the same physics: summaries of one posterior,
+    yield and selectivity, two detectors on one beam.
+
+    ``default_constructor(spec, correlated=True)`` builds it. ``rank`` is the rank
+    of the learned output covariance (default: full, fine for a handful of outputs).
+
+    - **Each output keeps its own scale:** outputs are standardized separately, and
+      the model answers in each output's units.
+    - **Noise:** with per-run variances (``output_vars``), each output's own. Without
+      them, one learned noise level in standardized units, i.e. the same noise
+      *fraction* for every output: BoTorch's per-output noise likelihood fails in
+      conditioning as of 0.18, which InfoBAX and pending designs rely on.
+    - **Correlations of either sign:** an unconstrained output covariance
+      (GPyTorch's ``IndexKernel``; BoTorch's default allows only positive ones),
+      started at the outputs' empirical correlation, so fits are repeatable.
+      Minimized outputs, which the model sees negated (maximize-canonical), only
+      flip the sign of their correlations: fit and predictions are otherwise the
+      same.
+    - **Cost:** the model holds ``runs × outputs`` rows, and InfoBAX samples one joint
+      posterior over the grid and every output (about 1.2 s per proposal on a
+      1000-point grid with 3 outputs, against 0.35 s for independent models).
+
+    Not with source variables (``MultiTaskGP`` has one task column: outputs here,
+    sources in :class:`MultiSourceGPConstructor`), and not with ``prior_mean`` yet.
+    """
+
+    provides_uq = "calibrated_variance"
+
+    def __init__(self, spec, *, rank: int | None = None) -> None:
+        if spec.sources:
+            raise ValueError(
+                "MultiTaskGPConstructor models correlated outputs of one source; this "
+                f"spec has source variables {spec.source_names}, which "
+                "MultiSourceGPConstructor (the default) models. Correlated outputs "
+                "and sources in one model aren't supported yet."
+            )
+        if rank is not None and not 1 <= rank <= spec.n_outputs:
+            raise ValueError(f"rank must be between 1 and {spec.n_outputs}, got {rank}")
+        self.spec = spec
+        self.rank = rank
+
+    def build(self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None):
+        from botorch.models.utils.gpytorch_modules import (
+            get_gaussian_likelihood_with_lognormal_prior,
+        )
+
+        X, Y = X.double(), Y.double()
+        Yvar = Yvar.double() if Yvar is not None else None
+        d, m = X.shape[-1], Y.shape[-1]
+        X_long, Y_long, Yvar_long = _long(X, Y, Yvar)
+        run = torch.arange(len(X)).repeat(m)
+        keep = ~Y_long.isnan().reshape(-1)  # an output a run didn't measure
+        if Yvar_long is not None:
+            keep &= ~Yvar_long.isnan().reshape(-1)
+        X_long, Y_long, run = X_long[keep], Y_long[keep], run[keep]
+        Yvar_long = Yvar_long[keep] if Yvar_long is not None else None
+        categorical = self.spec.categorical_indices()
+        numeric = [j for j in range(d) if j not in categorical]
+        bounds = torch.cat(  # the output column passes through unnormalized
+            [self.spec.bounds_tensor().double(), torch.tensor([[0.0], [m - 1.0]]).double()], -1
+        )
+        gp = _OutputsMultiTaskGP(
+            X_long, Y_long, train_Yvar=Yvar_long, task_feature=d,
+            output_tasks=list(range(m)), all_tasks=list(range(m)), rank=self.rank,
+            likelihood=get_gaussian_likelihood_with_lognormal_prior() if Yvar is None else None,
+            outcome_transform=_PerOutputStandardize(stratification_idx=d, all_task_values=torch.arange(m)),
+            input_transform=_input_transform(
+                d + 1, bounds, self.spec.log_indices(), indices=numeric
+            ) if numeric else None,
+            covar_module=_design_kernel(numeric, categorical, d + 1) if categorical else None,
+        )
+        gp.run_index = run  # which run each training row came from (diagnostics)
+        _start_from_data(gp, Y, self.rank or m)
+        fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
+        return gp
+
+
+def _start_from_data(gp, Y: torch.Tensor, rank: int) -> None:
+    """Start the output covariance at the outputs' empirical correlation (over runs
+    with every output), instead of GPyTorch's random start: the fit is then
+    repeatable, and negating an output negates its row of the start, so the fit
+    learns the same thing with that sign flipped."""
+    from gpytorch.kernels import IndexKernel
+
+    (index,) = [k for k in gp.covar_module.modules() if isinstance(k, IndexKernel)]
+    full = Y[~Y.isnan().any(-1)]
+    m = Y.shape[-1]
+    if len(full) > 2:
+        Z = (full - full.mean(0)) / full.std(0).clamp_min(1e-12)
+        corr = (Z.T @ Z) / (len(full) - 1)
+    else:
+        corr = torch.eye(m, dtype=Y.dtype)
+    values, vectors = torch.linalg.eigh(corr)  # ascending
+    top = values.flip(0)[:rank].clamp_min(1e-3).sqrt()
+    W = vectors.flip(1)[:, :rank] * top
+    # Eigenvectors' signs are arbitrary: fix each column's largest entry positive.
+    W = W * W.gather(0, W.abs().argmax(0, keepdim=True)).sign()
+    with torch.no_grad():
+        index.covar_factor.copy_(W.to(index.covar_factor))
+    index.var = torch.full_like(index.var, 0.1)
+
+
+def _long(X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None):
+    """Wide ``X (..., q, d)``, ``Y (..., q, m)`` as long ``(..., m·q, d+1)`` (the
+    output index appended) and ``(..., m·q, 1)``, output by output."""
+    m, q = Y.shape[-1], Y.shape[-2]
+    X = X.expand(*Y.shape[:-2], *X.shape[-2:])
+    task = torch.arange(m, dtype=X.dtype, device=X.device).repeat_interleave(q)
+    X_long = torch.cat(
+        [X.repeat(*([1] * (X.dim() - 2)), m, 1), task.expand(*X.shape[:-2], m * q).unsqueeze(-1)], -1
+    )
+
+    def flat(T):
+        return None if T is None else T.transpose(-1, -2).reshape(*T.shape[:-2], m * q, 1)
+
+    return X_long, flat(Y), flat(Yvar)
+
+
+class _OutputsMultiTaskGP(MultiTaskGP):
+    """A ``MultiTaskGP`` over outputs that is conditioned like abbot's other
+    multi-output models: on wide designs ``(..., q, d)`` and outputs ``(..., q, m)``
+    (InfoBAX's fantasies, pending designs)."""
+
+    run_index: torch.Tensor | None = None
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # BoTorch's default output covariance (``PositiveIndexKernel``) only allows
+        # positive correlations. Outputs can anticorrelate (yield and impurity), and
+        # abbot negates minimized outputs, which flips a positive correlation's sign.
+        from gpytorch.kernels import IndexKernel
+
+        data, positive = self.covar_module.kernels
+        self.covar_module = data * IndexKernel(
+            num_tasks=self.num_tasks, rank=positive.covar_factor.shape[-1],
+            active_dims=positive.active_dims,
+        ).to(self.train_targets)
+
+    def condition_on_observations(self, X, Y, noise=None, **kwargs):
+        if X.shape[-1] == self._task_feature + 1:  # already long
+            return super().condition_on_observations(X, Y, noise=noise, **kwargs)
+        X_long, Y_long, noise_long = _long(X, Y, noise)
+        out = super().condition_on_observations(X_long, Y_long, noise=noise_long, **kwargs)
+        out.run_index = None  # fantasy rows have no run
+        return out
+
+
+class _PerOutputStandardize(StratifiedStandardize):
+    """Standardize each output on its own (BoTorch's ``StratifiedStandardize`` on the
+    output column), and un-standardize a wide posterior (designs without the output
+    column, one column per output), which the stratified version can't."""
+
+    def untransform_posterior(self, posterior, X=None):
+        if X is not None and X.shape[-1] > self._stratification_idx:
+            return super().untransform_posterior(posterior, X=X)
+        wide = Standardize(m=self.means.shape[-2]).to(self.means)
+        wide.means = self.means.transpose(-1, -2)
+        wide.stdvs = self.stdvs.transpose(-1, -2)
+        wide._stdvs_sq = self._stdvs_sq.transpose(-1, -2)
+        wide._is_trained = torch.tensor(True)
+        wide.eval()
+        return wide.untransform_posterior(posterior)
 
 
 def _design_kernel(numeric: list[int], categorical: list[int], d: int):
@@ -587,14 +767,14 @@ def default_constructor(
     *,
     prior_mean: dict[str, Callable] | None = None,
     fit_prior_scale: bool = False,
+    correlated: bool = False,
 ) -> ModelConstructor:
     """Pick a sensible builtin: single-output GP for one OUTPUT, else ModelList, and
-    a :class:`MultiFidelityGPConstructor` when the spec has sources.
+    a :class:`MultiSourceGPConstructor` when the spec has sources.
 
     Keyed on ``n_outputs`` (every output is modeled, incl. OBSERVE), not objective
     count — a single-objective spec with an extra OBSERVE output needs a ModelList.
-    Callers may still pass their own ``ModelConstructor`` (e.g. a correlated
-    MultiTaskGP for SBI). ``bounds`` defaults to the spec's design bounds,
+    Callers may still pass their own ``ModelConstructor``. ``bounds`` defaults to the spec's design bounds,
     ``log=True`` variables are modeled on a log scale, and labeled variables get a
     categorical kernel.
 
@@ -605,14 +785,24 @@ def default_constructor(
     operations: proposals are optimized by gradient. Never pre-negate a minimized
     output. A constant offset from the prior is learned; ``fit_prior_scale=True``
     also learns a scale, so data can shrink a prior that's off in amplitude.
+
+    ``correlated=True`` models every output in one GP that learns how they
+    correlate (:class:`MultiTaskGPConstructor`), for outputs that inform each
+    other; not with sources or ``prior_mean`` yet.
     """
+    if correlated:
+        if prior_mean:
+            raise ValueError("prior_mean isn't supported with correlated=True yet")
+        if spec.n_outputs < 2:
+            raise ValueError("correlated=True needs at least two outputs")
+        return MultiTaskGPConstructor(spec)
     if spec.sources:
         if prior_mean:
             raise ValueError(
                 "prior_mean isn't supported with source variables yet "
                 f"({spec.source_names})"
             )
-        return MultiFidelityGPConstructor(spec)
+        return MultiSourceGPConstructor(spec)
     if bounds is None:
         bounds = spec.bounds_tensor()
     kw = {"log": spec.log_indices(), "categorical": spec.categorical_indices()}

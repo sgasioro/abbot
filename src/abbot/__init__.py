@@ -47,6 +47,8 @@ from abbot.model import (
     ModelConstructor,
     ModelListConstructor,
     MultiFidelityGPConstructor,
+    MultiSourceGPConstructor,
+    MultiTaskGPConstructor,
     SingleTaskGPConstructor,
     default_constructor,
 )
@@ -116,6 +118,8 @@ __all__ = [
     "ModelConstructor",
     "ModelListConstructor",
     "MultiFidelityGPConstructor",
+    "MultiSourceGPConstructor",
+    "MultiTaskGPConstructor",
     "ObjectiveReducer",
     "ObjectiveSpec",
     "OutputSpec",

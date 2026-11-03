@@ -16,9 +16,8 @@ with a variance-hungry acquisition.
 
 Research models (PFN, deep-kernel) are the SAME seam — a ``build`` that returns a
 botorch ``Model`` — and are deliberately not built here (F-tier, add when a problem
-needs them). A correlated multi-output ``MultiTaskGP`` is a known near-term item but
-needs a design decision (the maximize-canonical sign flip interacts with the learned
-cross-output covariance), so it is not shown as a drop-in yet.
+needs them). For outputs that inform each other, abbot ships one:
+``default_constructor(spec, correlated=True)`` (``MultiTaskGPConstructor``).
 
 Run: ``python examples/custom_models.py``
 """

@@ -23,7 +23,7 @@ without a deprecation period.
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol; optional `bind(spec)` to resolve output names), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
-| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiFidelityGPConstructor` (provisional), `default_constructor` |
+| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiSourceGPConstructor` (provisional; formerly `MultiFidelityGPConstructor`, kept as an alias), `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor(faults=, stops=)` (fault checks and stop rules, see [Supervisors](#supervisors-faults-and-stops); any callable `(history) -> Verdict` is also accepted), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
@@ -48,6 +48,8 @@ on them.
   sbido's scattering benchmark.
 - **Prior means** — `default_constructor(spec, prior_mean=, fit_prior_scale=)`
   and the constructors' `prior_mean=`. New.
+- **Correlated outputs** — `default_constructor(spec, correlated=True)`,
+  `MultiTaskGPConstructor(spec, rank=)`. New.
 - **Faults and bad regions** — `Campaign.resolve`, `Campaign.halted_on`,
   `Verdict(bad_region=)`, `per_shot(..., bad_region=)`, `Record.bad_region`,
   `Record.excluded`,
@@ -70,7 +72,7 @@ on them.
   an optional `fixed_features={position: value}`.
 - **Source variables** (`Source`, `ProblemSpec.sources`, `spec.design_names` /
   `source_names` / `target_features` / `at_target`, `CampaignResult.run_at_target` /
-  `target_std`), `MultiFidelityGPConstructor`, `SimpleBO(choose_sources=,
+  `target_std`), `MultiSourceGPConstructor`, `SimpleBO(choose_sources=,
   n_candidates=)`, `BAXPolicy(cost_model=, choose_sources=, source_levels=)` /
   `BAXPolicy.proposal_set`, and `.source_cost` on both — new.
 
@@ -313,6 +315,62 @@ mean when the old knowledge is a model rather than data, the old dataset is too
 large to refit alongside, or the two are known to differ only slightly. With a
 source, pass `BAXPolicy(..., choose_sources=False)` or `SimpleBO(choose_sources=False)`
 so the campaign never proposes the old system.
+
+## Correlated outputs
+
+```python
+Campaign(spec, model_constructor=default_constructor(spec, correlated=True))
+```
+
+By default each output gets its own GP, so a run's yield says nothing about its
+selectivity. `correlated=True` (or `MultiTaskGPConstructor(spec)`) models every
+output in one GP that learns how they correlate (BoTorch's `MultiTaskGP`, the
+output as the task), so each output informs the others. Use it for outputs driven
+by the same physics: summaries of one posterior, yield and selectivity, two
+detectors on one beam.
+
+**Not the same as source variables.** Both use BoTorch's `MultiTaskGP`, with a
+different "task":
+
+| | [Source variables](#column-contract) | Correlated outputs |
+| --- | --- | --- |
+| A task is | where a measurement came from: a fidelity, or a related system (another code, an earlier catalyst) | which output |
+| What's shared | one output across sources: runs elsewhere inform the target | one run across outputs: each output informs the others |
+| Outputs are modeled | separately, one source-aware GP each | jointly, in one GP |
+| Model | `MultiSourceGPConstructor` (the default with sources) | `MultiTaskGPConstructor` (`correlated=True`) |
+
+The two are independent ideas; one model doing both (multitask over outputs *and*
+sources) isn't supported yet, so `correlated=True` refuses a spec with sources.
+
+- **Each output keeps its own scale:** outputs are standardized separately, and
+  predictions come back in each output's units.
+- **Noise.** With per-run variances (`output_vars` in `ingest`), each output gets
+  its own. Without them, the model learns *one noise fraction* for every output: a
+  single noise level in standardized units, so an output with relatively more
+  scatter than the others is modeled with the same fraction. BoTorch's per-output
+  noise model fails when conditioning (as of 0.18), which InfoBAX and pending
+  designs rely on. When outputs differ a lot in how noisy they are, pass
+  `output_vars`, or use the default independent models.
+- **Correlations of either sign.** abbot uses an unconstrained output covariance
+  (BoTorch's default allows only positive correlations), started at the outputs'
+  empirical correlation so fits are repeatable. Minimized outputs, which the model
+  sees negated, only flip the sign of their learned correlations: the fit and the
+  predictions are exactly the same otherwise. (BoTorch's positive-only kernel
+  couldn't, and was markedly worse on a toy with an anticorrelated output.)
+- **Why not `KroneckerMultiTaskGP`:** as of BoTorch 0.18 it can't be conditioned
+  on new data (InfoBAX and pending designs need that), ignores per-run variances,
+  and refuses posterior transforms.
+- **Cost:** the model holds `runs × outputs` rows. InfoBAX samples one joint
+  posterior over the grid and every output: about 1.2 s per proposal on a
+  1000-point grid with 3 outputs and 20 runs, against 0.35 s with independent
+  models.
+- **`campaign.check()`** holds out whole runs (every output of a run together) for
+  leave-one-out; holding out one output alone would let the run's other outputs
+  predict it.
+- **Works with** every policy, output constraints (their joint samples use the
+  correlation), labeled and `log=True` inputs, travel limits and bad regions.
+  **Not yet:** source variables, `prior_mean`.
+- `rank=` sets the rank of the learned output covariance (default: full).
 
 ## Xopt's generators in abbot's loop
 
@@ -598,16 +656,21 @@ once the policy's recent acquisition values (stored per record from its
 [Diagnostics and stopping](#diagnostics-and-stopping)). `drive` ends normally on a
 stop; ask/tell callers read `campaign.stopped` and may carry on.
 
-**Source variables (fidelities, information sources).** `ProblemSpec(sources=[
+**Source variables (fidelities or related systems).** `ProblemSpec(sources=[
 Source(domain=IntegerDomain(name="atoms", lower=32, upper=512), target=256,
 log=True)])` declares an input the experiment needs that isn't itself a design
-choice: a fidelity knob (system size, mesh, convergence settings) or an information
-source (two codes, simulation vs experiment; an unordered `EnumeratedDomain`).
+choice: a fidelity knob (system size, mesh, convergence settings: ordered, cheaper
+and less accurate towards one end) or a related system (two codes, simulation vs
+experiment, an earlier catalyst's data as a warm start: an unordered
+`EnumeratedDomain`, neither an approximation of the other).
 Sources are inputs like any other: they follow the design variables in every design
 vector, `suggest` hands them to the experiment in the design dict, and
 `spec.variable_names` lists them (`spec.design_names` is the design-only view).
-Declaring sources is enough to get multi-fidelity BO:
-- `default_constructor` builds a `MultiFidelityGPConstructor`. Ordered sources get
+Sources are about *where* a measurement came from; for outputs that inform each
+other, see [Correlated outputs](#correlated-outputs).
+Declaring sources is enough to get multi-source BO (multi-fidelity BO when they're
+ordered):
+- `default_constructor` builds a `MultiSourceGPConstructor`. Ordered sources get
   BoTorch's `SingleTaskMultiFidelityGP`, each source mapped to [0, 1] with its
   accurate end at 1 (log-scaled for `log=True`). Its default linear-truncated kernel
   models a run as the accurate result plus a bias that vanishes at the accurate end
@@ -671,7 +734,7 @@ are derived from the spec:
 | Omitted | Default |
 | --- | --- |
 | `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the inputs support (`DiscreteArgmax` if all enumerated, else `Continuous`). No objectives (all `OBSERVE`) raises — pass a policy. |
-| `model_constructor` | `default_constructor(spec)`: `MultiFidelityGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds, with a log scale for `log=True` variables and a categorical kernel for labeled ones. |
+| `model_constructor` | `default_constructor(spec)` (`correlated=True` for [correlated outputs](#correlated-outputs)): `MultiSourceGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds, with a log scale for `log=True` variables and a categorical kernel for labeled ones. |
 | `initial_designs` (`Campaign`, `run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and domain constraints, two of them moved to the target when the spec has sources. None with travel limits (see [Travel limits](#travel-limits)). `Campaign` queues them on its first `suggest`, unless the history isn't empty (a resume, or data you `record` first) or you `seed` your own; an empty tensor gives a cold start (random probes until a model can be fitted). Ignored on resume. |
 | `evaluate` (`Campaign.step`, `drive`, `run_campaign`) | none — the experiment returns the outputs directly. |
 
@@ -748,12 +811,9 @@ output constraints in the UI, a feasibility stopping rule, a run-level JSON seri
 `TARGET` objective direction, continuous BAX (pathwise / seeded-ascent), the full
 `sbi`-backed benchmark, and a blop backend for Bluesky.
 
-- **Correlated multi-output `MultiTaskGP` — near-term, needs an ADR first.** The
-  `ModelConstructor` seam is the right home, but it hinges on two decisions: where
-  the `(n, m)`↔task-stacked bridge lives, and what the maximize-canonical sign flip
-  means for a *learned cross-output covariance* (flipping a `MINIMIZE` column flips
-  the sign of the correlation the model learns). Neither Xopt nor abbot ships this
-  today, so it's a genuine capability, not parity work.
+- **Correlated outputs with sources, and with prior means.** One model over
+  outputs *and* sources, and a prior mean per output in the correlated model;
+  see [Correlated outputs](#correlated-outputs).
 - **PFN / deep-kernel surrogates — F-tier research, same seam.** Both are a custom
   `ModelConstructor` returning a botorch `Model`; built when a problem needs them,
   not speculatively.
