@@ -92,7 +92,7 @@ src/abbot/
                   #   recommend), resume, on_step hook; shared engine helpers; CampaignResult
   loop.py         # run_campaign / drive — thin blocking drivers over a Campaign
   analysis.py     # live-analysis built-ins (convergence, hypervolume, recommended_set)
-  history.py      # Record{candidate, observation, outputs, aux, fault} + History + DataStore
+  history.py      # Record{candidate, observation, outputs, aux, fault, bad_region} + History + DataStore
   experiment.py   # Experiment protocols, Verdict, ManualExperiment
   config.py       # name -> class registries
   goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
@@ -100,6 +100,7 @@ src/abbot/
   composite.py    # composite objectives: composite_evaluate, Rescore (targets hook),
                   #   the ObjectiveReducer protocol
   supervision.py  # Supervisor: fault checks (per-shot, stall, drift) + stop rules
+  usability.py    # where runs give usable results: a classifier over bad-region runs
   diagnostics.py  # campaign.check(): leave-one-out fit, noise, lengthscales
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
@@ -339,7 +340,12 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` *(done)*,
      an outstanding-designs list in the UI *(done)*, reporting multibax's shared
      random draws across outputs upstream (drafted), and flagged-shot handling
-     (a design question: a flag confirmed on retry is the region, not a fault).
+     *(done: faults vs. bad regions)*.
+     - **Faults vs. bad regions** *(done)*: a failing design is retried
+       `max_retries` times, then a person resolves the halt (retry, exclude, bad
+       region; buttons in the UI); `Verdict(bad_region=)` records runs that give
+       nothing usable, and a Dirichlet GP classifier steers proposals and
+       recommendations away from them. Later: check shots at a known-good design.
   6. **blop backend:** a `Campaign`-backed blop `Optimizer` for Bluesky
      beamlines (`abbot[blop]`; see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)).
   7. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that

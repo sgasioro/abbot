@@ -31,7 +31,10 @@ is shown.
 | hold a knob at a value for now | `campaign.suggest(1, fixed={"temp": 30})`. |
 | start from my own designs, or none | `Campaign(spec, initial_designs=[{...}, ...])`; an empty tensor for a cold start. [Defaults](API.md#defaults) |
 | use results I already have | `campaign.record({"temp": 40}, {"yield": 0.7})` for each, before the first `suggest`. |
-| report a run that failed | `campaign.fail(c.id, "pump jammed")`; it's retried up to `max_retries`. [Failure behavior](API.md#failure-behavior) |
+| report a run that failed | `campaign.fail(c.id, "pump jammed")`; it's retried up to `max_retries`, then the campaign halts. [Faults and bad regions](API.md#faults-and-bad-regions) |
+| carry on after a halt | `campaign.resolve("retry")` once fixed; `"exclude"` to skip the design; `"bad_region"` if the design itself is the cause. Or the halt banner's buttons in the UI. [Faults and bad regions](API.md#faults-and-bad-regions) |
+| never retry, ask me at once | `Campaign(spec, max_retries=0)`. |
+| tell abbot a region gives nothing usable | `per_shot(is_dark, bad_region="dark")` in `faults=`, or a rule returning `Verdict(bad_region=True)`; proposals then steer away. [Faults and bad regions](API.md#faults-and-bad-regions) |
 | withdraw a design I won't run | `campaign.cancel(c.id)`. |
 | block unsafe designs before they run | `Campaign(..., pre_run=check)`, with `check(design)` returning `None` or a reason. [Failure behavior](API.md#failure-behavior) |
 | save progress and resume after a crash | `Campaign(spec, store=DataStore("runs/today"))`; building it again on the same folder resumes, outstanding designs included. [Outstanding candidates](API.md#outstanding-candidates) |

@@ -95,6 +95,7 @@ algorithms that are self-contained and run on their own data.
 | Model diagnostics, stopping on a target or on no improvement | Native: small, and part of the loop |
 | Per-variable travel limits (hardware safety) | Native: they wrap every policy, BAX and multi-fidelity included |
 | Physics prior mean | Native: `default_constructor(spec, prior_mean=...)` |
+| Retries that end with a person, and learned bad regions (runs that give nothing usable) | Native: `Campaign.resolve`, `Verdict(bad_region=)`, a usability classifier every policy and the recommendation use |
 | Many inputs, few that matter | TuRBO through `GestGeneratorPolicy`, or a neural-network surrogate (nn-bax style, `EnsembleConstructor`); `campaign.check()` points there. SAAS (BoTorch, needs JAX) only on demand, through the `ModelConstructor` seam |
 | TuRBO, non-BO optimizers (Nelder-Mead, RCDS, extremum seeking, genetic algorithms), time-dependent BO, MGGPO | Xopt, through `GestGeneratorPolicy` |
 | Parallel and asynchronous evaluation at scale, control systems, Badger | Xopt, through `CorePolicyGenerator` |
