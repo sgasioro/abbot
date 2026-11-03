@@ -355,6 +355,19 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   7. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that
      writes the spec / goal. The UI stays the run console and the
      human-in-the-loop entry point.
+  8. **GPU support:** one setting (`Campaign(..., device="cuda")`, also in
+     `run_campaign` and the UI) that fits models and runs policies on the GPU,
+     while the history, saved files, experiments and the UI stay on the CPU (designs
+     come back as CPU tensors). Today everything runs on the CPU: the spec helpers
+     take a `device`, but about 70 places create tensors without one. The work:
+     - thread the device through the constructors, policies (candidate grids,
+       Sobol draws, BAX sampling and conditioning), the usability classifier,
+       `recommend` and `check()`;
+     - tests parametrized over devices, skipped when no GPU is present;
+     - a benchmark showing where it pays (large BAX grids, many runs, neural-network
+       surrogates). Lab-scale GPs (tens of runs) are usually faster on the CPU, so
+       the default stays CPU.
+     - **CUDA only:** abbot fits in float64, which Apple's MPS doesn't support.
 - **Deferred: integration.** Building out abbot comes first; then back to the
   applications. sbido: Sam's review of the cutover PR, port master's BAX fallback
   option (e6a5d77) into abbot or sbido, bump the abbot pin, then what the paper
