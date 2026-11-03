@@ -396,6 +396,7 @@ class CampaignState:
     cost_spent: float = 0.0  # total recorded cost, failed runs included
     stopped: str | None = None  # a supervisor's stop reason (done, not a fault)
     bad_regions: list[str | None] = field(default_factory=list)  # per record: the reason, or None
+    excluded: list[bool] = field(default_factory=list)  # per record: its design was excluded
     halted_on: list[dict] = field(default_factory=list)  # the designs a halt is about
 
     def to_json(self) -> str:
@@ -534,8 +535,9 @@ class Campaign:
     When a run fails (the experiment raised, or a fault check rejected the shot), it
     is retried ``max_retries`` times, then the campaign halts on that design and a
     person decides with :meth:`resolve`: retry it, exclude it, or mark it a bad
-    region. ``0`` halts on the first failure. Rebuilding the campaign on the same
-    store resumes as ``resolve("retry")``.
+    region. ``0`` halts on the first failure. A halt is saved with the store, so a
+    campaign rebuilt on it is still halted until resolved (rerunning
+    ``run_campaign`` answers ``"retry"``).
 
     Runs a fault check marks ``bad_region`` (or that a person resolves as one) are
     kept out of the output models. A separate classifier learns where runs give
@@ -602,9 +604,8 @@ class Campaign:
         self._recommended: list[int] = []
         self.halted: str | None = None
         # The designs a halt is about, as (design, step of its first run), awaiting
-        # ``resolve``; and designs a person excluded from being proposed again.
+        # ``resolve``.
         self._halted_on: list[tuple[torch.Tensor, int]] = []
-        self._excluded: list[torch.Tensor] = []
         self._usability: Usability | None = None
         self._usability_valid = False
         self._warned_usability = False
@@ -858,16 +859,16 @@ class Campaign:
         - ``"retry"``: the apparatus was the problem and is fixed. The design runs
           next, with its retries counted afresh.
         - ``"exclude"``: the apparatus is fine; don't run this design again. Its
-          failed runs stay in the history as faults, and proposals steer away
-          from it.
+          failed runs stay in the history as faults, marked ``excluded``, and
+          proposals steer away from it.
         - ``"bad_region"``: the apparatus is fine and the design itself is the
           cause (a dark region). Its failed runs become bad-region runs, with
           ``reason`` (for people; the model only sees that they were bad), and the
           campaign learns to avoid the region.
 
         Any other halt (a pre-run check, a stall or drift monitor) only takes
-        ``"retry"``: the cause is fixed, carry on. Rebuilding the campaign on the
-        same store does the same as ``"retry"``.
+        ``"retry"``: the cause is fixed, carry on. The halt is saved with the store,
+        so a campaign rebuilt on it still needs this answer.
         """
         if self.halted is None:
             raise RuntimeError("resolve(): the campaign isn't halted.")
@@ -885,9 +886,10 @@ class Campaign:
             for x, first in reversed(self._halted_on):
                 self._retry_queue.insert(0, (x, first, 0))
         elif answer == "exclude":
-            self._excluded += [x for x, _ in self._halted_on]
+            self._mark_runs([first for _, first in self._halted_on], excluded=True)
         else:
-            self._mark_bad_region([first for _, first in self._halted_on], reason)
+            reason = _bad_region_reason(reason if reason is not None else True)
+            self._mark_runs([first for _, first in self._halted_on], bad_region=reason)
         logger.info("Resolved the halt (%s): %s", answer, self.halted)
         self.halted = None
         self._halted_on = []
@@ -911,17 +913,29 @@ class Campaign:
         self.halted = "\n".join([*parts, reason, hint])
         logger.warning("%s", reason)
 
-    def _mark_bad_region(self, firsts: list[int], reason: str | None) -> None:
-        """Turn the faulted runs of the designs first run at steps ``firsts`` into
-        bad-region runs, and persist them."""
-        reason = _bad_region_reason(reason if reason is not None else True)
+    def _mark_runs(
+        self, firsts: list[int], *, excluded: bool = False, bad_region: str | None = None
+    ) -> None:
+        """Mark the faulted runs of the designs first run at steps ``firsts``:
+        excluded, or turned into bad-region runs. Persisted."""
         for step, r in enumerate(self.history.records):
             if r.fault and (step in firsts or r.retry_of in firsts):
-                r.fault = False
-                r.bad_region = reason
+                if bad_region is not None:
+                    r.fault, r.bad_region = False, bad_region
+                r.excluded = r.excluded or excluded
                 if self.store is not None:
                     self.store.save_step(step, r)
         self._stale()
+
+    @property
+    def _excluded(self) -> list[torch.Tensor]:
+        """The designs a person excluded (one each), from the records."""
+        out: list[torch.Tensor] = []
+        for r in self.history.records:
+            x = r.candidate.double().reshape(-1)
+            if r.excluded and not any(torch.equal(x, y) for y in out):
+                out.append(x)
+        return out
 
     def step(
         self,
@@ -977,6 +991,7 @@ class Campaign:
                 if reason:
                     self.halted = f"pre-run check blocked {design}: {reason}"
                     logger.warning("%s", self.halted)
+                    self._save_queue()
                     return self.state()
         observations, timings = self._run_designs(experiment, designs)
         reported = getattr(experiment, "cost", None)
@@ -1132,10 +1147,11 @@ class Campaign:
             self.history.append(record)
 
             verdict = self.supervisor(self.history) if self.supervisor else Verdict()
-            bad = _bad_region_reason(getattr(verdict, "bad_region", None))
-            # A rule that knows the design is the cause outranks a retry.
-            record.bad_region = bad
-            record.fault = verdict.retry and bad is None
+            # A retry outranks a bad region: while any rule suspects the apparatus,
+            # "the design is the cause" can't be trusted.
+            record.fault = verdict.retry
+            if not verdict.retry:
+                record.bad_region = _bad_region_reason(getattr(verdict, "bad_region", None))
 
             if self.store is not None:
                 self.store.save_step(step, record)
@@ -1293,6 +1309,7 @@ class Campaign:
             cost_spent=self.history.cost_spent,
             stopped=self.stopped,
             bad_regions=[r.bad_region for r in self.history.records],
+            excluded=[r.excluded for r in self.history.records],
             halted_on=self.halted_on,
         )
 
@@ -1597,9 +1614,9 @@ class Campaign:
                 for x, r, a in self._retry_queue
             ],
             "seeds": [x.reshape(-1).tolist() for x in self._seed_queue],
-            # A rebuilt campaign resumes these as resolve("retry").
+            # A rebuilt campaign is still halted, until resolved.
+            "halted": self.halted,
             "halted_on": [{"design": x.tolist(), "retry_of": first} for x, first in self._halted_on],
-            "excluded": [x.reshape(-1).tolist() for x in self._excluded],
         })
 
     def _load_queue(self) -> bool:
@@ -1631,13 +1648,10 @@ class Campaign:
                 )
         self._retry_queue = [(t(r["design"]), r["retry_of"], r["attempt"]) for r in q["retries"]]
         self._seed_queue = [t(x) for x in q["seeds"]]
-        self._excluded = [t(x) for x in q.get("excluded", [])]
-        # The campaign halted on these and nobody resolved it: rebuilding it on the
-        # store means the cause is fixed, so they run first, retries counted afresh.
-        halted_on = q.get("halted_on", [])
-        self._retry_queue[:0] = [(t(h["design"]), h["retry_of"], 0) for h in halted_on]
-        if halted_on:
-            logger.info("Resuming after a halt: retrying the %d design(s) it was about.", len(halted_on))
+        self.halted = q.get("halted")
+        self._halted_on = [(t(h["design"]), h["retry_of"]) for h in q.get("halted_on", [])]
+        if self.halted:
+            logger.warning("Resumed a halted campaign; resolve() to carry on: %s", self.halted)
         if self._inflight or self._retry_queue or self._seed_queue:
             logger.info(
                 "Restored %d outstanding, %d retries, %d seeds from the store.",

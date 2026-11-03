@@ -50,6 +50,7 @@ on them.
   and the constructors' `prior_mean=`. New.
 - **Faults and bad regions** — `Campaign.resolve`, `Campaign.halted_on`,
   `Verdict(bad_region=)`, `per_shot(..., bad_region=)`, `Record.bad_region`,
+  `Record.excluded`,
   `History.judged`, `abbot.usability`, and the policies' `usability=`. New.
 - **Travel limits** — `max_step` on domains, `ProblemSpec.reach` /
   `out_of_reach` / `has_travel_limits`, and the optional `within=` argument of
@@ -397,11 +398,13 @@ the design, and a person answers with `campaign.resolve(...)`:
 | Answer | When | Effect |
 | --- | --- | --- |
 | `resolve("retry")` | the apparatus was the problem and is fixed | the design runs next, retries counted afresh |
-| `resolve("exclude")` | the apparatus is fine; skip this design | not run again; its runs stay faults; proposals treat it as in flight, so they steer away |
+| `resolve("exclude")` | the apparatus is fine; skip this design | not run again; its runs stay faults, marked `Record.excluded`; proposals treat it as in flight, so they steer away |
 | `resolve("bad_region", reason="dark")` | the design itself is the cause | its runs become bad-region runs |
 
-- **Rebuilding the campaign on its store** means `"retry"`, as "fix the cause and
-  rerun" always said. The halted design is the first to run.
+- **A halt is saved with the store.** A campaign rebuilt on it is still halted,
+  with `halted_on` and the UI banner as before, until someone answers; `drive`
+  won't start it. Rerunning the same `run_campaign` call is the answer "fixed,
+  retry" (as "fix the cause and rerun" always said): the halted design runs first.
 - **Other halts** (a pre-run check, a stall or drift monitor) aren't about one
   design and only take `"retry"`: carry on.
 - **The UI's halt banner** has the three answers as buttons.
@@ -422,7 +425,9 @@ lambda history: Verdict(bad_region=True)          # or a rule of your own
   should stay plain fault checks: retries, a halt, and the person's
   `resolve("bad_region")` when the design is the cause. abbot never decides
   the hardware is fine on its own.
-- **A bad region outranks a retry** when rules disagree about the same run.
+- **A retry outranks a bad region** when rules disagree about the same run: while
+  any check suspects the apparatus, "the design is the cause" can't be trusted. If
+  the re-run is still flagged only as a bad region, it's recorded as one.
 - **The record:** `Record.bad_region` holds the reason. `History.clean` leaves
   bad-region runs out (it's what the output models train on); `History.judged`
   is every run that isn't a fault.
@@ -698,8 +703,8 @@ explicitly if you need it pinned.
   (`fault=True`, `outputs=None`, `error="<Type>: <message>"`) and the same candidate
   is retried up to `max_retries` times (default 1); after that the campaign halts
   on that design and `run_campaign` raises `PersistentFaultError` ("fix the cause
-  and rerun to resume"; the rerun retries the design). In the same process,
-  `campaign.resolve(...)` answers the halt; `on_persistent_fault="continue"` skips
+  and rerun to resume"; the rerun retries the design). Otherwise
+  `campaign.resolve(...)` answers the halt, which is saved with the store; `on_persistent_fault="continue"` skips
   the design and spends the rest of the budget. Shots a fault check rejects go
   the same way. See [Faults and bad regions](#faults-and-bad-regions).
   The budget (`len(initial_designs) + n_shots`) is a total that every record

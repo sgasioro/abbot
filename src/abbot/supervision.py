@@ -136,12 +136,11 @@ class Supervisor:
         verdict = _merge([r(history) for r in self.faults], every=False)
         if verdict.halt is not None or not self.stops:
             return verdict
-        if len(history):  # what the campaign is about to record
-            bad = _bad_region_reason(verdict.bad_region)
-            if bad is not None:
-                history.records[-1].bad_region = bad
-            elif verdict.retry:
+        if len(history):  # what the campaign is about to record (a retry outranks)
+            if verdict.retry:
                 history.records[-1].fault = True
+            elif (bad := _bad_region_reason(verdict.bad_region)) is not None:
+                history.records[-1].bad_region = bad
         stops = _merge([r(history) for r in self.stops], every=False)
         return Verdict(
             retry=verdict.retry or stops.retry,

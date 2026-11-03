@@ -118,17 +118,35 @@ def test_resolve_retry_runs_the_design_next_with_fresh_retries():
     assert c.history.records[-1].usable and c.history.records[-1].retry_of == 0
 
 
-def test_rebuilding_on_the_store_resumes_as_retry(tmp_path):
+def test_a_halt_survives_a_restart_until_resolved(tmp_path):
     store = DataStore(tmp_path / "run")
     c = _campaign(store=store, max_retries=0)
     with pytest.raises(PersistentFaultError):
         drive(c, _Failing(), n_total=5)
     halted_at = c.halted_on[0]
     resumed = Campaign(_spec(), store=store)
-    assert resumed.halted is None  # rebuilding means the cause is fixed
+    assert resumed.halted == c.halted and resumed.halted_on == [halted_at]
+    with pytest.raises(RuntimeError, match="halted"):
+        resumed.suggest(1)
+    with pytest.raises(PersistentFaultError, match="resolve"):
+        drive(resumed, _Failing(n=0), n_total=5)
+    resumed.resolve("retry")
     exp = _Failing(n=0)
     resumed.step(exp)
     assert exp.calls == [halted_at]  # before, this design was lost
+    assert Campaign(_spec(), store=store).halted is None  # the answer is saved too
+
+
+def test_rerunning_run_campaign_answers_retry(tmp_path):
+    from abbot import run_campaign
+
+    store = DataStore(tmp_path / "run")
+    kw = {"initial_designs": SEEDS, "store": store, "n_shots": 0, "max_retries": 0}
+    with pytest.raises(PersistentFaultError):
+        run_campaign(_spec(), _Failing(), **kw)
+    exp = _Failing(n=0)
+    run_campaign(_spec(), exp, **kw)
+    assert exp.calls[0] == {"a": 0.2, "b": 0.3}  # the halted design, first
 
 
 def test_resolve_exclude_skips_the_design_and_steers_away():
@@ -153,12 +171,16 @@ def test_resolve_exclude_skips_the_design_and_steers_away():
     assert any(torch.allclose(row, excluded) for row in seen[-1])
 
 
-def test_excluded_designs_survive_a_resume(tmp_path):
+def test_excluded_runs_are_flagged_and_survive_a_resume(tmp_path):
     store = DataStore(tmp_path / "run")
-    c = _campaign(store=store, max_retries=0)
+    c = _campaign(store=store, max_retries=1)
+    c.step(_Failing())
     c.step(_Failing())
     c.resolve("exclude")
+    assert [r.excluded for r in c.history.records] == [True, True]  # both attempts
+    assert c.state().excluded == [True, True]
     resumed = Campaign(_spec(), store=store)
+    assert all(r.excluded and r.fault for r in resumed.history.records)
     assert len(resumed._excluded) == 1 and resumed.pending_count() == 2
 
 
@@ -223,11 +245,27 @@ def test_a_bad_region_verdict_is_recorded_not_retried():
 
 
 def test_bad_region_true_gets_a_generic_reason():
-    c = _campaign(supervisor=lambda h: Verdict(bad_region=True, retry=True))
+    c = _campaign(supervisor=lambda h: Verdict(bad_region=True))
     c.step(_Dark())
     r = c.history.records[0]
-    assert r.bad_region == "bad region" and not r.fault  # outranks the retry
+    assert r.bad_region == "bad region" and not r.fault
     assert c.pending_count() == 2
+
+
+def test_a_retry_outranks_a_bad_region():
+    # One check suspects the apparatus, another blames the design: retry first.
+    supervisor = Supervisor(faults=[
+        lambda h: Verdict(retry=len(h) == 1),  # a glitch on the first shot only
+        per_shot(_flat, bad_region="dark"),
+    ])
+    c = _campaign(supervisor=supervisor,
+                  initial_designs=torch.tensor([[0.9, 0.5]], dtype=torch.double))
+    c.step(_Dark())
+    first = c.history.records[0]
+    assert first.fault and first.bad_region is None and c.pending_count() == 1
+    c.step(_Dark())  # the retry: no glitch, still dark
+    retry = c.history.records[1]
+    assert retry.bad_region == "dark" and not retry.fault
 
 
 def test_stop_rules_ignore_bad_region_runs():
@@ -334,3 +372,15 @@ def test_a_policy_without_usability_is_warned_once(caplog):
 
     _dark_campaign(Plain(), n_steps=2)
     assert sum("usability" in m for m in caplog.messages) == 1
+
+
+def test_a_controller_on_a_rebuilt_campaign_starts_halted(tmp_path):
+    from abbot.ui.controller import RunController, RunStatus
+
+    store = DataStore(tmp_path / "run")
+    c = _campaign(store=store, max_retries=0)
+    c.step(_Failing())
+    ctrl = RunController(Campaign(_spec(), store=store))
+    assert ctrl.status == RunStatus.HALTED and ctrl.campaign.halted_on  # the banner's inputs
+    ctrl.resolve("exclude")
+    assert ctrl.status == RunStatus.IDLE and ctrl.campaign.halted is None

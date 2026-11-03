@@ -40,6 +40,8 @@ class Record:
     # The design itself gave no usable result (a dark region, a sample that
     # decomposes): the reason, for people. Not a fault; the usability model learns it.
     bad_region: str | None = None
+    # A person answered the halt on this design with "exclude": it isn't run again.
+    excluded: bool = False
     # Timing (epoch seconds / seconds). issued_at: handed out by suggest. started_at /
     # finished_at: around the experiment run under ``step``; ask/tell knows only when
     # the result came back (finished_at). fit_seconds / acquisition_seconds: abbot's

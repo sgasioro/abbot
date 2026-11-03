@@ -77,9 +77,10 @@ def drive(
 
     On a persistent fault (the supervisor halted, or a run kept failing past
     ``max_retries``), ``on_persistent_fault="halt"`` raises
-    :class:`PersistentFaultError`: the store keeps everything, and rerunning resumes
-    with the failed design retried (or call ``campaign.resolve(...)`` and drive
-    again). ``"continue"`` is for unattended runs: it logs the fault, resolves it
+    :class:`PersistentFaultError`: the store keeps everything, the halt included.
+    Answer it with ``campaign.resolve(...)`` and drive again (a campaign rebuilt
+    on the store is still halted; ``drive`` refuses to start one).
+    ``"continue"`` is for unattended runs: it logs the fault, resolves it
     with ``"exclude"`` (the failed design is skipped), and spends the rest of the
     budget. A halt that recorded nothing (``pre_run`` blocked the design) always
     raises, since continuing would retry the same blocked design forever.
@@ -87,6 +88,11 @@ def drive(
     if on_persistent_fault not in ("halt", "continue"):
         raise ValueError(
             f"on_persistent_fault must be 'halt' or 'continue', got {on_persistent_fault!r}"
+        )
+    if campaign.halted:
+        raise PersistentFaultError(
+            f"{campaign.halted}\nThe campaign is halted; answer it with "
+            "campaign.resolve(...) first."
         )
     while n_total is None or len(campaign.history) < n_total:
         if campaign.stopped or (should_continue is not None and not should_continue()):
@@ -101,7 +107,7 @@ def drive(
             of = f" of {n_total}" if n_total is not None else ""
             raise PersistentFaultError(
                 f"{campaign.halted}\n{done}{of} shots completed. Fix the cause and "
-                "rerun to resume."
+                "rerun to resume (or campaign.resolve(...))."
             )
         logger.warning("Persistent fault (%s); continuing as configured.", campaign.halted)
         campaign.resolve("exclude" if campaign.halted_on else "retry")
@@ -133,7 +139,7 @@ def run_campaign(
     Builds a :class:`abbot.session.Campaign`, seeds it, and runs :func:`drive` to
     ``len(initial_designs) + n_shots`` records in total — retries and failed runs
     included, so rerunning the same call after a halt resumes and finishes the
-    remainder. ``batch_size`` designs are run per step (see ``Campaign.step``);
+    remainder: rerunning is the answer "fixed, retry" (``Campaign.resolve``). ``batch_size`` designs are run per step (see ``Campaign.step``);
     ``n_shots`` still counts designs, not batches. ``evaluate`` maps a raw observation to RAW physical objective
     value(s) (a tensor, or an ``(outputs, aux)`` tuple for the SBI seam); objective
     direction is applied internally (no caller pre-negation). Returns a
@@ -160,6 +166,9 @@ def run_campaign(
         targets=targets,
     )
     campaign.seed(initial_designs)
+    if campaign.halted:  # rerunning after a halt means the cause is fixed
+        logger.info("Rerun after a halt; retrying: %s", campaign.halted)
+        campaign.resolve("retry")
     drive(
         campaign,
         experiment,
