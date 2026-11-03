@@ -239,6 +239,8 @@ def _per_output(model, m: int):
         return [(g, None) for g in model.models]
     if not isinstance(model, ExactGP):
         return None
+    if getattr(model, "run_index", None) is not None and m > 1:
+        return [(model, j) for j in range(m)]  # correlated outputs: one GP, output j
     if m == 1:
         return [(model, None)]
     if model.train_targets.dim() == 2 and model.train_targets.shape[0] == m:
@@ -264,6 +266,8 @@ def _loo(gp, row: int | None):
             gp.train(was_training)
         K, mu, y = prior.covariance_matrix, prior.mean, gp.train_targets
         noise = torch.diagonal(K - f.covariance_matrix, dim1=-2, dim2=-1)
+        if getattr(gp, "run_index", None) is not None:
+            return _loo_runs(gp, row, K, mu, y, noise)
         if row is not None:
             K, mu, y, noise = K[row], mu[row], y[row], noise[row]
         Kinv = torch.cholesky_inverse(torch.linalg.cholesky(K))
@@ -322,6 +326,27 @@ def _judge(fit: OutputFit, mean, var, y, noise, steps, add) -> None:
     if mean_z2 > OVERCONFIDENT_Z2:
         add(Finding("warning", f"{name}: leave-one-out errors are {mean_z2 ** 0.5:.1f}× "
                                "what the model expects, so it's overconfident.", name))
+
+
+def _loo_runs(gp, output: int, K, mu, y, noise):
+    """Leave-one-*run*-out for a GP over correlated outputs: each run's outputs are
+    held out together (holding out one alone would let the run's other outputs
+    predict it). The block identity: ``mean_I = y_I - A⁻¹ [K⁻¹ r]_I``, ``cov_I =
+    A⁻¹``, with ``A = [K⁻¹]_II``. Returns output ``output``'s rows, in run order."""
+    run = gp.run_index
+    task = gp.train_inputs[0][..., -1].round().long()
+    Kinv = torch.cholesky_inverse(torch.linalg.cholesky(K))
+    alpha = Kinv @ (y - mu)
+    mean, var = torch.empty_like(y), torch.empty_like(y)
+    for r in run.unique():
+        rows = (run == r).nonzero(as_tuple=True)[0]
+        A_inv = torch.linalg.inv(Kinv[rows][:, rows])
+        mean[rows] = y[rows] - A_inv @ alpha[rows]
+        var[rows] = torch.diagonal(A_inv)
+    mine = (task == output).nonzero(as_tuple=True)[0]
+    mine = mine[run[mine].argsort()]
+    prior_var = torch.diagonal(K) - noise
+    return mean[mine], var[mine], y[mine], (noise[mine].mean(), prior_var[mine].mean())
 
 
 def _lengthscales(gp, row: int | None, spec: ProblemSpec) -> dict[str, float]:

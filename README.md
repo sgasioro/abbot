@@ -336,8 +336,11 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
      - **High dimensions** *(parked)*: `campaign.check()` points to TuRBO and
        neural-network surrogates when there are many inputs and few runs. SAAS
        (needs JAX, MCMC fits) only on demand.
-  4. **Correlated outputs:** `MultiTaskGPConstructor` (plan written). Then
-     related tasks / data sources, sharing the spec design from 2.
+  4. **Correlated outputs** *(done)*: `default_constructor(spec, correlated=True)`
+     (`MultiTaskGPConstructor`), with correlations of either sign, and
+     `MultiFidelityGPConstructor` renamed `MultiSourceGPConstructor` (sources are
+     fidelities or related systems). Later: correlated outputs with sources, and
+     with prior means.
   5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` *(done)*,
      an outstanding-designs list in the UI *(done)*, reporting multibax's shared
      random draws across outputs upstream (drafted), and flagged-shot handling
