@@ -5,8 +5,9 @@ surrogate-agnostic layer, so abbot does NOT define a bespoke Posterior protocol 
 a constructor just builds a botorch ``Model`` and every policy composes over its
 ``.posterior(X)`` unchanged.
 
-Builtins cover single-output GP, multi-output ``ModelListGP``, and a
-multi-fidelity GP for specs with source variables. Involved SBI
+Builtins cover single-output GP, multi-output ``ModelListGP``, a GP over
+correlated outputs (``MultiTaskGPConstructor``), and a multi-source GP for specs
+with source variables (``MultiSourceGPConstructor``). Involved SBI
 construction (correlated ``MultiTaskGP``/LCM, per-shot posterior variance via
 ``train_Yvar``, custom GPyTorch likelihoods) plugs in here WITHOUT touching the
 loop or the policy. NN surrogates are botorch ``EnsembleModel`` subclasses (see
@@ -337,9 +338,13 @@ class EnsembleConstructor:
         return ToyEnsembleModel(members, num_outputs=m)
 
 
-class MultiFidelityGPConstructor:
-    """A GP over designs and sources, so cheap runs inform the target: the model for
-    a spec with source variables.
+class MultiSourceGPConstructor:
+    """A GP over designs and sources, so runs at other sources inform the target:
+    the model for a spec with source variables. Sources are fidelities (ordered:
+    cheaper, less accurate versions of the target) or related systems (unordered:
+    another code, an earlier catalyst, neither an approximation of the other). The
+    general setting is multi-information-source optimization (Poloczek, Wang &
+    Frazier, 2017); multi-fidelity is its ordered case.
 
     - **Ordered sources** (fidelity knobs): BoTorch's ``SingleTaskMultiFidelityGP``.
       Each source is mapped to [0, 1] with its accurate end (``Source.accurate``) at
@@ -353,13 +358,17 @@ class MultiFidelityGPConstructor:
       the design kernel by a per-source kernel, with ``iteration`` naming a source
       whose results settle towards a limit along it (an exponential-decay kernel;
       iteration counts, epochs).
-    - **One unordered source** (different codes, simulation vs experiment): a
-      ``MultiTaskGP`` that learns how the sources correlate. The noise level is
+    - **One unordered source** (related systems: different codes, simulation vs
+      experiment, data from an earlier system as a warm start): a ``MultiTaskGP``
+      that learns how the sources correlate. The noise level is
       shared across sources unless ``Yvar`` is given. (BoTorch's per-source noise
       likelihood fails in conditioning and in entropy search as of 0.18.)
 
     Ordered and unordered sources together, or several unordered sources, aren't
-    supported yet. A multi-output spec gets one model per output where needed.
+    supported yet. A multi-output spec gets one model per output where needed
+    (correlated outputs *and* sources in one model aren't supported yet).
+
+    Formerly ``MultiFidelityGPConstructor``, which remains an alias.
     """
 
     provides_uq = "calibrated_variance"
@@ -379,18 +388,18 @@ class MultiFidelityGPConstructor:
             )
         sources = list(spec.sources or [])
         if not sources:
-            raise ValueError("MultiFidelityGPConstructor needs a spec with sources")
+            raise ValueError("MultiSourceGPConstructor needs a spec with sources")
         ordered = [s for s in sources if s.is_ordered]
         unordered = [s for s in sources if not s.is_ordered]
         if ordered and unordered:
             raise ValueError(
-                "MultiFidelityGPConstructor doesn't yet model ordered and unordered "
+                "MultiSourceGPConstructor doesn't yet model ordered and unordered "
                 f"sources together (ordered: {[s.name for s in ordered]}, unordered: "
                 f"{[s.name for s in unordered]})"
             )
         if len(unordered) > 1:
             raise ValueError(
-                "MultiFidelityGPConstructor models one unordered source; got "
+                "MultiSourceGPConstructor models one unordered source; got "
                 f"{[s.name for s in unordered]}"
             )
         if iteration is not None and iteration not in [s.name for s in ordered]:
@@ -464,6 +473,10 @@ class MultiFidelityGPConstructor:
             fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
             gps.append(gp)
         return gps[0] if len(gps) == 1 else ModelListGP(*gps)
+
+
+# The name before sources covered related systems, not only fidelities.
+MultiFidelityGPConstructor = MultiSourceGPConstructor
 
 
 def _design_kernel(numeric: list[int], categorical: list[int], d: int):
@@ -589,7 +602,7 @@ def default_constructor(
     fit_prior_scale: bool = False,
 ) -> ModelConstructor:
     """Pick a sensible builtin: single-output GP for one OUTPUT, else ModelList, and
-    a :class:`MultiFidelityGPConstructor` when the spec has sources.
+    a :class:`MultiSourceGPConstructor` when the spec has sources.
 
     Keyed on ``n_outputs`` (every output is modeled, incl. OBSERVE), not objective
     count — a single-objective spec with an extra OBSERVE output needs a ModelList.
@@ -612,7 +625,7 @@ def default_constructor(
                 "prior_mean isn't supported with source variables yet "
                 f"({spec.source_names})"
             )
-        return MultiFidelityGPConstructor(spec)
+        return MultiSourceGPConstructor(spec)
     if bounds is None:
         bounds = spec.bounds_tensor()
     kw = {"log": spec.log_indices(), "categorical": spec.categorical_indices()}

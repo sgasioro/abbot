@@ -23,7 +23,7 @@ without a deprecation period.
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol; optional `bind(spec)` to resolve output names), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
-| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiFidelityGPConstructor` (provisional), `default_constructor` |
+| Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiSourceGPConstructor` (provisional; formerly `MultiFidelityGPConstructor`, kept as an alias), `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor(faults=, stops=)` (fault checks and stop rules, see [Supervisors](#supervisors-faults-and-stops); any callable `(history) -> Verdict` is also accepted), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
@@ -70,7 +70,7 @@ on them.
   an optional `fixed_features={position: value}`.
 - **Source variables** (`Source`, `ProblemSpec.sources`, `spec.design_names` /
   `source_names` / `target_features` / `at_target`, `CampaignResult.run_at_target` /
-  `target_std`), `MultiFidelityGPConstructor`, `SimpleBO(choose_sources=,
+  `target_std`), `MultiSourceGPConstructor`, `SimpleBO(choose_sources=,
   n_candidates=)`, `BAXPolicy(cost_model=, choose_sources=, source_levels=)` /
   `BAXPolicy.proposal_set`, and `.source_cost` on both — new.
 
@@ -598,16 +598,19 @@ once the policy's recent acquisition values (stored per record from its
 [Diagnostics and stopping](#diagnostics-and-stopping)). `drive` ends normally on a
 stop; ask/tell callers read `campaign.stopped` and may carry on.
 
-**Source variables (fidelities, information sources).** `ProblemSpec(sources=[
+**Source variables (fidelities or related systems).** `ProblemSpec(sources=[
 Source(domain=IntegerDomain(name="atoms", lower=32, upper=512), target=256,
 log=True)])` declares an input the experiment needs that isn't itself a design
-choice: a fidelity knob (system size, mesh, convergence settings) or an information
-source (two codes, simulation vs experiment; an unordered `EnumeratedDomain`).
+choice: a fidelity knob (system size, mesh, convergence settings: ordered, cheaper
+and less accurate towards one end) or a related system (two codes, simulation vs
+experiment, an earlier catalyst's data as a warm start: an unordered
+`EnumeratedDomain`, neither an approximation of the other).
 Sources are inputs like any other: they follow the design variables in every design
 vector, `suggest` hands them to the experiment in the design dict, and
 `spec.variable_names` lists them (`spec.design_names` is the design-only view).
-Declaring sources is enough to get multi-fidelity BO:
-- `default_constructor` builds a `MultiFidelityGPConstructor`. Ordered sources get
+Declaring sources is enough to get multi-source BO (multi-fidelity BO when they're
+ordered):
+- `default_constructor` builds a `MultiSourceGPConstructor`. Ordered sources get
   BoTorch's `SingleTaskMultiFidelityGP`, each source mapped to [0, 1] with its
   accurate end at 1 (log-scaled for `log=True`). Its default linear-truncated kernel
   models a run as the accurate result plus a bias that vanishes at the accurate end
@@ -671,7 +674,7 @@ are derived from the spec:
 | Omitted | Default |
 | --- | --- |
 | `policy` | `default_policy(spec)`: `SimpleBO` for 1 objective, `ParetoBO` for 2+, with the optimizer the inputs support (`DiscreteArgmax` if all enumerated, else `Continuous`). No objectives (all `OBSERVE`) raises — pass a policy. |
-| `model_constructor` | `default_constructor(spec)`: `MultiFidelityGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds, with a log scale for `log=True` variables and a categorical kernel for labeled ones. |
+| `model_constructor` | `default_constructor(spec)`: `MultiSourceGPConstructor` when the spec has sources, else `SingleTaskGPConstructor` for 1 output and `ModelListConstructor` otherwise, normalized to the spec bounds, with a log scale for `log=True` variables and a categorical kernel for labeled ones. |
 | `initial_designs` (`Campaign`, `run_campaign`) | `default_initial_designs(spec)`: `max(2d + 1, 2m)` scrambled-Sobol points that respect enumerated values and domain constraints, two of them moved to the target when the spec has sources. None with travel limits (see [Travel limits](#travel-limits)). `Campaign` queues them on its first `suggest`, unless the history isn't empty (a resume, or data you `record` first) or you `seed` your own; an empty tensor gives a cold start (random probes until a model can be fitted). Ignored on resume. |
 | `evaluate` (`Campaign.step`, `drive`, `run_campaign`) | none — the experiment returns the outputs directly. |
 

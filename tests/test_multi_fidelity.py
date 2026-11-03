@@ -498,3 +498,10 @@ def test_a_mock_driven_campaign_learns_the_cost_through_step():
     # cost = (atoms / 32) ** (log 100 / log 16)
     assert c.policy._source_cost.params["p_atoms"].item() == pytest.approx(1.661, abs=1e-3)
     assert min(r.candidate[1].item() for r in c.history.records[7:]) < 256
+
+
+def test_the_class_is_now_multi_source_with_the_old_name_kept():
+    from abbot import MultiSourceGPConstructor
+
+    assert MultiFidelityGPConstructor is MultiSourceGPConstructor
+    assert type(default_constructor(_spec(_code()))) is MultiSourceGPConstructor
