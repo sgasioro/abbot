@@ -43,6 +43,7 @@ from abbot.feasibility import (
 )
 from abbot.history import History
 from abbot.problem import ContinuousDomain, ProblemSpec
+from abbot.usability import USABLE_P
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,11 @@ class Policy(Protocol):
         (``spec.reach(position)``), to propose from instead of the whole space. The
         builtins search it; a policy without it has its proposals moved into reach
         by the campaign, with a warning.
+
+        And ``usability: abbot.usability.Usability | None``: with bad-region runs,
+        the chance of a usable result at designs, to steer away from bad regions.
+        The builtins weigh their acquisition by it (BAX leaves out candidates below
+        50%); a policy without it is warned about once.
         """
         ...
 
@@ -131,6 +137,34 @@ class _CostWeighted(torch.nn.Module):
 
     def set_X_pending(self, X_pending=None) -> None:
         self.acq.set_X_pending(X_pending)
+
+
+class _UsabilityWeighted(torch.nn.Module):
+    """An acquisition weighted by the chance of a usable result (for a batch, that
+    every design in it is usable): ``acq(X) + log P`` for a log-valued acquisition,
+    ``acq(X) * P`` for a positive one."""
+
+    def __init__(self, acq, usability, *, log: bool) -> None:
+        super().__init__()
+        self.acq = acq
+        self.usability = usability
+        self.log = log
+        self.model = getattr(acq, "model", None)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        log_p = self.usability.log_prob(X).sum(dim=-1)
+        return self.acq(X) + log_p if self.log else self.acq(X) * log_p.exp()
+
+    @property
+    def X_pending(self):
+        return self.acq.X_pending
+
+    def set_X_pending(self, X_pending=None) -> None:
+        self.acq.set_X_pending(X_pending)
+
+
+def _usability_weighted(acq, usability, *, log: bool = True):
+    return acq if usability is None else _UsabilityWeighted(acq, usability, log=log)
 
 
 def _cost_weighted(acq, cost_model, history: History, spec: ProblemSpec):
@@ -176,7 +210,9 @@ def _pinned(spec: ProblemSpec, fixed: dict[str, float] | None) -> dict[int, floa
     return {**spec.target_features(), **spec.resolve_fixed(fixed)}
 
 
-def _find_feasible(policy, history, spec, model, n, pending, fixed=None, within=None) -> torch.Tensor:
+def _find_feasible(
+    policy, history, spec, model, n, pending, fixed=None, within=None, usability=None
+) -> torch.Tensor:
     """Propose ``n`` designs at the target by the probability of satisfying every
     output constraint, while no run at the target has. Improvement and
     hypervolume have no feasible reference yet, so they would ignore the
@@ -190,7 +226,7 @@ def _find_feasible(policy, history, spec, model, n, pending, fixed=None, within=
     picks, values = [], []
     for _ in range(n):
         cond = condition_on_pending(model, _extend_pending(pending, picks))
-        acq = LogProbFeasible(cond, spec, explore=True, scale=scale)
+        acq = _usability_weighted(LogProbFeasible(cond, spec, explore=True, scale=scale), usability)
         picks.append(optimize(policy.optimizer, acq, within or spec, 1, _pinned(spec, fixed)))
         values.append(_acq_value(acq, picks[-1]))
     policy.last_acquisition_value = torch.tensor(values, dtype=torch.double)
@@ -310,6 +346,9 @@ class SimpleBO:
     With sources, the entropy search is weighted by that probability at the target
     and the best value is sampled over designs likely to satisfy the constraints (an
     approximation).
+
+    **With bad-region runs** (``usability``), the log-acquisition gains the log
+    chance of a usable result (the entropy search is multiplied by it).
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
@@ -339,6 +378,7 @@ class SimpleBO:
         pending: torch.Tensor | None = None,
         fixed: dict[str, float] | None = None,
         within: ProblemSpec | None = None,
+        usability=None,
     ) -> torch.Tensor:
         if spec.n_objectives != 1:
             raise ValueError(
@@ -346,9 +386,11 @@ class SimpleBO:
                 "objective(s); use ParetoBO for multi-objective optimization."
             )
         if spec.has_output_constraints and not any_feasible(history, spec):
-            return _find_feasible(self, history, spec, model, n, pending, fixed, within)
+            return _find_feasible(self, history, spec, model, n, pending, fixed, within, usability)
         if spec.sources and self.choose_sources:
-            return self._suggest_with_sources(history, spec, model, n, pending, fixed, within)
+            return self._suggest_with_sources(
+                history, spec, model, n, pending, fixed, within, usability
+            )
         # Improvement is judged at the target: a lucky cheap-source run must not set
         # the bar. Without sources this is the clean designs unchanged.
         X = spec.at_target(history.clean.designs.double()).unique(dim=0)
@@ -359,6 +401,7 @@ class SimpleBO:
             **_objective_kwargs(spec, history),
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
+        acq = _usability_weighted(acq, usability)
         picks = optimize(self.optimizer, acq, within or spec, n, _pinned(spec, fixed))
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
@@ -370,7 +413,9 @@ class SimpleBO:
         first proposal with sources)."""
         return self.cost_model if self.cost_model is not None else self._source_cost
 
-    def _suggest_with_sources(self, history, spec, model, n, pending, fixed=None, within=None):
+    def _suggest_with_sources(
+        self, history, spec, model, n, pending, fixed=None, within=None, usability=None
+    ):
         from botorch.acquisition.cost_aware import InverseCostWeightedUtility
         from botorch.models.deterministic import GenericDeterministicModel
 
@@ -413,6 +458,7 @@ class SimpleBO:
             )
             if spec.has_output_constraints:
                 acq = _FeasibilityWeighted(acq, model, spec)
+            acq = _usability_weighted(acq, usability, log=False)
             x = optimize(self.optimizer, acq, within or spec, 1, spec.resolve_fixed(fixed))
             picks.append(x)
             values.append(_acq_value(acq, x))
@@ -482,6 +528,9 @@ class ParetoBO:
     the inferred reference point, and the hypervolume improvement is weighted by
     the probability they hold. Until some run satisfies them (and without a
     ``ref_point``), it proposes by that probability, as :class:`SimpleBO` does.
+
+    **With bad-region runs** (``usability``), the log-acquisition gains the log
+    chance of a usable result, as for :class:`SimpleBO`.
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
@@ -516,6 +565,7 @@ class ParetoBO:
         pending: torch.Tensor | None = None,
         fixed: dict[str, float] | None = None,
         within: ProblemSpec | None = None,
+        usability=None,
     ) -> torch.Tensor:
         m = spec.n_objectives
         if m < 2:
@@ -531,11 +581,13 @@ class ParetoBO:
                 Y.shape[0],
                 floor,
             )
-            return self._explore(history, spec, model, n, pending, fixed, within)
+            return self._explore(history, spec, model, n, pending, fixed, within, usability)
         constrained = spec.has_output_constraints
         if constrained:
             if self.ref_point is None and not any_feasible(history, spec):
-                return _find_feasible(self, history, spec, model, n, pending, fixed, within)
+                return _find_feasible(
+                    self, history, spec, model, n, pending, fixed, within, usability
+                )
             Y = Y[feasible(spec, history.clean.outputs.double())]
 
         if self.ref_point is not None:
@@ -554,7 +606,8 @@ class ParetoBO:
                     "or add more seed points."
                 )
                 return UncertaintySampling(self.optimizer).suggest(
-                    history, spec, model, n, pending=pending, fixed=fixed
+                    history, spec, model, n, pending=pending, fixed=fixed,
+                    within=within, usability=usability,
                 )
             ref_point = infer_reference_point(pareto_Y)
             logger.info(
@@ -587,14 +640,20 @@ class ParetoBO:
             constraints=mc_constraints(spec, row_scale(history, spec)) if constrained else None,
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
+        acq = _usability_weighted(acq, usability)
         picks = optimize(self.optimizer, acq, within or spec, n, _pinned(spec, fixed))
         self.last_acquisition_value = _acq_value(acq, picks)
         return picks
 
-    def _explore(self, history, spec, model, n, pending, fixed=None, within=None) -> torch.Tensor:
+    def _explore(
+        self, history, spec, model, n, pending, fixed=None, within=None, usability=None
+    ) -> torch.Tensor:
         """Uncertainty sampling until the front can direct the search."""
         us = UncertaintySampling(self.optimizer)
-        picks = us.suggest(history, spec, model, n, pending=pending, fixed=fixed, within=within)
+        picks = us.suggest(
+            history, spec, model, n, pending=pending, fixed=fixed, within=within,
+            usability=usability,
+        )
         self.last_acquisition_value = us.last_acquisition_value
         return picks
 
@@ -609,7 +668,8 @@ class UncertaintySampling:
     Multi-output models are scalarized as the SUM of per-output posterior standard
     deviations (direction-agnostic, so no objective-sign handling is needed).
     A batch of ``n`` is built greedily, conditioning on each pick at the model's
-    own mean (kriging believer) before the next.
+    own mean (kriging believer) before the next. With bad-region runs
+    (``usability``), the std is multiplied by the chance of a usable result.
     """
 
     uq_requirement: UQRequirement = "calibrated_variance"
@@ -628,6 +688,7 @@ class UncertaintySampling:
         pending: torch.Tensor | None = None,
         fixed: dict[str, float] | None = None,
         within: ProblemSpec | None = None,
+        usability=None,
     ) -> torch.Tensor:
         from botorch.acquisition import PosteriorStandardDeviation
 
@@ -644,6 +705,7 @@ class UncertaintySampling:
                 acq = PosteriorStandardDeviation(cond)
             else:
                 acq = _SumPosteriorStd(cond)
+            acq = _usability_weighted(acq, usability, log=False)
             picks.append(optimize(self.optimizer, acq, within or spec, 1, _pinned(spec, fixed)))
             values.append(_acq_value(acq, picks[-1]))
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
@@ -744,6 +806,10 @@ class BAXPolicy:
     If the goal selects nothing on any posterior sample, InfoBAX has no
     information to rank by; it proposes by uncertainty instead and says so in
     ``last_warning``.
+
+    **With bad-region runs** (``usability``), candidates with less than a 50% chance
+    of a usable result are left out of the goal and the proposals, as designs that
+    break the output constraints are.
     """
 
     def __init__(
@@ -793,6 +859,7 @@ class BAXPolicy:
         self._bound = None  # (spec, goal with names resolved), see _goal_for
         self.last_warning: str | None = None  # set by suggest when the goal is empty
         self._out_scale = torch.ones(1, dtype=torch.double)  # per-output, set by suggest
+        self._usable: torch.Tensor | None = None  # grid rows likely usable, set by suggest
 
     # -- grid --
 
@@ -965,6 +1032,7 @@ class BAXPolicy:
         pending: torch.Tensor | None = None,
         fixed: dict[str, float] | None = None,
         within: ProblemSpec | None = None,
+        usability=None,
     ) -> torch.Tensor:
         grid = self.proposal_set(spec)
         self.last_warning = None
@@ -972,6 +1040,14 @@ class BAXPolicy:
         reach = self._in_reach(within, grid) if within is not None else None
         pending = _pending_or_none(pending)
         self._out_scale = _output_scale(history)
+        usable = None
+        if usability is not None:
+            with torch.no_grad():
+                usable = usability(grid) >= USABLE_P
+            if not usable.any():
+                self._warn("no candidate is likely to give a usable result; ignoring bad regions")
+                usable = None
+        self._usable = None if usable is None else usable[: len(self.candidate_grid(spec))]
         self._cost = (
             self._relative_cost(history, spec, grid) if self._chooses_sources(spec) else None
         )
@@ -992,6 +1068,8 @@ class BAXPolicy:
             switched |= self.switched
             acq = acq.clone()
             acq[self._collected] = float("-inf")
+            if usable is not None and torch.isfinite(acq[usable]).any():
+                acq[~usable] = float("-inf")
             if allowed is not None:
                 acq[~allowed] = float("-inf")
                 if not torch.isfinite(acq[allowed]).any():
@@ -1111,11 +1189,17 @@ class BAXPolicy:
     def _identify(self, spec, Y, X) -> list[int]:
         """The goal's target set on RAW outputs ``Y`` at designs ``X``. With output
         constraints (and ``respect_constraints``), the goal runs on only the rows
-        that satisfy them, and its indices are mapped back to ``Y``'s rows."""
+        that satisfy them, and with bad-region runs on only the rows likely usable;
+        its indices are mapped back to ``Y``'s rows."""
         goal = self._goal_for(spec)
-        if not self._constrains(spec):
+        keep = torch.ones(len(Y), dtype=torch.bool)
+        if self._usable is not None and len(self._usable) == len(Y):
+            keep &= self._usable  # likely bad regions are out of the goal too
+        if self._constrains(spec):
+            keep &= feasible(spec, Y)
+        if keep.all():
             return list(goal.identify_subspace(Y, X))
-        rows = feasible(spec, Y).nonzero(as_tuple=True)[0]
+        rows = keep.nonzero(as_tuple=True)[0]
         if not len(rows):
             return []
         target = goal.identify_subspace(Y[rows], X[rows])

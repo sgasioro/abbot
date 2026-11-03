@@ -4,10 +4,13 @@ A :class:`Supervisor` watches a campaign. After every result it is called with t
 full ``History`` and returns a :class:`~abbot.experiment.Verdict`. It has two kinds
 of rule:
 
-- **Fault checks** (``faults=``) judge whether the run is usable. ``retry`` marks
-  the latest run unusable (kept out of the model and re-run); ``halt`` says the
-  apparatus needs a person (the campaign ends, resumably). :func:`per_shot`,
-  :func:`stall_monitor`, :func:`drift_monitor`, :func:`consecutive_fault_monitor`;
+- **Fault checks** (``faults=``) judge whether the run is usable. ``retry`` says
+  the apparatus may have spoiled the latest run (kept out of the model and re-run,
+  up to the campaign's ``max_retries``, then a person decides); ``halt`` says the
+  apparatus needs a person (the campaign ends, resumably). ``bad_region`` says the
+  design itself gives no usable result (a dark region): no retry, and the
+  campaign learns to avoid the region. :func:`per_shot`, :func:`stall_monitor`,
+  :func:`drift_monitor`, :func:`consecutive_fault_monitor`;
   :func:`standard_supervisor` bundles them.
 - **Stop rules** (``stops=``) say the campaign is done, with nothing wrong:
   :func:`target_reached`, :func:`no_improvement`, :func:`cost_cap`,
@@ -49,7 +52,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from abbot.experiment import Verdict
+from abbot.experiment import Verdict, _bad_region_reason
 from abbot.history import History, Record
 
 if TYPE_CHECKING:
@@ -86,17 +89,26 @@ def default_signal(record: Record) -> torch.Tensor | None:
     return record.outputs
 
 
-def per_shot(detector: Detector) -> Rule:
+def per_shot(detector: Detector, *, bad_region: str | bool = False) -> Rule:
     """Lift a single-observation check into a supervisor.
 
     The detector judges the shot just taken and nothing else; letting it see earlier
     records would let one old fault flag every later clean shot.
+
+    By default a flagged shot is an apparatus fault: retried, then a person decides.
+    ``bad_region`` (a reason, or True) is for a detector that can only fire when the
+    design itself is the cause: a flagged shot is then a bad-region run, not retried.
+    A detector that can't tell the two apart (a flat profile from a dark region or a
+    closed shutter) should keep the default.
     """
 
     def supervisor(history: History) -> Verdict:
         if not len(history):
             return Verdict()
-        return Verdict(retry=bool(detector(history.records[-1].observation)))
+        flagged = bool(detector(history.records[-1].observation))
+        if flagged and bad_region:
+            return Verdict(bad_region=bad_region)
+        return Verdict(retry=flagged)
 
     return supervisor
 
@@ -124,13 +136,18 @@ class Supervisor:
         verdict = _merge([r(history) for r in self.faults], every=False)
         if verdict.halt is not None or not self.stops:
             return verdict
-        if verdict.retry and len(history):
-            history.records[-1].fault = True  # what the campaign is about to record
+        if len(history):  # what the campaign is about to record
+            bad = _bad_region_reason(verdict.bad_region)
+            if bad is not None:
+                history.records[-1].bad_region = bad
+            elif verdict.retry:
+                history.records[-1].fault = True
         stops = _merge([r(history) for r in self.stops], every=False)
         return Verdict(
             retry=verdict.retry or stops.retry,
             halt=stops.halt,
             stop=verdict.stop if verdict.stop is not None else stops.stop,
+            bad_region=verdict.bad_region if verdict.bad_region else stops.bad_region,
         )
 
     def __repr__(self) -> str:
@@ -180,17 +197,18 @@ class _Merge:
 
 
 def _merge(verdicts: list[Verdict], every: bool) -> Verdict:
-    """Retry if any asks, the first halt, and the first stop (``every``: a stop only
-    if all say stop, their reasons joined)."""
+    """Retry if any asks, the first halt, the first bad region, and the first stop
+    (``every``: a stop only if all say stop, their reasons joined)."""
     retry = any(v.retry for v in verdicts)
     halt = next((v.halt for v in verdicts if v.halt is not None), None)
+    bad = next((b for v in verdicts if (b := getattr(v, "bad_region", None))), None)
     stops = [getattr(v, "stop", None) for v in verdicts]
     if every:
         agreed = stops and all(x is not None for x in stops)
         stop = " and ".join(x.rstrip(".") for x in stops) + "." if agreed else None
     else:
         stop = next((x for x in stops if x is not None), None)
-    return Verdict(retry=retry, halt=halt, stop=stop)
+    return Verdict(retry=retry, halt=halt, stop=stop, bad_region=bad)
 
 
 def bind(supervisor: Rule, spec) -> Rule:
@@ -328,10 +346,13 @@ def consecutive_fault_monitor(detector: Detector, k: int = 3) -> Rule:
 
     Without it, a detector that never lets up is a valid trajectory that nothing
     escalates: every shot is retried and the surrogate starves. A record whose run
-    raised counts as rejected; one with no observation is not judged.
+    raised counts as rejected; one with no observation is not judged, and a
+    bad-region run is not an apparatus fault, so it breaks the streak.
     """
 
     def rejected(r: Record) -> bool | None:
+        if r.bad_region is not None:
+            return False
         if r.error is not None:
             return True
         if r.observation is None:
@@ -446,7 +467,7 @@ def _runs(history: History, spec: ProblemSpec) -> list[tuple[int, torch.Tensor, 
 
     out = []
     for step, r in enumerate(history.records):
-        if r.fault or r.outputs is None:
+        if not r.usable or r.outputs is None:
             continue
         y = r.outputs.double().reshape(-1)
         ok = not spec.has_output_constraints or bool(feasible(spec, y.reshape(1, -1))[0])

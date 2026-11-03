@@ -75,11 +75,14 @@ def drive(
     clear ``campaign.stopped`` to keep going. Read why it stopped off the campaign:
     ``stopped``, ``halted``, or ``len(history)`` against the budget.
 
-    On a persistent fault (the supervisor halted, or a run kept failing),
-    ``on_persistent_fault="halt"`` raises :class:`PersistentFaultError` (the store
-    keeps everything, rerun to resume); ``"continue"`` logs it and spends the rest
-    of the budget. A halt that recorded nothing (``pre_run`` blocked the design)
-    always raises, since continuing would retry the same blocked design forever.
+    On a persistent fault (the supervisor halted, or a run kept failing past
+    ``max_retries``), ``on_persistent_fault="halt"`` raises
+    :class:`PersistentFaultError`: the store keeps everything, and rerunning resumes
+    with the failed design retried (or call ``campaign.resolve(...)`` and drive
+    again). ``"continue"`` is for unattended runs: it logs the fault, resolves it
+    with ``"exclude"`` (the failed design is skipped), and spends the rest of the
+    budget. A halt that recorded nothing (``pre_run`` blocked the design) always
+    raises, since continuing would retry the same blocked design forever.
     """
     if on_persistent_fault not in ("halt", "continue"):
         raise ValueError(
@@ -101,7 +104,7 @@ def drive(
                 "rerun to resume."
             )
         logger.warning("Persistent fault (%s); continuing as configured.", campaign.halted)
-        campaign.halted = None
+        campaign.resolve("exclude" if campaign.halted_on else "retry")
     return campaign
 
 

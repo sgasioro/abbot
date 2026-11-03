@@ -115,6 +115,19 @@ class Verdict:
     retry: bool = False  # this observation is unusable; re-run the same candidate
     halt: str | None = None  # apparatus is broken; human-readable reason
     stop: str | None = None  # done (budget spent, converged); not a fault. Reason.
+    # The design itself is the cause: no usable result here, and none on a re-run.
+    # A reason for people, or True. Recorded as a bad-region run; no retry.
+    bad_region: str | bool | None = None
+
+
+BAD_REGION = "bad region"  # the reason stored for Verdict(bad_region=True)
+
+
+def _bad_region_reason(bad: str | bool | None) -> str | None:
+    """A verdict's ``bad_region`` as the reason to store, or None."""
+    if bad is None or bad is False:
+        return None
+    return BAD_REGION if bad is True else str(bad)
 
 
 class ManualExperiment:

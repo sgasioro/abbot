@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 def _counts(r, spec: ProblemSpec) -> bool:
     """A record counts towards the best so far: clean, measured, and satisfying
     every output constraint."""
-    if r.fault or r.outputs is None:
+    if not r.usable or r.outputs is None:
         return False
     if not spec.has_output_constraints:
         return True
