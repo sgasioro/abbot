@@ -26,13 +26,14 @@ from typing import TYPE_CHECKING, Any
 import torch
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
-from abbot.experiment import BatchExperiment, Experiment, Verdict
+from abbot.experiment import BatchExperiment, Experiment, Verdict, _bad_region_reason
 from abbot.feasibility import FEASIBLE_P, feasible, prob_feasible, row_scale, violation
 from abbot.history import DataStore, History, Record
 from abbot.model import ModelConstructor, default_constructor
 from abbot.policy import Policy, default_policy
 from abbot.problem import ProblemSpec
 from abbot.supervision import Rule, Supervisor, bind
+from abbot.usability import USABLE_P, Usability, fit_usability
 
 if TYPE_CHECKING:
     from botorch.models.model import Model
@@ -224,7 +225,8 @@ def _one_per_design(
 
 
 def recommend(
-    history: History, spec: ProblemSpec, model=None, *, denoise: bool = True
+    history: History, spec: ProblemSpec, model=None, *, denoise: bool = True,
+    usability: Usability | None = None,
 ) -> list[int]:
     """Handover index/indices: the recommended design(s) at end-of-run.
 
@@ -248,16 +250,25 @@ def recommend(
     are none, it returns the single design most likely to (the smallest observed
     violation); :func:`feasibility` tells the two cases apart.
 
+    With a ``usability`` model (the campaign has bad-region runs), only designs it
+    gives at least a 50% chance of a usable result are ranked, if there are any.
+
     Returns ``[]`` for a pure-BAX spec (no objectives — handover is the goal's job)
     or when there are no clean records.
     """
     idx = spec.objective_indices()
     if not idx:
         return []
-    keep = [i for i, r in enumerate(history.records) if not r.fault]
+    keep = [i for i, r in enumerate(history.records) if r.usable]
     use_model = denoise and model is not None
     if spec.sources:
         keep = _one_per_design(history, spec, keep, observed=not use_model)
+    if usability is not None and keep:
+        X_keep = spec.at_target(torch.stack([history.records[i].candidate for i in keep]).double())
+        with torch.no_grad():
+            ok = usability(X_keep) >= USABLE_P
+        if ok.any():
+            keep = [i for i, k in zip(keep, ok.tolist()) if k]
     if not keep:
         return []
     if use_model:
@@ -318,10 +329,10 @@ def apply_targets(targets: Targets, history: History, spec: ProblemSpec) -> Hist
 
     For objectives defined after the fact: re-weighting a scalarization mid-run,
     a recalibrated analysis of stored raw observations, a score that sharpens over
-    the campaign (see :class:`abbot.composite.Rescore`). Faulted records pass through
-    unchanged; the stored history is not modified.
+    the campaign (see :class:`abbot.composite.Rescore`). Faulted and bad-region
+    records pass through unchanged; the stored history is not modified.
     """
-    clean = [r for r in history.records if not r.fault]
+    clean = [r for r in history.records if r.usable]
     out = targets(history, spec)
     Y, Yvar = out if isinstance(out, tuple) else (out, None)
     Y = torch.as_tensor(Y, dtype=torch.double).reshape(len(clean), -1)
@@ -335,7 +346,7 @@ def apply_targets(targets: Targets, history: History, spec: ProblemSpec) -> Hist
     rows = iter(range(len(clean)))
     records = []
     for r in history.records:
-        if r.fault:
+        if not r.usable:
             records.append(r)
             continue
         i = next(rows)
@@ -384,6 +395,9 @@ class CampaignState:
     costs: list[float | None] = field(default_factory=list)  # per record, aligned with designs
     cost_spent: float = 0.0  # total recorded cost, failed runs included
     stopped: str | None = None  # a supervisor's stop reason (done, not a fault)
+    bad_regions: list[str | None] = field(default_factory=list)  # per record: the reason, or None
+    excluded: list[bool] = field(default_factory=list)  # per record: its design was excluded
+    halted_on: list[dict] = field(default_factory=list)  # the designs a halt is about
 
     def to_json(self) -> str:
         import json
@@ -414,6 +428,9 @@ class CampaignResult:
     # the design closest to doing so.
     p_feasible: list[float] = field(default_factory=list)
     feasible: list[bool] = field(default_factory=list)
+    # With bad-region runs: per recommended design, the usability model's chance of
+    # a usable result there. Empty without.
+    p_usable: list[float] = field(default_factory=list)
 
     @property
     def designs(self) -> torch.Tensor:
@@ -514,6 +531,17 @@ class Campaign:
     skipped when the history is not empty (a resume, or data you ``record`` first) or
     you ``seed`` your own. Pass a tensor to choose the seeds, or an empty one for a
     cold start: random probes until there are enough results to fit a model.
+
+    When a run fails (the experiment raised, or a fault check rejected the shot), it
+    is retried ``max_retries`` times, then the campaign halts on that design and a
+    person decides with :meth:`resolve`: retry it, exclude it, or mark it a bad
+    region. ``0`` halts on the first failure. A halt is saved with the store, so a
+    campaign rebuilt on it is still halted until resolved (rerunning
+    ``run_campaign`` answers ``"retry"``).
+
+    Runs a fault check marks ``bad_region`` (or that a person resolves as one) are
+    kept out of the output models. A separate classifier learns where runs give
+    usable results, and proposals and recommendations steer away from the rest.
     """
 
     def __init__(
@@ -575,6 +603,12 @@ class Campaign:
         self._next_id = 0
         self._recommended: list[int] = []
         self.halted: str | None = None
+        # The designs a halt is about, as (design, step of its first run), awaiting
+        # ``resolve``.
+        self._halted_on: list[tuple[torch.Tensor, int]] = []
+        self._usability: Usability | None = None
+        self._usability_valid = False
+        self._warned_usability = False
         # Set when a supervisor says the campaign is done (Verdict.stop): ``drive``
         # ends there; ask/tell callers may read it and carry on regardless.
         self.stopped: str | None = None
@@ -666,8 +700,7 @@ class Campaign:
         unmeasured seed queue is cleared — imported data supersedes it.
         """
         self._seed_queue.clear()
-        self._model_valid = False  # history mutates -> cached fit is stale
-        self._scored = None
+        self._stale()  # history mutates -> cached fit is stale
         for record in history.records:
             step = len(self.history)
             self.history.append(record)
@@ -817,6 +850,93 @@ class Campaign:
         logger.info("cancelled %s at %s", item.id, self._to_dict(item.x))
         return self.state()
 
+    def resolve(self, answer: str = "retry", *, reason: str | None = None) -> CampaignState:
+        """Answer a halt, so the campaign can carry on.
+
+        A halt about a design (its runs kept failing, see ``max_retries``) takes one
+        of three answers:
+
+        - ``"retry"``: the apparatus was the problem and is fixed. The design runs
+          next, with its retries counted afresh.
+        - ``"exclude"``: the apparatus is fine; don't run this design again. Its
+          failed runs stay in the history as faults, marked ``excluded``, and
+          proposals steer away from it.
+        - ``"bad_region"``: the apparatus is fine and the design itself is the
+          cause (a dark region). Its failed runs become bad-region runs, with
+          ``reason`` (for people; the model only sees that they were bad), and the
+          campaign learns to avoid the region.
+
+        Any other halt (a pre-run check, a stall or drift monitor) only takes
+        ``"retry"``: the cause is fixed, carry on. The halt is saved with the store,
+        so a campaign rebuilt on it still needs this answer.
+        """
+        if self.halted is None:
+            raise RuntimeError("resolve(): the campaign isn't halted.")
+        answers = ("retry", "exclude", "bad_region")
+        if answer not in answers:
+            raise ValueError(f"resolve(): answer must be one of {answers}, got {answer!r}")
+        if answer != "retry" and not self._halted_on:
+            raise ValueError(
+                f"resolve({answer!r}): this halt isn't about a design ({self.halted}); "
+                "fix the cause and resolve('retry') to carry on."
+            )
+        if reason is not None and answer != "bad_region":
+            raise ValueError("resolve(): reason= goes with 'bad_region' only.")
+        if answer == "retry":
+            for x, first in reversed(self._halted_on):
+                self._retry_queue.insert(0, (x, first, 0))
+        elif answer == "exclude":
+            self._mark_runs([first for _, first in self._halted_on], excluded=True)
+        else:
+            reason = _bad_region_reason(reason if reason is not None else True)
+            self._mark_runs([first for _, first in self._halted_on], bad_region=reason)
+        logger.info("Resolved the halt (%s): %s", answer, self.halted)
+        self.halted = None
+        self._halted_on = []
+        self._save_queue()
+        return self.state()
+
+    @property
+    def halted_on(self) -> list[dict]:
+        """The designs the current halt is about (``{name: value}``), awaiting
+        :meth:`resolve`; empty when it isn't about a design, or there's no halt."""
+        return [self._to_dict(x) for x, _ in self._halted_on]
+
+    def _halt_on(self, x: torch.Tensor, first: int, reason: str) -> None:
+        """Halt on a design whose runs kept failing, for a person to resolve."""
+        self._halted_on.append((x.double().reshape(-1), first))
+        hint = (
+            "Decide with resolve(): 'retry' once the apparatus is fixed, 'exclude' to "
+            "skip the design, or 'bad_region' if the design itself is the cause."
+        )
+        parts = [p for p in (self.halted or "").split("\n") if p and p != hint]
+        self.halted = "\n".join([*parts, reason, hint])
+        logger.warning("%s", reason)
+
+    def _mark_runs(
+        self, firsts: list[int], *, excluded: bool = False, bad_region: str | None = None
+    ) -> None:
+        """Mark the faulted runs of the designs first run at steps ``firsts``:
+        excluded, or turned into bad-region runs. Persisted."""
+        for step, r in enumerate(self.history.records):
+            if r.fault and (step in firsts or r.retry_of in firsts):
+                if bad_region is not None:
+                    r.fault, r.bad_region = False, bad_region
+                r.excluded = r.excluded or excluded
+                if self.store is not None:
+                    self.store.save_step(step, r)
+        self._stale()
+
+    @property
+    def _excluded(self) -> list[torch.Tensor]:
+        """The designs a person excluded (one each), from the records."""
+        out: list[torch.Tensor] = []
+        for r in self.history.records:
+            x = r.candidate.double().reshape(-1)
+            if r.excluded and not any(torch.equal(x, y) for y in out):
+                out.append(x)
+        return out
+
     def step(
         self,
         experiment: Experiment | BatchExperiment,
@@ -871,6 +991,7 @@ class Campaign:
                 if reason:
                     self.halted = f"pre-run check blocked {design}: {reason}"
                     logger.warning("%s", self.halted)
+                    self._save_queue()
                     return self.state()
         observations, timings = self._run_designs(experiment, designs)
         reported = getattr(experiment, "cost", None)
@@ -955,17 +1076,15 @@ class Campaign:
         if self.store is not None:
             self.store.save_step(step, record)
         self._inflight.pop(item.id, None)
-        self._model_valid = False
-        self._scored = None
+        self._stale()
         where = self._to_dict(x)
+        first = step if retry_of is None else retry_of
         if attempt < self.max_retries:
-            self._retry_queue.append(
-                (x, step if retry_of is None else retry_of, attempt + 1)
-            )
+            self._retry_queue.append((x, first, attempt + 1))
             self.last_warning = f"Experiment failed at {where} ({error}); retrying."
         else:
-            self.halted = (
-                f"Experiment failed {attempt + 1} time(s) at {where}; last error: {error}"
+            self._halt_on(
+                x, first, f"Experiment failed {attempt + 1} time(s) at {where}; last error: {error}"
             )
         self._save_queue()
         self._after_ingest()
@@ -1028,7 +1147,11 @@ class Campaign:
             self.history.append(record)
 
             verdict = self.supervisor(self.history) if self.supervisor else Verdict()
+            # A retry outranks a bad region: while any rule suspects the apparatus,
+            # "the design is the cause" can't be trusted.
             record.fault = verdict.retry
+            if not verdict.retry:
+                record.bad_region = _bad_region_reason(getattr(verdict, "bad_region", None))
 
             if self.store is not None:
                 self.store.save_step(step, record)
@@ -1039,14 +1162,19 @@ class Campaign:
             if getattr(verdict, "stop", None) is not None and self.stopped is None:
                 self.stopped = verdict.stop
                 logger.info("%s", self.stopped)
-            if verdict.retry and item.attempt < self.max_retries:
-                self._retry_queue.append(
-                    (item.x, step if item.retry_of is None else item.retry_of, item.attempt + 1)
-                )
+            if record.fault:
+                first = step if item.retry_of is None else item.retry_of
+                if item.attempt < self.max_retries:
+                    self._retry_queue.append((item.x, first, item.attempt + 1))
+                else:
+                    self._halt_on(
+                        item.x, first,
+                        f"A fault check rejected the run at {self._to_dict(item.x)} "
+                        f"{item.attempt + 1} time(s).",
+                    )
 
         self._save_queue()
-        self._model_valid = False  # history grew -> cached fit is stale
-        self._scored = None
+        self._stale()  # history grew -> cached fit is stale
         self._after_ingest()
         return self.state()
 
@@ -1065,6 +1193,11 @@ class Campaign:
         uncertainty there)."""
         recommended = self.recommend()
         result = CampaignResult(history=self.history, recommended=recommended)
+        usability = self.current_usability()
+        if usability is not None and recommended:
+            X = torch.stack([self.history.records[i].candidate.double().reshape(-1) for i in recommended])
+            with torch.no_grad():
+                result.p_usable = usability(self.spec.at_target(X)).tolist()
         if self.spec.has_output_constraints and recommended:
             model = self.current_model()
             result.p_feasible = feasibility(self.scored_history(), self.spec, recommended, model)
@@ -1132,6 +1265,19 @@ class Campaign:
         self._model_valid = True
         return self._model
 
+    def current_usability(self) -> Usability | None:
+        """The classifier of where runs give usable results, fitted on the runs that
+        weren't faults (:attr:`History.judged`), or ``None`` without bad-region runs
+        (or if the fit failed). Cached like :meth:`current_model`."""
+        if not self._usability_valid:
+            try:
+                self._usability = fit_usability(self.history, self.spec)
+            except Exception:
+                logger.exception("usability fit failed; not steering away from bad regions.")
+                self._usability = None
+            self._usability_valid = True
+        return self._usability
+
     def pending_count(self) -> int:
         """Queued units of work owed before the policy must propose again:
         unmeasured seeds plus supervisor-queued retries. A headless driver
@@ -1162,6 +1308,9 @@ class Campaign:
             costs=[r.cost for r in self.history.records],
             cost_spent=self.history.cost_spent,
             stopped=self.stopped,
+            bad_regions=[r.bad_region for r in self.history.records],
+            excluded=[r.excluded for r in self.history.records],
+            halted_on=self.halted_on,
         )
 
     # -- internals --
@@ -1252,6 +1401,18 @@ class Campaign:
         kwargs = {"fixed": fixed} if fixed else {}
         if within is not None and _accepts(self.policy, "within"):
             kwargs["within"] = within
+        usability = self.current_usability()
+        if usability is not None:
+            if _accepts(self.policy, "usability"):
+                kwargs["usability"] = usability
+            elif not self._warned_usability:
+                self._warned_usability = True
+                logger.warning(
+                    "%s.suggest takes no usability= argument, so its proposals can't "
+                    "steer away from bad regions.", type(self.policy).__name__,
+                )
+        # Excluded designs count as in flight, so the policy steers away from them.
+        pending = [*pending, *self._excluded]
         if not pending:
             return self.policy.suggest(self.scored_history(), self.spec, model, n=n, **kwargs)
         X_pending = torch.stack([x.reshape(-1).double() for x in pending])
@@ -1344,6 +1505,12 @@ class Campaign:
             return x
         return self.spec._sample(1, None, pinned)[0].to(x)
 
+    def _stale(self) -> None:
+        """The history changed: drop the cached fits."""
+        self._model_valid = False
+        self._usability_valid = False
+        self._scored = None
+
     def _fit_now(self):
         """Fit the surrogate on the current clean history (uncached), or None."""
         if not len(self.history.clean):
@@ -1365,7 +1532,10 @@ class Campaign:
         observed front as a fallback if the model-based pass yields nothing or errors.
         """
         try:
-            rec = recommend(self.scored_history(), self.spec, model, denoise=True)
+            rec = recommend(
+                self.scored_history(), self.spec, model, denoise=True,
+                usability=self.current_usability(),
+            )
         except Exception:
             logger.exception("recommend failed; using the observed front.")
             rec = []
@@ -1444,6 +1614,9 @@ class Campaign:
                 for x, r, a in self._retry_queue
             ],
             "seeds": [x.reshape(-1).tolist() for x in self._seed_queue],
+            # A rebuilt campaign is still halted, until resolved.
+            "halted": self.halted,
+            "halted_on": [{"design": x.tolist(), "retry_of": first} for x, first in self._halted_on],
         })
 
     def _load_queue(self) -> bool:
@@ -1475,6 +1648,10 @@ class Campaign:
                 )
         self._retry_queue = [(t(r["design"]), r["retry_of"], r["attempt"]) for r in q["retries"]]
         self._seed_queue = [t(x) for x in q["seeds"]]
+        self.halted = q.get("halted")
+        self._halted_on = [(t(h["design"]), h["retry_of"]) for h in q.get("halted_on", [])]
+        if self.halted:
+            logger.warning("Resumed a halted campaign; resolve() to carry on: %s", self.halted)
         if self._inflight or self._retry_queue or self._seed_queue:
             logger.info(
                 "Restored %d outstanding, %d retries, %d seeds from the store.",

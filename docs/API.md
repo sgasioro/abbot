@@ -48,6 +48,10 @@ on them.
   sbido's scattering benchmark.
 - **Prior means** — `default_constructor(spec, prior_mean=, fit_prior_scale=)`
   and the constructors' `prior_mean=`. New.
+- **Faults and bad regions** — `Campaign.resolve`, `Campaign.halted_on`,
+  `Verdict(bad_region=)`, `per_shot(..., bad_region=)`, `Record.bad_region`,
+  `Record.excluded`,
+  `History.judged`, `abbot.usability`, and the policies' `usability=`. New.
 - **Travel limits** — `max_step` on domains, `ProblemSpec.reach` /
   `out_of_reach` / `has_travel_limits`, and the optional `within=` argument of
   `Policy.suggest`. New.
@@ -356,7 +360,9 @@ campaign = Campaign(spec, supervisor=Supervisor(
 ```
 
 - **`faults=`: fault checks.** Is the run usable? `retry` keeps the latest run out
-  of the model and re-runs it; `halt` ends the campaign until a person resumes it.
+  of the model and re-runs it; `halt` ends the campaign until a person resumes it;
+  `bad_region` says the design itself gives nothing usable (see
+  [Faults and bad regions](#faults-and-bad-regions)).
   `standard_supervisor(bounds, detector)` is a `Supervisor` with the usual four
   (`per_shot`, `stall_monitor`, `drift_monitor`, `consecutive_fault_monitor`).
 - **`stops=`: stop rules.** Is the campaign done? A `stop` ends it normally:
@@ -372,6 +378,82 @@ campaign = Campaign(spec, supervisor=Supervisor(
   function. A bare rule is also accepted as `supervisor=`, as before.
   `any_of` over fault checks still merges every field, so older code that combines
   everything with it keeps working, without the fault-first ordering.
+
+## Faults and bad regions
+
+Two different things can go wrong, and abbot treats them differently:
+
+| | The apparatus failed | The design gives no usable result |
+| --- | --- | --- |
+| Examples | a stuck shutter, a killed job, a detector glitch | a dark region, a sample that decomposes |
+| Says so | `experiment.run` raises, `campaign.fail(id, ...)`, a fault check's `retry` | a fault check's `bad_region`, or a person |
+| What abbot does | retries the design `max_retries` times, then halts for a person | records a bad-region run, no retry; learns to avoid the region |
+| The run | a fault: out of every model | out of the output models; trains the usability model |
+
+**Retries, then a person.** `Campaign(..., max_retries=1)` is how many automatic
+retries a failing design gets, for errors and fault-check flags alike (`0`: halt on
+the first). When they're used up, the campaign halts, `campaign.halted_on` names
+the design, and a person answers with `campaign.resolve(...)`:
+
+| Answer | When | Effect |
+| --- | --- | --- |
+| `resolve("retry")` | the apparatus was the problem and is fixed | the design runs next, retries counted afresh |
+| `resolve("exclude")` | the apparatus is fine; skip this design | not run again; its runs stay faults, marked `Record.excluded`; proposals treat it as in flight, so they steer away |
+| `resolve("bad_region", reason="dark")` | the design itself is the cause | its runs become bad-region runs |
+
+- **A halt is saved with the store.** A campaign rebuilt on it is still halted,
+  with `halted_on` and the UI banner as before, until someone answers; `drive`
+  won't start it. Rerunning the same `run_campaign` call is the answer "fixed,
+  retry" (as "fix the cause and rerun" always said): the halted design runs first.
+- **Other halts** (a pre-run check, a stall or drift monitor) aren't about one
+  design and only take `"retry"`: carry on.
+- **The UI's halt banner** has the three answers as buttons.
+- **Unattended runs:** `drive(..., on_persistent_fault="continue")` answers
+  `"exclude"` and carries on.
+
+**Bad-region runs.** A fault check that knows the design is the cause says so
+directly, and the run is recorded with no retry and no halt:
+
+```python
+per_shot(is_dark, bad_region="dark: no signal")  # a flagged shot is a bad-region run
+lambda history: Verdict(bad_region=True)          # or a rule of your own
+```
+
+- **The reason is for people:** it's shown in the history, the UI and `check()`.
+  The model only sees that the run was bad; `True` is stored as `"bad region"`.
+- **Ambiguous detectors** (a flat profile from a dark region or a closed shutter)
+  should stay plain fault checks: retries, a halt, and the person's
+  `resolve("bad_region")` when the design is the cause. abbot never decides
+  the hardware is fine on its own.
+- **A retry outranks a bad region** when rules disagree about the same run: while
+  any check suspects the apparatus, "the design is the cause" can't be trusted. If
+  the re-run is still flagged only as a bad region, it's recorded as one.
+- **The record:** `Record.bad_region` holds the reason. `History.clean` leaves
+  bad-region runs out (it's what the output models train on); `History.judged`
+  is every run that isn't a fault.
+- **Stop rules and `consecutive_fault_monitor`** ignore bad-region runs.
+
+**The usability model.** With at least one bad-region run and one usable run,
+abbot fits a classifier of where runs give usable results: a two-class GP with
+Dirichlet-based classification (GPyTorch's `DirichletClassificationLikelihood`,
+built from BoTorch's `SingleTaskGP`), on the judged runs. Its `P(usable)` steers
+the campaign:
+
+| Where | With bad regions |
+| --- | --- |
+| `SimpleBO`, `ParetoBO` | log-acquisition + log P(usable) (the entropy search with sources: × P) |
+| `UncertaintySampling` | posterior std × P(usable) |
+| `BAXPolicy` | candidates below 50% are left out of the goal and the proposals |
+| `recommend`, `result()` | only designs at 50% or more are ranked; `result().p_usable` gives the chance |
+| `campaign.check()` | a note with the bad-region count, reasons and where |
+
+- **Weighting, not a cutoff,** for proposals: they can still test the edge of a
+  region, so a boundary learned from two runs isn't fixed for good.
+- **A custom policy** gets `usability=` if its `suggest` takes it (call it on
+  designs for P(usable); `.log_prob` for the log). One that doesn't is warned
+  about once.
+- **`campaign.current_usability()`** is the fitted model (cached like
+  `current_model()`), or `None` without bad-region runs.
 
 ## Diagnostics and stopping
 
@@ -620,8 +702,11 @@ explicitly if you need it pinned.
   `Campaign.step` / `run_campaign`, the shot is persisted as a faulted `Record`
   (`fault=True`, `outputs=None`, `error="<Type>: <message>"`) and the same candidate
   is retried up to `max_retries` times (default 1); after that the campaign halts
-  and `run_campaign` raises `PersistentFaultError` ("fix the cause and rerun to
-  resume"; `on_persistent_fault="continue"` spends the rest of the budget instead).
+  on that design and `run_campaign` raises `PersistentFaultError` ("fix the cause
+  and rerun to resume"; the rerun retries the design). Otherwise
+  `campaign.resolve(...)` answers the halt, which is saved with the store; `on_persistent_fault="continue"` skips
+  the design and spends the rest of the budget. Shots a fault check rejects go
+  the same way. See [Faults and bad regions](#faults-and-bad-regions).
   The budget (`len(initial_designs) + n_shots`) is a total that every record
   counts against, failures and retries included, so the rerun finishes the
   remainder. Errors from `evaluate` propagate unchanged — they are analysis bugs,

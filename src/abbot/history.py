@@ -31,12 +31,17 @@ class Record:
     outputs: torch.Tensor | None = None  # (m,) reduced objective value(s), if any
     output_var: torch.Tensor | None = None  # (m,) per-output noise VARIANCE, if known
     aux: Any | None = None  # opaque cached payload (e.g. theta samples)
-    fault: bool = False  # detector flagged this shot as unusable
+    fault: bool = False  # the apparatus failed or a fault check rejected the shot
     retry_of: int | None = None  # index this shot re-runs, if any
     error: str | None = None  # experiment.run raised (then fault=True, outputs=None)
     id: str | None = None  # the Campaign candidate id this record closed (e.g. "c0007")
     cost: float | None = None  # what the run cost: caller-given, else step's measured run time
     acquisition: float | None = None  # the policy's acquisition value when it proposed this design
+    # The design itself gave no usable result (a dark region, a sample that
+    # decomposes): the reason, for people. Not a fault; the usability model learns it.
+    bad_region: str | None = None
+    # A person answered the halt on this design with "exclude": it isn't run again.
+    excluded: bool = False
     # Timing (epoch seconds / seconds). issued_at: handed out by suggest. started_at /
     # finished_at: around the experiment run under ``step``; ask/tell knows only when
     # the result came back (finished_at). fit_seconds / acquisition_seconds: abbot's
@@ -47,6 +52,11 @@ class Record:
     finished_at: float | None = None
     fit_seconds: float | None = None
     acquisition_seconds: float | None = None
+
+    @property
+    def usable(self) -> bool:
+        """Neither a fault nor a bad-region run: the output models train on it."""
+        return not self.fault and self.bad_region is None
 
     @property
     def duration(self) -> float | None:
@@ -68,7 +78,14 @@ class History:
 
     @property
     def clean(self) -> History:
-        """The records the detector did not reject."""
+        """The usable records: no fault, no bad region. The output models train on
+        these."""
+        return History(records=[r for r in self.records if r.usable])
+
+    @property
+    def judged(self) -> History:
+        """Every record that isn't a fault: the clean ones plus the bad-region runs.
+        The usability model trains on these."""
         return History(records=[r for r in self.records if not r.fault])
 
     @property

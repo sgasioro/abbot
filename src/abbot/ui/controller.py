@@ -83,6 +83,15 @@ class RunController:
         self._sync_status()
         return state
 
+    def resolve(self, answer: str = "retry", *, reason: str | None = None) -> CampaignState:
+        """Answer a halt (see :meth:`Campaign.resolve`); the controller leaves
+        ``halted`` and waits for the next run or suggest."""
+        state = self.campaign.resolve(answer, reason=reason)
+        if self.status == RunStatus.HALTED:
+            self.status = RunStatus.PAUSED if self.can_auto else RunStatus.IDLE
+        self._sync_status()
+        return state
+
     # -- auto mode: controller drives Campaign.step --
 
     def step_once(self) -> CampaignState:

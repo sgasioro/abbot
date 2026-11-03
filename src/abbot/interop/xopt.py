@@ -362,7 +362,7 @@ class GestGeneratorPolicy:
                 **dict(zip(spec.output_names, r.outputs.reshape(-1).tolist())),
             }
             for r in records
-            if not r.fault and r.outputs is not None
+            if r.usable and r.outputs is not None
         ]
         if not rows:
             return

@@ -11,6 +11,7 @@ plain words, what's worth a second look:
 - **Lengthscales.** How far each input must move, as a fraction of its range, for
   an output to change. A very short one usually means the fit is chasing noise or
   an outlier; a very long one, that the output hasn't shown a dependence on it.
+- **Bad regions.** How many runs gave no usable result, and where.
 - **Runs vs. inputs.** Too few runs for the number of inputs leaves the model
   mostly guessing. With many inputs (15 or more) and fewer than 10 runs per input,
   a note points to TuRBO and neural-network surrogates.
@@ -104,6 +105,7 @@ class CheckReport:
     n_failed: int
     n_inputs: int
     model: str | None
+    n_bad_region: int = 0
     fits: list[OutputFit] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
 
@@ -117,7 +119,11 @@ class CheckReport:
         return not self.warnings
 
     def __str__(self) -> str:
-        failed = f" ({self.n_failed} failed)" if self.n_failed else ""
+        failed = ", ".join(
+            f"{k} {what}" for k, what in ((self.n_failed, "failed"), (self.n_bad_region, "in bad regions"))
+            if k
+        )
+        failed = f" ({failed})" if failed else ""
         lines = [(
             f"Campaign check: {self.n_runs} runs{failed}, {self.n_inputs} inputs, "
             f"model {self.model or 'none'}"
@@ -145,21 +151,43 @@ class CheckReport:
     __repr__ = __str__
 
 
+def _bad_region_text(history: History, spec: ProblemSpec, steps: list[int]) -> str:
+    """Each bad-region reason with how many runs gave it, and the range of the
+    inputs over those runs."""
+    from collections import Counter
+
+    reasons = Counter(history.records[i].bad_region for i in steps)
+    text = ", ".join(f"{k} ×{v}" if v > 1 else str(k) for k, v in reasons.items())
+    X = torch.stack([history.records[i].candidate.double().reshape(-1) for i in steps])
+    lo, hi = X.min(dim=0).values, X.max(dim=0).values
+    names = spec.variable_names
+    where = ", ".join(
+        f"{names[j]} {lo[j]:.3g}" if lo[j] == hi[j] else f"{names[j]} {lo[j]:.3g}–{hi[j]:.3g}"
+        for j in range(len(names))
+    )
+    return f"{text}; at {where}"
+
+
 def check(history: History, spec: ProblemSpec, model: Model | None) -> CheckReport:
     """Diagnose ``model`` (fitted to ``history``'s clean runs, as
     ``Campaign.current_model()`` is) against the data. See the module docstring."""
     clean = history.clean
-    steps = [i for i, r in enumerate(history.records) if not r.fault]
+    steps = [i for i, r in enumerate(history.records) if r.usable]
+    bad = [i for i, r in enumerate(history.records) if r.bad_region is not None]
     n, d = len(clean), len(spec.inputs)
     report = CheckReport(
-        n_runs=len(history), n_failed=len(history) - n, n_inputs=d,
-        model=type(model).__name__ if model is not None else None,
+        n_runs=len(history), n_failed=len(history) - n - len(bad), n_inputs=d,
+        model=type(model).__name__ if model is not None else None, n_bad_region=len(bad),
     )
     add = report.findings.append
 
     if len(history) and report.n_failed / len(history) > 0.2:
         add(Finding("note", f"{report.n_failed} of {len(history)} runs failed or were "
                             "rejected; they're left out of the model."))
+    if bad:
+        add(Finding("note", f"{len(bad)} of {len(history)} runs gave no usable result "
+                            f"(bad regions: {_bad_region_text(history, spec, bad)}); "
+                            "proposals steer away from them."))
     if n < d + 1:
         add(Finding("warning", f"{n} clean runs for {d} inputs: the model is mostly "
                                "guessing until there are more runs than inputs."))

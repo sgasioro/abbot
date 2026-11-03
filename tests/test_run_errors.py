@@ -81,7 +81,8 @@ def test_run_campaign_raises_and_resumes_after_fault(tmp_path):
     resumed = Campaign(_spec(), store=store)
     assert len(resumed.history) == 2
     assert all(r.fault and r.error for r in resumed.history.records)
-    assert resumed.halted is None  # a fresh process starts un-halted
+    # The halt is saved: a rebuilt campaign waits for an answer.
+    assert "serial port" in resumed.halted and resumed.halted_on == [{"temp": 30.0}]
 
 
 def test_pre_run_check_blocks_before_running():
