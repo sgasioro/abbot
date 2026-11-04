@@ -350,12 +350,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
        region; buttons in the UI); `Verdict(bad_region=)` records runs that give
        nothing usable, and a Dirichlet GP classifier steers proposals and
        recommendations away from them. Later: check shots at a known-good design.
-  6. **blop backend:** a `Campaign`-backed blop `Optimizer` for Bluesky
-     beamlines (`abbot[blop]`; see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)).
-  7. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that
+  6. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that
      writes the spec / goal. The UI stays the run console and the
      human-in-the-loop entry point.
-  8. **GPU support:** one setting (`Campaign(..., device="cuda")`, also in
+  7. **GPU support:** one setting (`Campaign(..., device="cuda")`, also in
      `run_campaign` and the UI) that fits models and runs policies on the GPU,
      while the history, saved files, experiments and the UI stay on the CPU (designs
      come back as CPU tensors). Today everything runs on the CPU: the spec helpers
@@ -374,5 +372,9 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   benchmark needs (mat_finder regret-parity, continuous BAX). BAXstics: push the
   `abbot-port` branch, bump its abbot pin, and merge to its main once abbot is
   public.
+  blop backend: a `Campaign`-backed blop `Optimizer` for Bluesky beamlines
+  (`abbot[blop]`; see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)), built when a
+  beamline will use it. It is a thin adapter (blop's `Optimizer` protocol is a few
+  methods), so it stays cheap to add later.
 - **Later** — output constraints, nn-bax productionization (upstream to Xopt where
   it fits).

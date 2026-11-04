@@ -127,6 +127,6 @@ algorithms that are self-contained and run on their own data.
 | Neighbour | Status |
 |---|---|
 | Xopt | `abbot.interop.xopt` (`abbot[xopt]`): abbot in Xopt's loop, and Xopt's generators in abbot's loop |
-| blop | Planned: a `Campaign`-backed blop `Optimizer`. abbot requires BoTorch 0.18, the same line as blop and Ax |
+| blop | Planned, deferred until a beamline will use it: a `Campaign`-backed blop `Optimizer`. abbot requires BoTorch 0.18, the same line as blop and Ax |
 | Ax | None planned; complementary rather than integrated |
 | bluesky-adaptive | Not planned unless blop doesn't cover a need |
