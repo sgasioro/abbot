@@ -72,17 +72,46 @@ core install, so it is not a home for labs that don't run a RunEngine.
 
 ## Why not extend one of them
 
-- **Xopt**: composite measurements and per-shot supervision need changes to its
-  data model, not a new generator, and its focus is accelerators and beamlines.
-  Interop yes; housing every lab use case there is not its aim.
-- **Ax**: built around objectives and trials, which BAX goals and raw composite
-  observations don't map onto.
-- **blop**: Bluesky-only by design.
+Several tools in this space coexist, each shaped by its users. abbot's algorithms
+would mostly fit elsewhere; what doesn't fit is the campaign layer around them,
+which in each neighbor is shared infrastructure that its other pieces rely on.
 
-The BAX algorithms on their own are portable and could live elsewhere. What
-needs abbot is owning the loop: raw observation → `evaluate` → outputs with the
-observation kept; candidate ids, the outstanding queue, retry/halt, supervisors
-and resume; and a UI that needs no EPICS, Bluesky or Badger.
+**Xopt.** A new algorithm is a new generator. What abbot needs would instead
+change the parts every generator, and Badger, sit on:
+- **The data model.** Xopt's data is a DataFrame of scalars. abbot keeps each
+  run's raw observation (a spectrum, posterior samples), caches its analysis, and
+  can re-score the whole history when the target changes (`Rescore`).
+- **The spec.** Sources with a target in physical units, labeled categories,
+  log-scaled variables, outputs that are observed but not optimized, named output
+  constraints and per-variable travel limits. Xopt's spec, VOCS, is now the
+  gest-api standard shared across projects, so extending it is a standards
+  question rather than a single project's change.
+- **The loop.** Candidate ids, an outstanding queue and a retry queue; halts that
+  a person resolves (retry, exclude, bad region) and that survive restarts; a
+  verdict on every run. Xopt's loop stops on an error or skips the run
+  (`strict`).
+- **Behavior across all policies.** The usability classifier, feasibility
+  weighting, travel limits and pending designs apply under every policy, BAX
+  included. In Xopt each generator owns its acquisition, so the same behavior
+  would be repeated in each one.
+- **The hand-over.** A recommendation at the target, with whether it was run
+  there and its chance of being usable and feasible.
+
+Its users are also different: Badger is a control-room tool over control
+systems; abbot's UI is for a scientist entering measurements at a bench.
+
+**Ax.** Built around objectives and trials, which BAX goals and raw composite
+observations don't map onto.
+
+**blop.** Bluesky-only by design.
+
+**What could travel.** Pieces that fit a neighbor as an algorithm or a model, and
+could be offered upstream where wanted: the BAX strategies and arbitrary goals
+(as Xopt BAX algorithms), multi-fidelity entropy search, and the prior-mean and
+correlated-output model constructors. They would arrive without abbot's spec,
+so physical units, labels and sources would be translated by hand there. Interop
+keeps the tools connected: abbot runs as an Xopt generator and uses Xopt's
+generators through gest-api.
 
 ## Build or borrow
 
