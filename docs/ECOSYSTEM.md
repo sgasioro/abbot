@@ -2,7 +2,8 @@
 
 Where abbot sits next to BoTorch, Ax, Xopt and Bluesky/blop, what it owns, and
 what it deliberately leaves to them. Neighbor details were checked against
-ax-platform 1.3.1, xopt 3.2.2 and blop 1.1.0 (October 2026); they move, so
+ax-platform 1.3.1, xopt 3.2.2 and blop 1.1.0 (October 2026; the Xopt details
+were re-checked against its main branch in November 2026); they move, so
 re-check before relying on a specific claim.
 
 ## Position
@@ -44,7 +45,8 @@ objectives and trials; BAX goals, posterior-sample algorithm execution and raw
 observations are outside that model.
 
 **Xopt.** Accelerator- and beamline-driven. Problems are a VOCS, data is a
-DataFrame of scalars, generators `generate(n)` from it. Its `BaxGenerator` is
+DataFrame of scalars, and generators follow the gest-api `suggest(n)` / `ingest`
+protocol. Its `BaxGenerator` is
 InfoBAX only (expected information gain over `GridOptimize` /
 `CurvatureGridOptimize`), without discrete variables. abbot's BAX is broader
 (InfoBAX, MeanBAX, SwitchBAX; arbitrary goals; finite candidate sets; greedy
