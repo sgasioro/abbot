@@ -138,7 +138,7 @@ class RunController:
     # A UI (or any periodic driver) calls start() then tick() on a timer and reads
     # is_running / status. This is the single source of truth for "are we running";
     # callers no longer keep a parallel flag or poke status directly. tick() is the
-    # one-step-at-a-time analogue of run()'s loop body.
+    # one-step-at-a-time analog of run()'s loop body.
 
     @property
     def is_running(self) -> bool:

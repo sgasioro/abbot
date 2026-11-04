@@ -298,7 +298,7 @@ class OutputSpec(BaseModel):
 
     ``min_val`` / ``max_val`` make the output a constraint, in its raw units: a
     design is only acceptable if the output lands within them (``purity`` at least
-    0.9). Policies steer towards designs likely to satisfy every constraint, and the
+    0.9). Policies steer toward designs likely to satisfy every constraint, and the
     recommendation only picks designs likely to. For a bound on a combination of
     outputs, use ``ProblemSpec.output_constraints``.
     """

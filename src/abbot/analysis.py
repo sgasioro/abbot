@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 
 def _counts(r, spec: ProblemSpec) -> bool:
-    """A record counts towards the best so far: clean, measured, and satisfying
+    """A record counts toward the best so far: clean, measured, and satisfying
     every output constraint."""
     if not r.usable or r.outputs is None:
         return False

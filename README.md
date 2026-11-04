@@ -196,19 +196,24 @@ and **ask/tell as the public contract**.
 ## Local setup
 
 ```bash
-# Option A — conda (reproducible; CPU by default):
+# Option A — conda:
 conda env create -f environment.yml
 conda activate abbot
-pip install -e '.[ui,dev]'    # editable install + UI (nicegui, plotly) + dev (pytest, ruff)
 
-# Option B — venv + pip (3.11 or 3.12; pyproject requires <3.13):
+# Option B — venv (Python 3.11 or 3.12; pyproject requires <3.13):
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e '.[ui,dev]'    # pulls torch/botorch/pydantic/gest-api + nicegui/plotly
+
+# Then, either way: torch first, from PyTorch's index, then abbot.
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -e '.[ui,dev]'    # editable install + UI (nicegui, plotly) + dev (pytest, ruff)
 ```
 
-`gest-api` is on PyPI, so no git/`--no-deps` tricks are needed. Torch installs the
-CPU wheel by default (all the UI and toy tests need); for GPU, follow the comment
-in `environment.yml`.
+The CPU build of torch is all the UI and the tests need. For an NVIDIA GPU,
+install a CUDA build instead, e.g. `pip install torch --index-url
+https://download.pytorch.org/whl/cu128`; the right tag for your driver is listed
+at [pytorch.org/get-started](https://pytorch.org/get-started). Installing torch
+with pip from PyTorch's index is more reliable than conda's CUDA packages.
+Everything else (BoTorch, `gest-api`, ...) comes from PyPI with `pip install -e`.
 
 ## Examples
 
@@ -289,7 +294,7 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 - A run-level JSON format that includes cached SBI payloads.
 
 **Ease of use is a priority.** For each core workflow we periodically set the
-same problem up in abbot and in neighbouring tools, and compare how much a
+same problem up in abbot and in neighboring tools, and compare how much a
 newcomer must learn and get right by hand, to find what to improve in abbot.
 
 ## License

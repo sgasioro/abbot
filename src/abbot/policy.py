@@ -739,7 +739,7 @@ def default_policy(spec: ProblemSpec) -> Policy:
 class _SumPosteriorStd(torch.nn.Module):
     """Acquisition: sum over outputs of the posterior std at each candidate.
 
-    A minimal multi-output analogue of botorch's PosteriorStandardDeviation; used
+    A minimal multi-output analog of botorch's PosteriorStandardDeviation; used
     by UncertaintySampling when the model has >1 output. Expects the standard
     acquisition input shape ``(b, q, d)`` and returns ``(b,)``.
     """
@@ -1103,7 +1103,7 @@ class BAXPolicy:
     def _toward(self, grid, best: int, acq, reach) -> int:
         """With travel limits: the best candidate in reach, or if every one in reach
         is measured or in flight, the one nearest the best candidate overall, as a
-        waypoint towards it (a repeat measurement)."""
+        waypoint toward it (a repeat measurement)."""
         open_ = reach & torch.isfinite(acq)
         if open_.any():
             masked = acq.clone()
@@ -1112,7 +1112,7 @@ class BAXPolicy:
         span = (grid.max(dim=0).values - grid.min(dim=0).values).clamp_min(1e-12)
         dist = ((grid - grid[best]) / span).norm(dim=-1)
         dist[~reach] = float("inf")
-        self._warn("every candidate in reach is measured; stepping towards the best one")
+        self._warn("every candidate in reach is measured; stepping toward the best one")
         return int(dist.argmin())
 
     @staticmethod

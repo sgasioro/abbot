@@ -496,7 +496,7 @@ class Candidate(dict):
 
 @dataclass
 class _InFlight:
-    """A design handed out by ``suggest`` and not yet ingested, failed or cancelled."""
+    """A design handed out by ``suggest`` and not yet ingested, failed or canceled."""
 
     id: str
     x: torch.Tensor
@@ -847,7 +847,7 @@ class Campaign:
         item = self._outstanding_item(id)
         del self._inflight[item.id]
         self._save_queue()
-        logger.info("cancelled %s at %s", item.id, self._to_dict(item.x))
+        logger.info("canceled %s at %s", item.id, self._to_dict(item.x))
         return self.state()
 
     def resolve(self, answer: str = "retry", *, reason: str | None = None) -> CampaignState:
@@ -1590,7 +1590,7 @@ class Campaign:
         except KeyError:
             raise KeyError(
                 f"{id!r} is not outstanding (outstanding: {list(self._inflight)}); "
-                "it may already have been ingested, failed or cancelled."
+                "it may already have been ingested, failed or canceled."
             ) from None
 
     def _candidate(self, item: _InFlight) -> Candidate:

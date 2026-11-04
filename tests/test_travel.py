@@ -217,6 +217,6 @@ def test_other_policies_stay_in_reach(policy):
         campaign.step(_Bowl())
     _assert_in_reach(spec, _walk(campaign))
     if policy == "BAX":  # a sparse grid: it runs out of new points in reach, and walks on
-        assert "stepping towards" in campaign.last_warning
+        assert "stepping toward" in campaign.last_warning
     else:
         assert campaign.last_warning is None

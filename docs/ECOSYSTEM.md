@@ -1,7 +1,7 @@
 # abbot in the ecosystem
 
 Where abbot sits next to BoTorch, Ax, Xopt and Bluesky/blop, what it owns, and
-what it deliberately leaves to them. Neighbour details were checked against
+what it deliberately leaves to them. Neighbor details were checked against
 ax-platform 1.3.1, xopt 3.2.2 and blop 1.1.0 (October 2026); they move, so
 re-check before relying on a specific claim.
 
@@ -27,7 +27,7 @@ that it will be.
 | Campaign: problem spec, goals, ask/tell with ids, outstanding and retry queues, supervision, persistence, lab UI | **abbot** | This is abbot |
 | Running evaluations: parallel evaluators, devices, plans, queues | Xopt (evaluator, Badger GUI), Bluesky (RunEngine, queue server), or abbot's own blocking loop and UI | abbot proposes; they execute |
 
-## Neighbours
+## Neighbors
 
 **BoTorch.** A library, not a loop: no problem spec, candidate ids, queue,
 resume or fault handling. abbot adds the campaign layer, the BAX family and
@@ -84,7 +84,7 @@ and resume; and a UI that needs no EPICS, Bluesky or Badger.
 
 ## Build or borrow
 
-From the October 2026 audit against these neighbours (internal). The rule:
+From the October 2026 audit against these neighbors (internal). The rule:
 build natively what has to work with abbot's own pieces (the spec, sources and
 cost, BAX goals, recommendation at the target, guardrails, the UI); borrow
 algorithms that are self-contained and run on their own data.
@@ -115,16 +115,16 @@ algorithms that are self-contained and run on their own data.
 - **Not ours to build**: heavy infrastructure with little BO in it: SQL storage
   and automatic model selection (Ax); hardware orchestration and device control
   (Bluesky, Xopt evaluators).
-- **Adapters stay thin** and live in `abbot.interop`, one per neighbour, each
+- **Adapters stay thin** and live in `abbot.interop`, one per neighbor, each
   behind an optional extra.
 - **UX is a priority, and gets checked.** abbot aims for specs a scientist can
-  read and safe behaviour by default, and periodically sets its workflows up
-  alongside the neighbours to find what's awkward in its own (see the README
+  read and safe behavior by default, and periodically sets its workflows up
+  alongside the neighbors to find what's awkward in its own (see the README
   roadmap).
 
 ## Interop status
 
-| Neighbour | Status |
+| Neighbor | Status |
 |---|---|
 | Xopt | `abbot.interop.xopt` (`abbot[xopt]`): abbot in Xopt's loop, and Xopt's generators in abbot's loop |
 | blop | Planned, deferred until a beamline will use it: a `Campaign`-backed blop `Optimizer`. abbot requires BoTorch 0.18, the same line as blop and Ax |

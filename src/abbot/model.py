@@ -13,7 +13,7 @@ construction (correlated ``MultiTaskGP``/LCM, per-shot posterior variance via
 loop or the policy. NN surrogates are botorch ``EnsembleModel`` subclasses (see
 ``abbot.models.ensemble``), not a parallel interface.
 
-Modelled on Xopt's ``ModelConstructor`` ABC.
+Modeled on Xopt's ``ModelConstructor`` ABC.
 """
 
 from __future__ import annotations
@@ -357,7 +357,7 @@ class MultiSourceGPConstructor:
       (positive semi-definite) for whole numbers: a fitted power near 0.5 gives
       negative variances. ``linear_truncated=False`` instead multiplies
       the design kernel by a per-source kernel, with ``iteration`` naming a source
-      whose results settle towards a limit along it (an exponential-decay kernel;
+      whose results settle toward a limit along it (an exponential-decay kernel;
       iteration counts, epochs).
     - **One unordered source** (related systems: different codes, simulation vs
       experiment, data from an earlier system as a warm start): a ``MultiTaskGP``
