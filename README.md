@@ -24,19 +24,19 @@ overrides. A web UI runs a campaign with no code. Built on [BoTorch](https://bot
 abbot uses its models and standard acquisition functions, and adds goal-driven
 (BAX) acquisitions and the campaign around them.
 
-**Status: alpha.** APIs marked *Stable* in [`docs/API.md`](docs/API.md) are safe to
+**Status: alpha.** APIs marked *Stable* in [`docs/API.md`](https://github.com/sgasioro/abbot/blob/main/docs/API.md) are safe to
 build on; *Provisional* ones may change between releases. Issues and pull requests
 are welcome.
 
 ## Install
 
-abbot isn't on PyPI yet; install it from GitHub. It needs Python 3.11 or later (tested on 3.11–3.13).
-Install torch first, from PyTorch's index (the CPU build is enough; see
-[Local setup](#local-setup) for a GPU):
+abbot needs Python 3.11 or later (tested on 3.11–3.13). Install torch first, from
+PyTorch's index (the CPU build is enough; see [Local setup](https://github.com/sgasioro/abbot#local-setup)
+for a GPU):
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "abbot[ui] @ git+https://github.com/sgasioro/abbot"
+pip install "abbot[ui]"
 ```
 
 The `ui` extra adds the web frontend; `xopt` and `sbi` add those integrations.
@@ -108,10 +108,10 @@ model_constructor)` to choose your own. A few variations:
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
 
-See [`docs/HOWTO.md`](docs/HOWTO.md) for "how do I…" answers, [`docs/API.md`](docs/API.md)
-for the stability contract (what's safe to build on), [`examples/`](examples/)
+See [`docs/HOWTO.md`](https://github.com/sgasioro/abbot/blob/main/docs/HOWTO.md) for "how do I…" answers, [`docs/API.md`](https://github.com/sgasioro/abbot/blob/main/docs/API.md)
+for the stability contract (what's safe to build on), [`examples/`](https://github.com/sgasioro/abbot/tree/main/examples)
 for a runnable notebook per capability, and
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how abbot is put together
+[`docs/ARCHITECTURE.md`](https://github.com/sgasioro/abbot/blob/main/docs/ARCHITECTURE.md) for how abbot is put together
 (modules, the seams an application plugs into, the session API).
 
 ## Where abbot fits
@@ -122,7 +122,7 @@ beamline, a bench), and good tools already exist for some of them. abbot aims to
 cover the gaps, following the [gest-api](https://pypi.org/project/gest-api/)
 generator standard to promote interoperability and a coherent ecosystem. As it
 develops, the emphasis is on what can be shared with neighboring tools and what
-is better kept separate; [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) has a first pass
+is better kept separate; [`docs/ECOSYSTEM.md`](https://github.com/sgasioro/abbot/blob/main/docs/ECOSYSTEM.md) has a first pass
 at that split.
 
 ## Local setup
@@ -149,9 +149,9 @@ Everything else (BoTorch, `gest-api`, ...) comes from PyPI with `pip install -e`
 
 ## Examples
 
-Five runnable notebooks in [`examples/`](examples/) (install `pip install -e
+Five runnable notebooks in [`examples/`](https://github.com/sgasioro/abbot/tree/main/examples) (install `pip install -e
 '.[examples]'`), one per capability: lab BO, multi-objective (`ParetoBO`),
-composite-SBI, goal-driven BAX, and multi-fidelity. See [`examples/README.md`](examples/README.md).
+composite-SBI, goal-driven BAX, and multi-fidelity. See [`examples/README.md`](https://github.com/sgasioro/abbot/blob/main/examples/README.md).
 
 ## Run the frontend
 
@@ -222,7 +222,7 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 - A BAX-shaped multi-fidelity goal; noise that varies with the source.
 - Check shots at a known-good design.
 - A Bluesky route: abbot as a blop `Optimizer` backend
-  (see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)).
+  (see [`docs/ECOSYSTEM.md`](https://github.com/sgasioro/abbot/blob/main/docs/ECOSYSTEM.md)).
 - A run-level JSON format that includes cached SBI payloads.
 
 **Ease of use is a priority.** For each core workflow we periodically set the
@@ -232,7 +232,7 @@ newcomer must learn and get right by hand, to find what to improve in abbot.
 ## Citing
 
 If abbot helps your work, please cite the repository (see
-[`CITATION.cff`](CITATION.cff)). Its goal-driven policies follow:
+[`CITATION.cff`](https://github.com/sgasioro/abbot/blob/main/CITATION.cff)). Its goal-driven policies follow:
 
 - W. Neiswanger, K. A. Wang and S. Ermon, "Bayesian Algorithm Execution:
   Estimating Computable Properties of Black-box Functions Using Mutual
@@ -249,4 +249,4 @@ and its models and standard acquisitions come from BoTorch: M. Balandat *et al.*
 
 ## License
 
-Apache-2.0; see [`LICENSE`](LICENSE).
+Apache-2.0; see [`LICENSE`](https://github.com/sgasioro/abbot/blob/main/LICENSE).
