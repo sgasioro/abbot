@@ -39,7 +39,8 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install "abbot[ui]"
 ```
 
-The `ui` extra adds the web frontend; `xopt` and `sbi` add those integrations.
+The `ui` extra adds the web frontend, `mcp` the agent server; `xopt` and `sbi` add
+those integrations.
 
 ## Quickstart
 
@@ -107,6 +108,10 @@ model_constructor)` to choose your own. A few variations:
   region as unusable, and proposals steer away from it.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
+- **From an AI agent** — `abbot-mcp --dir ~/abbot-campaigns` (with the `mcp` extra)
+  serves named, saved campaigns over MCP, so an agent can set one up, suggest,
+  record results and hand a halt back to you. See
+  [Agent access](https://github.com/sgasioro/abbot/blob/main/docs/API.md#agent-access-mcp).
 
 See [`docs/HOWTO.md`](https://github.com/sgasioro/abbot/blob/main/docs/HOWTO.md) for "how do I…" answers, [`docs/API.md`](https://github.com/sgasioro/abbot/blob/main/docs/API.md)
 for the stability contract (what's safe to build on), [`examples/`](https://github.com/sgasioro/abbot/tree/main/examples)
@@ -202,15 +207,15 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   classifier, stopping rules, and `campaign.check()` diagnostics.
 - Xopt interop both ways: abbot as an Xopt generator, and Xopt generators (TuRBO,
   Nelder-Mead, ...) in abbot's loop.
-- The NiceGUI lab frontend (`python -m abbot.ui`).
+- The NiceGUI lab frontend (`python -m abbot.ui`), with output ranges, travel
+  limits, sources, a model choice and `check()`.
+- An MCP server (`abbot-mcp`) for agents, over named campaigns saved on disk.
 
 **Next:**
-1. **The UI catches up with the engine:** constraints, travel limits, sources,
-   `check()`, and a model choice in the builder.
-2. **Agent setup:** an MCP server over `Campaign`, then a setup assistant that
-   writes the spec and goal. The UI stays the run console and the
+1. **A setup assistant:** an agent that writes the spec and goal from a
+   description of the experiment. The UI stays the run console and the
    human-in-the-loop entry point.
-3. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
+2. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
    and runs policies on the GPU, while the history, saved files, experiments and
    the UI stay on the CPU. The default stays CPU, since lab-scale GPs are usually
    faster there. CUDA only: abbot fits in float64, which Apple's MPS doesn't

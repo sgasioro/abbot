@@ -40,6 +40,7 @@ is shown.
 | save progress and resume after a crash | `Campaign(spec, store=DataStore("runs/today"))`; building it again on the same folder resumes, outstanding designs included. [Outstanding candidates](API.md#outstanding-candidates) |
 | catch bad shots and a drifting instrument | `supervisor=standard_supervisor(spec.bounds_tensor(), detector)` from `abbot.supervision`; for your own mix, `Supervisor(faults=[per_shot(detector), ...])`. [Supervisors](API.md#supervisors-faults-and-stops) |
 | use the web interface | `python -m abbot.ui`. [README](../README.md#run-the-frontend) |
+| let an AI agent run the campaign | `pip install "abbot[mcp]"`, then add `abbot-mcp --dir ~/abbot-campaigns` as an MCP server in the agent's client. [Agent access](API.md#agent-access-mcp) |
 
 ## Knowing when to stop
 
