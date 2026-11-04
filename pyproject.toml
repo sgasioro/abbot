@@ -5,13 +5,14 @@ description = "Goal-driven Bayesian experimental design for the lab."
 authors = [{name = "Sean Gasiorowski"}]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11"
 readme = "README.md"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
 ]
 

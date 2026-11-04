@@ -30,7 +30,7 @@ are welcome.
 
 ## Install
 
-abbot isn't on PyPI yet; install it from GitHub. It needs Python 3.11 or 3.12.
+abbot isn't on PyPI yet; install it from GitHub. It needs Python 3.11 or later (tested on 3.11–3.13).
 Install torch first, from PyTorch's index (the CPU build is enough; see
 [Local setup](#local-setup) for a GPU):
 
@@ -132,7 +132,7 @@ at that split.
 conda env create -f environment.yml
 conda activate abbot
 
-# Option B — venv (Python 3.11 or 3.12; pyproject requires <3.13):
+# Option B — venv (Python 3.11 or later):
 python3.12 -m venv .venv && source .venv/bin/activate
 
 # Then, either way: torch first, from PyTorch's index, then abbot.
