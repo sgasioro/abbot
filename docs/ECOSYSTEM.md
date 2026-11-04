@@ -15,10 +15,13 @@ replicates reduced by an `evaluate`). It runs a supervised ask/tell loop that
 survives flaky experiments, and ships a lab UI light enough to start a campaign
 in minutes.
 
-It plugs into the orchestrators people already use through thin adapters in
-`abbot.interop`, as a peer rather than a component. Algorithms that fit another
-project naturally may be offered upstream; nothing is written on the assumption
-that it will be.
+abbot grew out of a need that was being met by several scattered,
+problem-specific packages. Labs work in different modes (a control room, a
+beamline, a bench), and neighboring tools already serve some of them well, so the
+emphasis as abbot develops is on what can be shared with them and what is better
+kept separate. It follows the gest-api generator standard and connects to the
+orchestrators people already use through thin adapters in `abbot.interop`.
+Algorithms that fit another project naturally may be offered upstream.
 
 ## Layers
 
