@@ -25,7 +25,8 @@ abbot uses its models and standard acquisition functions, and adds goal-driven
 (BAX) acquisitions and the campaign around them.
 
 Already using Xopt? abbot runs as an Xopt generator and can use Xopt's generators
-in its own loop. See [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) for how abbot fits
+in its own loop, through [gest-api](https://pypi.org/project/gest-api/), the shared
+generator standard Xopt follows. See [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) for how abbot fits
 next to BoTorch, Ax, Xopt and Bluesky.
 
 **Status: alpha.** APIs marked *Stable* in [`docs/API.md`](docs/API.md) are safe to
