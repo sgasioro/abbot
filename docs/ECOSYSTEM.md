@@ -37,11 +37,11 @@ composite measurements on top.
 failure marking, early stopping, JSON/database snapshots and Pareto fronts, with
 a large team behind it. For single- or multi-objective optimization of scalar
 measurements, Ax is a good answer. abbot still covers standard BO (`SimpleBO`,
-`ParetoBO`, and multi-fidelity as it lands) so a lab never has to leave it: the
+`ParetoBO`, multi-fidelity) so a lab never has to leave it: the
 overhead of switching tools pushes people to a hand-rolled BoTorch script, not
 to Ax. Ax's model is
 objectives and trials; BAX goals, posterior-sample algorithm execution and raw
-observations do not fit it without fighting the framework.
+observations are outside that model.
 
 **Xopt.** Accelerator- and beamline-driven. Problems are a VOCS, data is a
 DataFrame of scalars, generators `generate(n)` from it. Its `BaxGenerator` is
@@ -74,7 +74,7 @@ core install, so it is not a home for labs that don't run a RunEngine.
   data model, not a new generator, and its focus is accelerators and beamlines.
   Interop yes; housing every lab use case there is not its aim.
 - **Ax**: built around objectives and trials, which BAX goals and raw composite
-  observations don't map onto; it also pins a narrow BoTorch range.
+  observations don't map onto.
 - **blop**: Bluesky-only by design.
 
 The BAX algorithms on their own are portable and could live elsewhere. What
@@ -84,7 +84,7 @@ and resume; and a UI that needs no EPICS, Bluesky or Badger.
 
 ## Build or borrow
 
-From the October 2026 audit against these neighbors (internal). The rule:
+From comparing abbot with these neighbors (October 2026). The rule:
 build natively what has to work with abbot's own pieces (the spec, sources and
 cost, BAX goals, recommendation at the target, guardrails, the UI); borrow
 algorithms that are self-contained and run on their own data.

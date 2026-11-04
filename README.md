@@ -3,14 +3,16 @@
 **A goal-driven (a to b) Bayesian guidance (BO) framework (bot) targeting lab experiments.**
 
 
-`abbot` is an active-learning-for-labs layer on top of [BoTorch](https://botorch.org).
-It is **not** a competing optimization framework: BoTorch already provides the
-surrogate-agnostic `Model`/`Posterior` layer, the BO/uncertainty-sampling loop
-primitives, async/batch, and serialization. `abbot` adds the two things that are
-genuinely ours on top of that substrate:
+`abbot` runs experiment campaigns on top of [BoTorch](https://botorch.org): BoTorch
+supplies the models and acquisition functions, and abbot supplies the campaign
+around them. It is built for lab work, where:
 
-1. the **composite-SBI objective + cached-posterior (`aux`) layer**, and
-2. the slow / human-in-the-loop / fault-supervised **lab-experiment orchestration**.
+1. **the goal isn't always an optimum:** besides standard and multi-objective BO,
+   goal-driven BAX finds a region, a level set or the best point per band;
+2. **a measurement isn't always a number:** composite objectives reduce a spectrum,
+   replicates or an SBI posterior to outputs, keeping the raw observation;
+3. **runs are slow, supervised and sometimes fail:** an ask/tell loop with retries,
+   halts a person resolves, bad regions, resume, and a web UI.
 
 It grew out of several lab projects that each reimplemented the same method —
 surrogate + acquisition/BAX + propose→evaluate→retrain — and puts it behind one
@@ -145,8 +147,7 @@ or `Campaign(spec)`; the policy, model, and space-filling seed designs default f
 the spec (`default_policy` / `default_constructor` / `default_initial_designs`), and
 each is an overridable keyword. The **NiceGUI** web client (`abbot[ui]`, `python -m abbot.ui`) is a thin
 layer over `Campaign`, laid out as a **single dashboard**: left column = a
-**type-polymorphic variable editor** (Continuous | Enumerated — the Badger
-differentiator) + run controls; right column = live visualization. Two run modes
+**type-polymorphic variable editor** (Continuous | Enumerated) + run controls; right column = live visualization. Two run modes
 share one `RunController`: **manual** (suggest → enter measurement → ingest) and
 **mock auto-run** (a `MockAnalyticExperiment` drives `Campaign.step` on a timer with
 run/pause/step/stop). Manual vs. auto is a UI-driver concern, kept out of the core.
@@ -188,8 +189,8 @@ physical measurements, no caller-side negation. `run_campaign` returns a
 `CampaignResult` whose `.recommended` is a single index (scalar) or the Pareto set
 (multi-objective); `.best` is the single-objective convenience.
 
-Three design properties are preserved from day one so agent integration is later
-a ~day of wrapper work (not an architecture change): **headless-first**,
+Three design properties are kept so that agents can drive abbot without
+architecture changes: **headless-first**,
 **typed JSON-serializable `ProblemSpec` + run state** (no live-object references),
 and **ask/tell as the public contract**.
 

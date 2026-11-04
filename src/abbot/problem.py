@@ -7,7 +7,7 @@ the (future) web frontend, and any agent driver. It is pydantic so that
 rather than a format bridge.
 
 Design spaces are **type-polymorphic from day one** (Continuous | Integer |
-Enumerated | Structured) — the exact axis Badger is rigid on, and hence a differentiator.
+Enumerated | Structured).
 Each Domain maps onto a gest-api variable type for interop (see interop/xopt.py).
 
 NB: this is the frontend/interop-facing spec. The in-memory numeric bounds that
