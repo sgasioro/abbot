@@ -50,9 +50,10 @@ observations are outside that model.
 
 **Xopt.** Accelerator- and beamline-driven. Problems are a VOCS, data is a
 DataFrame of scalars, and generators follow the gest-api `suggest(n)` / `ingest`
-protocol. Its `BaxGenerator` is
-InfoBAX only (expected information gain over `GridOptimize` /
-`CurvatureGridOptimize`), without discrete variables, and the
+protocol. Its `BaxGenerator`
+uses the InfoBAX acquisition (expected information gain), without discrete
+variables; its built-in algorithms are grid-based, others plug in as `Algorithm`
+subclasses, and the
 [`bax-algorithms`](https://pypi.org/project/bax-algorithms/) package (xopt-org)
 adds further BAX algorithms for Xopt generators. abbot's BAX covers InfoBAX,
 MeanBAX and SwitchBAX, arbitrary goals, finite candidate sets and greedy
