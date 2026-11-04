@@ -1,10 +1,20 @@
 [project]
 name = "abbot"
 version = "0.1.0"
-description = "Active-learning-for-labs layer on top of BoTorch: a Bayesian guide for lab experiments (from A to B)."
+description = "Goal-driven Bayesian experimental design for the lab."
 authors = [{name = "Sean Gasiorowski"}]
-requires-python = ">=3.11,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
 readme = "README.md"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
 
 # Core deps: BoTorch is the surrogate substrate (its Model/Posterior ABC IS the
 # surrogate-agnostic layer). gest-api (pydantic-only) carries the VOCS/Generator
@@ -17,12 +27,16 @@ dependencies = [
     "gest-api",
 ]
 
+[project.urls]
+Repository = "https://github.com/sgasioro/abbot"
+Issues = "https://github.com/sgasioro/abbot/issues"
+
 [project.optional-dependencies]
 # Orchestrator / Badger path. Core never hard-depends on Xopt.
 xopt = ["xopt>=3.2"]
-# SBI design-optimization app (M2).
+# Simulation-based inference as a composite objective.
 sbi = ["sbi>=0.22,<0.23", "pyro-ppl>=1.9"]
-# Web frontend (M3). NiceGUI is FastAPI-based; plotly for live progress plots.
+# Web frontend. NiceGUI is FastAPI-based; plotly for live progress plots.
 ui = ["nicegui>=1.4", "plotly>=5"]
 dev = ["pytest>=8", "ruff>=0.8"]
 # Example notebooks (examples/*.ipynb) + headless execution for the smoke test.

@@ -45,7 +45,7 @@ on them.
   `drift_monitor`, `consecutive_fault_monitor`, `standard_supervisor`; the stop
   rules `cost_cap`, `acquisition_monitor`, `target_reached`, `no_improvement`,
   `min_runs` (`Verdict.stop`); `all_of`, `any_of`, and `bind`. The default fault thresholds were calibrated on
-  sbido's scattering benchmark.
+  one small-angle scattering benchmark; treat them as starting points.
 - **Prior means** — `default_constructor(spec, prior_mean=, fit_prior_scale=)`
   and the constructors' `prior_mean=`. New.
 - **Correlated outputs** — `default_constructor(spec, correlated=True)`,
@@ -245,7 +245,7 @@ not to labels or sources.
   (`spec.reach(position)`, passed to them as `within=`): BO, ParetoBO and
   uncertainty sampling optimize over it, and BAX keeps to grid points in it. Each
   step is chosen afresh after the last measurement, greedily: the best design in
-  reach, not the one that heads furthest towards the best overall (a choice of
+  reach, not the one that heads furthest toward the best overall (a choice of
   method; a far-off target is reached by following the acquisition). Only when
   every grid point in reach is measured does BAX head for its best candidate,
   re-measuring the nearby point closest to it on the way. A policy that doesn't take `within=`
@@ -660,7 +660,7 @@ stop; ask/tell callers read `campaign.stopped` and may carry on.
 Source(domain=IntegerDomain(name="atoms", lower=32, upper=512), target=256,
 log=True)])` declares an input the experiment needs that isn't itself a design
 choice: a fidelity knob (system size, mesh, convergence settings: ordered, cheaper
-and less accurate towards one end) or a related system (two codes, simulation vs
+and less accurate toward one end) or a related system (two codes, simulation vs
 experiment, an earlier catalyst's data as a warm start: an unordered
 `EnumeratedDomain`, neither an approximation of the other).
 Sources are inputs like any other: they follow the design variables in every design
@@ -677,7 +677,7 @@ ordered):
   and varies with the design. Its `power=1` (a whole number) is fixed, not learned
   as in BoTorch: the kernel is only valid for whole-number powers, and a learned
   fractional one gives negative variances; `linear_truncated=False, iteration="name"` instead
-  uses an exponential-decay kernel for a source whose results settle towards a
+  uses an exponential-decay kernel for a source whose results settle toward a
   limit. One unordered source gets a `MultiTaskGP` (noise shared across sources
   unless `Yvar` is given). Ordered and unordered sources together aren't supported
   yet.
@@ -814,6 +814,6 @@ output constraints in the UI, a feasibility stopping rule, a run-level JSON seri
 - **Correlated outputs with sources, and with prior means.** One model over
   outputs *and* sources, and a prior mean per output in the correlated model;
   see [Correlated outputs](#correlated-outputs).
-- **PFN / deep-kernel surrogates — F-tier research, same seam.** Both are a custom
+- **PFN / deep-kernel surrogates — research models, same seam.** Both are a custom
   `ModelConstructor` returning a botorch `Model`; built when a problem needs them,
   not speculatively.

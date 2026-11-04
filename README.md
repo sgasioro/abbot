@@ -1,25 +1,53 @@
 # abbot
 
-**A goal-driven (a to b) Bayesian guidance (BO) framework (bot) targeting lab experiments.**
+**Goal-driven Bayesian experimental design for the lab.**
 
+abbot helps you choose which experiment to run next. You describe the knobs you
+can turn, what you measure, and what you want to achieve; abbot suggests a
+setting, you (or your instrument, or a simulation) run it and report the result,
+and it learns from every run. The goal can be:
 
-`abbot` is an active-learning-for-labs layer on top of [BoTorch](https://botorch.org).
-It is **not** a competing optimization framework: BoTorch already provides the
-surrogate-agnostic `Model`/`Posterior` layer, the BO/uncertainty-sampling loop
-primitives, async/batch, and serialization. `abbot` adds the two things that are
-genuinely ours on top of that substrate:
+- **an optimum:** single- or multi-objective Bayesian optimization;
+- **a region:** every setting that hits a target band, a level set, the best point
+  per band (Bayesian algorithm execution, BAX);
+- **anything you can write as code** over the model's predictions.
 
-1. the **composite-SBI objective + cached-posterior (`aux`) layer**, and
-2. the slow / human-in-the-loop / fault-supervised **lab-experiment orchestration**.
+The aim is to make sophisticated methods (goal-driven search, multiple fidelities
+or sources, constraints, supervision) available through a short, readable spec
+with safe defaults, so a lab gets them without writing BoTorch code or tuning an
+algorithm.
 
-It unifies the method that is currently reimplemented across several SLAC repos
-(sbido, BAXstics, nn-bax) — surrogate + acquisition/BAX + propose→evaluate→retrain
-— behind one serializable `ProblemSpec` and an ask/tell loop.
+It's built for how lab work goes: a measurement that isn't one number (a
+spectrum, replicates, a posterior from simulation-based inference), runs that
+are slow or fail, and a person who stays in charge of halts, retries and
+overrides. A web UI runs a campaign with no code. Built on [BoTorch](https://botorch.org):
+abbot uses its models and standard acquisition functions, and adds goal-driven
+(BAX) acquisitions and the campaign around them.
+
+**Status: alpha.** APIs marked *Stable* in [`docs/API.md`](docs/API.md) are safe to
+build on; *Provisional* ones may change between releases. Issues and pull requests
+are welcome.
+
+## Install
+
+abbot isn't on PyPI yet; install it from GitHub. It needs Python 3.11 or later (tested on 3.11–3.13).
+Install torch first, from PyTorch's index (the CPU build is enough; see
+[Local setup](#local-setup) for a GPU):
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install "abbot[ui] @ git+https://github.com/sgasioro/abbot"
+```
+
+The `ui` extra adds the web frontend; `xopt` and `sbi` add those integrations.
 
 ## Quickstart
 
 ```python
 from abbot import ProblemSpec, OutputSpec, ContinuousDomain, Campaign
+
+def run_in_lab(temp):                          # a stand-in: your measurement here
+    return 1.0 - ((temp - 55.0) / 30.0) ** 2
 
 # 1. Define the problem: design knobs + what you measure.
 spec = ProblemSpec(
@@ -34,7 +62,7 @@ campaign = Campaign(spec)
 # 3. Ask → run in the lab → tell. Repeat.
 for _ in range(8):
     x = campaign.suggest(1)[0]                 # e.g. {"temp": 54.2}
-    measured_yield = run_in_lab(x["temp"])     # your measurement here
+    measured_yield = run_in_lab(x["temp"])
     campaign.ingest({"yield": measured_yield})
 
 # 4. Hand over the recommended design.
@@ -55,7 +83,14 @@ model_constructor)` to choose your own. A few variations:
   pick `ParetoBO`, and `result().recommended` is the Pareto set.
 - **Find a region, not an optimum (BAX)** — mark outputs `direction="OBSERVE"`, pick
   a `Goal` (e.g. `BandIntersection({"yield": (0.4, 0.6)})`,
-  `LevelSet(0.9, output="purity")`), and use `BAXPolicy(goal)`.
+  `LevelSet(0.9, output="purity")`), and pass it in: `Campaign(spec,
+  BAXPolicy(goal))`.
+- **Keep an output in range** — `OutputSpec(name="purity", direction="OBSERVE",
+  min_val=0.9)`: proposals and the recommendation favor designs likely to meet it.
+- **Cheap and accurate runs** — add `sources=[Source(domain=EnumeratedDomain(
+  name="code", values=["sim", "experiment"]), target="experiment")]` to the spec:
+  abbot chooses which to run, trading cost against information, and recommends
+  at the target.
 - **Hold a knob fixed** — `campaign.suggest(1, fixed={"temp": 30})` proposes with
   `temp` at 30 and chooses the rest.
 - **Limit how far a knob moves** — `ContinuousDomain(..., max_step=0.5)`: every
@@ -66,150 +101,57 @@ model_constructor)` to choose your own. A few variations:
 - **Know when to stop** — `Campaign(spec, supervisor=Supervisor(stops=[
   target_reached(0.95), no_improvement(15)]))` (rules from `abbot.supervision`),
   and `print(campaign.check())` to see whether the model makes sense.
+- **Runs that fail, or regions that give nothing** — a failed run is retried, then
+  halts for a person (`campaign.resolve("retry" | "exclude" | "bad_region")`); a
+  check like `Supervisor(faults=[per_shot(is_dark, bad_region="dark")])` marks a
+  region as unusable, and proposals steer away from it.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
 
 See [`docs/HOWTO.md`](docs/HOWTO.md) for "how do I…" answers, [`docs/API.md`](docs/API.md)
-for the stability contract (what's safe to build on) and [`examples/`](examples/)
-for a runnable notebook per capability.
+for the stability contract (what's safe to build on), [`examples/`](examples/)
+for a runnable notebook per capability, and
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how abbot is put together
+(modules, the seams an application plugs into, the session API).
 
-See [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) for where abbot sits next to BoTorch,
-Ax, Xopt and Bluesky/blop.
+## Where abbot fits
 
-## Status: M1 core + M3 lab frontend
-
-```
-src/abbot/
-  problem.py      # ProblemSpec (type-polymorphic domains + OutputSpec: objectives
-                  #   MAX/MIN vs OBSERVE-only, output bounds) + domain/output constraints
-  feasibility.py  # output constraints: observed feasibility, the model's probability
-  model.py        # ModelConstructor seam: (X,Y,Yvar) -> botorch.Model  [the SBI seam]
-  models/
-    ensemble.py   # ToyEnsembleModel — the non-GP smoke test for the ModelConstructor seam
-  acq_opt.py      # CandidateOptimizer seam: Continuous | DiscreteArgmax
-  policy.py       # Policy (ask/tell) + SimpleBO, ParetoBO, UncertaintySampling, BAXPolicy; uq_requirement
-  session.py      # Campaign — the step-based ask/tell session (suggest/ingest/step/state/
-                  #   recommend), resume, on_step hook; shared engine helpers; CampaignResult
-  loop.py         # run_campaign / drive — thin blocking drivers over a Campaign
-  analysis.py     # live-analysis built-ins (convergence, hypervolume, recommended_set)
-  history.py      # Record{candidate, observation, outputs, aux, fault, bad_region} + History + DataStore
-  experiment.py   # Experiment protocols, Verdict, ManualExperiment
-  config.py       # name -> class registries
-  goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
-                  #   FunctionGoal (arbitrary fn(f, X) -> indices — nn-bax-style flexibility)
-  composite.py    # composite objectives: composite_evaluate, Rescore (targets hook),
-                  #   the ObjectiveReducer protocol
-  supervision.py  # Supervisor: fault checks (per-shot, stall, drift) + stop rules
-  usability.py    # where runs give usable results: a classifier over bad-region runs
-  diagnostics.py  # campaign.check(): leave-one-out fit, noise, lengthscales
-  ui/             # NiceGUI web client [extra: ui] — thin over Campaign
-    controller.py # RunController: auto/manual run-state machine (framework-free, testable)
-    builder.py    # form rows -> ProblemSpec; optimizer selection
-    app.py        # single-dashboard: Define / Run / Progress; `python -m abbot.ui`
-  interop/
-    xopt.py       # gest VOCS <-> spec + CorePolicyGenerator (runs under Xopt) [F3]
-    sbi.py        # SBI as a composite objective: PosteriorSampler, sbi_evaluate,
-                  #   TrainedPosterior [sbi]
-```
-
-### Composite objectives and SBI (M2)
-A measurement is often richer than the number being optimized — a spectrum,
-replicate measurements, posterior samples. `composite_evaluate(analysis, reducer,
-spec)` maps each observation to a payload (`analysis`), reduces it to the outputs
-the surrogate sees (an `ObjectiveReducer`), and caches the payload on
-`Record.aux`. For an objective that changes during the run,
-`Campaign(..., targets=Rescore(reducer, schedule))` re-scores every clean shot's
-cached payload at the current schedule step (a score that sharpens, a tolerance
-that tightens), and the model, the policy and the hand-over all see the re-scored
-values — so any policy (`SimpleBO`, BAX, ...) can anneal. `targets=` itself is
-general: any `(history, spec) -> outputs` function redefines what the surrogate
-trains on. The reducer is the application's own score. Simulation-based inference is the case where the analysis
-draws posterior samples over θ: `abbot.interop.sbi` has `sbi_evaluate(sampler,
-reducer, spec)` and `TrainedPosterior`, which wraps a loaded `sbi` posterior
-(`abbot[sbi]`) with the application's observation preprocessing. sbido is a thin application on top: its
-loop is a `Campaign`, and its targets, scores and theta-distribution goals plug
-into these seams.
-
-### Session API & frontend
-The optimization engine is exposed as a headless, step-based `Campaign`
-(`suggest` / `ingest` / `step` / `state` / `recommend`) — the same ask/tell surface
-a web UI, a notebook, or an agent drives. `run_campaign` is a thin blocking driver
-over it (`drive(campaign, ...)` for a campaign you built yourself); its budget is a
-total, so rerunning the same call after a halt finishes the remainder. Only a spec and an experiment are required — `run_campaign(spec, experiment)`
-or `Campaign(spec)`; the policy, model, and space-filling seed designs default from
-the spec (`default_policy` / `default_constructor` / `default_initial_designs`), and
-each is an overridable keyword. The **NiceGUI** web client (`abbot[ui]`, `python -m abbot.ui`) is a thin
-layer over `Campaign`, laid out as a **single dashboard**: left column = a
-**type-polymorphic variable editor** (Continuous | Enumerated — the Badger
-differentiator) + run controls; right column = live visualization. Two run modes
-share one `RunController`: **manual** (suggest → enter measurement → ingest) and
-**mock auto-run** (a `MockAnalyticExperiment` drives `Campaign.step` on a timer with
-run/pause/step/stop). Manual vs. auto is a UI-driver concern, kept out of the core.
-
-Live visualization (via `abbot/analysis.py`, computed from history + the fitted
-model): an **adaptive model view** — 1-D posterior mean ± uncertainty band, 2-D
-posterior-mean contour, or a 1-D/2-D slice through the best point for 3-D+ (with
-variable selectors) — plus a dimension-agnostic **parity plot** (predicted vs
-observed), a **convergence / hypervolume** trace, the recommended design(s), and
-the history table. Per-step the plots **update in place** (`update_figure`),
-rebuilt only on create/reset/selector-change, so auto-run stays smooth.
-
-**Import / export** (via `abbot/io.py`, pure functions). Two tiers:
-- **Self-describing CSV** (`spec_history_to_csv` / `spec_history_from_csv`) — one
-  lab-friendly file carrying the whole setup in `#` comment rows (variables,
-  objectives, boxes, version) *plus* the measurement table. Opens in Excel/pandas
-  (`read_csv(comment='#')`); refuses (not silently drops) parts it can't hold
-  (structured domains, constraints). The portable "email a campaign" format.
-- **Canonical JSON** (`spec_to_json`) — lossless `ProblemSpec` round-trip for the
-  cases CSV can't express. *(A run-level JSON serializer incl. the SBI `aux`
-  payload is a planned follow-on.)*
-
-A `ProblemSpec` declares **outputs** (`OutputSpec(name, direction)`): the surrogate
-models every output (one column per output, in `spec.outputs` order — the
-`evaluate`/history contract). `direction` is `MAXIMIZE`/`MINIMIZE` for an *optimized
-objective*, or `OBSERVE` for a **modeled-but-not-optimized** output (a feature a BAX
-`Goal` consumes, or an output that only has to stay within bounds). Any output can
-carry bounds, `OutputSpec(name, direction, min_val=, max_val=)`, which make it a
-constraint; `output_constraints=` and `domain_constraints=` take
-`LinearConstraint`s over output and design-variable names (see
-[`docs/API.md`](docs/API.md#constraints)). `spec.objectives` is the non-OBSERVE
-subset; BO/MO optimize it (selecting its columns from the possibly-wider model),
-BAX reads all outputs. (`objectives=[...]` is still accepted as a constructor
-alias; `ObjectiveSpec` aliases `OutputSpec`.)
-
-The engine is **natively multi-objective** and **maximize-canonical**: the loop
-applies per-output signs internally (`output_signs`) — `evaluate` returns raw
-physical measurements, no caller-side negation. `run_campaign` returns a
-`CampaignResult` whose `.recommended` is a single index (scalar) or the Pareto set
-(multi-objective); `.best` is the single-objective convenience.
-
-Three design properties are preserved from day one so agent integration is later
-a ~day of wrapper work (not an architecture change): **headless-first**,
-**typed JSON-serializable `ProblemSpec` + run state** (no live-object references),
-and **ask/tell as the public contract**.
+abbot brings together methods that had been spread across several
+problem-specific packages. Labs work in different modes (a control room, a
+beamline, a bench), and good tools already exist for some of them. abbot aims to
+cover the gaps, following the [gest-api](https://pypi.org/project/gest-api/)
+generator standard to promote interoperability and a coherent ecosystem. As it
+develops, the emphasis is on what can be shared with neighboring tools and what
+is better kept separate; [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) has a first pass
+at that split.
 
 ## Local setup
 
 ```bash
-# Option A — conda (reproducible; CPU by default):
+# Option A — conda:
 conda env create -f environment.yml
 conda activate abbot
-pip install -e '.[ui,dev]'    # editable install + UI (nicegui, plotly) + dev (pytest, ruff)
 
-# Option B — venv + pip (3.11 or 3.12; pyproject requires <3.13):
+# Option B — venv (Python 3.11 or later):
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e '.[ui,dev]'    # pulls torch/botorch/pydantic/gest-api + nicegui/plotly
+
+# Then, either way: torch first, from PyTorch's index, then abbot.
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -e '.[ui,dev]'    # editable install + UI (nicegui, plotly) + dev (pytest, ruff)
 ```
 
-`gest-api` is on PyPI, so no git/`--no-deps` tricks are needed. Torch installs the
-CPU wheel by default (all the UI and toy tests need); for GPU, follow the comment
-in `environment.yml`.
+The CPU build of torch is all the UI and the tests need. For an NVIDIA GPU,
+install a CUDA build instead, e.g. `pip install torch --index-url
+https://download.pytorch.org/whl/cu128`; the right tag for your driver is listed
+at [pytorch.org/get-started](https://pytorch.org/get-started). Installing torch
+with pip from PyTorch's index is more reliable than conda's CUDA packages.
+Everything else (BoTorch, `gest-api`, ...) comes from PyPI with `pip install -e`.
 
 ## Examples
 
-Four runnable notebooks in [`examples/`](examples/) (install `pip install -e
+Five runnable notebooks in [`examples/`](examples/) (install `pip install -e
 '.[examples]'`), one per capability: lab BO, multi-objective (`ParetoBO`),
-composite-SBI, and goal-driven BAX. See [`examples/README.md`](examples/README.md).
+composite-SBI, goal-driven BAX, and multi-fidelity. See [`examples/README.md`](examples/README.md).
 
 ## Run the frontend
 
@@ -230,9 +172,9 @@ with no typed measurements — the quickest way to see the loop and plots workin
 ## Develop
 
 ```bash
-pytest -m "not slow"   # fast unit tier (~15s, no GP fits) — run on every change
+pytest -m "not slow"   # fast unit tier (no GP fits) — run on every change
 pytest                 # full suite incl. GP-fitting integration tests (minutes;
-                       # run before commits / on a compute node, not a login node)
+                       # run before committing)
 ruff check src/ tests/
 ```
 
@@ -243,138 +185,68 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 
 ## Roadmap
 
-- **M1** — shared core skeleton on botorch *(done)*.
-- **M3** — non-expert lab BO tool: NiceGUI web frontend on the shared `Campaign`
-  session API, with a type-polymorphic variable editor *(done; a FastAPI+React
-  split is a follow-on)*.
-- **M2** — composite-SBI app: `BoxMembershipReducer` + `sbi_evaluate` + aux
-  caching + a lazy `interop/sbido.py` adapter (since removed), validated on sbido's analytic
-  posterior *(done)*. Follow-on: install `sbi` + reproduce sbido's mat_finder
-  benchmark (regret-parity) on the abbot core.
-- **F1** — goal-BAX layer so sbido's BAX designers run on abbot (retires the
-  multibax-sklearn dep): `Goal` (`PercentileSet`/`BandIntersection`/`Wishlist`) +
-  `BAXPolicy` (US/MeanBAX/SwitchBAX/InfoBAX over a discrete grid, botorch-native
-  fantasy conditioning). Validated behaviorally on sbido's analytic benchmark
-  *(done)*. Follow-on: continuous BAX (pathwise / seeded-ascent); the sbido-side
-  cutover PR.
-- **F3** — Xopt / gest-api interop: `spec_to_vocs`/`vocs_to_spec` field map
-  (`xopt.VOCS is gest_api.VOCS`, so one adapter) + `CorePolicyGenerator`, a gest
-  `Generator` wrapping an abbot `Campaign` so a problem runs under
-  `Xopt(generator=...)` on Xopt's parallel evaluator — the "never the spine" proof
-  (`abbot[xopt]`) *(done)*. This is also the path for expensive-parallel/DFT
-  campaigns: abbot defines the problem, Xopt orchestrates evaluation.
-- **Batch / async** — candidate ids and a persisted outstanding queue,
-  pending-aware policies (BoTorch q-batches for BO; greedy kriging believer for
-  BAX / US), synchronous batches in the blocking loop (`batch_size=`,
-  `BatchExperiment`), hooks once per batch, `MockAnalyticExperiment` /
-  `MockDatasetExperiment` *(done)*.
-- **Layering** — abbot is the general engine; sbido and BAXstics are thin
-  applications on it. Problem-specific targets stay in the applications and plug
-  into abbot's seams (`ObjectiveReducer`, `Goal`, `targets=` / `Rescore`); the
-  loop (`Campaign`, supervisors, resume, fingerprints) replaces sbido's
-  `measure_and_optimize` *(done; sbido cutover PR in review, BAXstics port on a
-  branch)*.
-- **Standing: UX audits.** Ease of use is a deliberate priority. For each core
-  workflow (single- and multi-objective BO, BAX goals, batches and async
-  ask/tell, resume, cost and stopping, sources / multi-fidelity), periodically
-  set the same problem up in abbot, plain BoTorch, Ax and Xopt (and blop where
-  it applies), and compare lines of code, concepts a newcomer must learn, what
-  must be gotten right by hand, error messages on common mistakes, and how
-  quickly the docs answer "how do I...". The point is to find what to improve in
-  abbot; these are internal checks, not published claims.
-- **Now**, in order:
-  1. **BoTorch 0.18** *(done)*: abbot now requires it, the same line as blop and
-     Ax.
-  2. **Multi-fidelity, cost-aware BO** (pilot: calibrating an expensive simulation;
-     fidelity is system size and other knobs; runs 30 s to 1 h).
-     - Phase A, cost *(done)*: per-record cost (wall-clock or caller-given), cost
-       models (`FixedCost`, `CallableCost`, `PowerLawCost`), cost-aware `SimpleBO`
-       / `ParetoBO`, and `Verdict.stop` with `cost_cap` / `acquisition_monitor`.
-     - Phase B, source variables *(done)*: fidelities and tasks / sources as one
-       spec concept (`Source`: ordered or not, with a target), `IntegerDomain`,
-       mixed-space proposal (`optimize_acqf_mixed`), policies pinned at the
-       target, recommendation scored at the target.
-     - Phase C1 *(done)*: `MultiSourceGPConstructor` (formerly
-       `MultiFidelityGPConstructor`; picked by default with
-       sources) and `Source(accurate=)`; `SimpleBO` chooses sources (cost-weighted
-       multi-fidelity max-value entropy search, no separate policy) with a learned
-       default cost, `SourceCost`.
-     - Phase C2 *(done)*: multi-fidelity InfoBAX (source levels on the candidate
-       grid, information per unit cost); fixes for two BoTorch multi-fidelity bugs.
-     - Phase D *(done)*: `benchmarks/multi_fidelity.py` (cost to a good answer at
-       the target, against target-only BO and BoTorch's MF-KG; it kept the
-       linear-truncated kernel as the default), the `05_multi_fidelity` example,
-       `MockAnalyticExperiment` with sources, and `Experiment.cost(design)`.
-     - Later: a BAX-shaped goal (every setting that matches the data); a noise level
-       that varies with the source, without per-run variances; UI support.
-  3. **Peer audit** *(done; internal)*: functionality and UX against BoTorch,
-     Ax, Xopt and blop. What to build and what to borrow is in
-     [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md#build-or-borrow). From it, in order:
-     - **Output constraints** *(done)*: `OutputSpec(min_val=, max_val=)`,
-       `output_constraints` and named `domain_constraints` (`LinearConstraint`);
-       feasibility-weighted BO, feasibility search until a run satisfies them, BAX
-       target sets and multi-fidelity entropy search that respect them, and
-       recommending only designs likely to satisfy them. Later: UI support and a
-       feasibility stopping rule.
-     - **Spec ergonomics** *(done)*: names instead of positions in boxes and
-       goals, `log=True` on design variables, `suggest(fixed=...)`, and labeled
-       categories (`values=["water", "ethanol"]`) with a categorical kernel.
-     - **Xopt generators in abbot's loop** *(done)*: `GestGeneratorPolicy`
-       (TuRBO, Nelder-Mead, RCDS, genetic algorithms, time-dependent BO), with
-       policies able to skip abbot's model fit (`needs_model = False`).
-     - **Diagnostics and stopping** *(done)*: `campaign.check()` (leave-one-out
-       fit, suspicious runs, noise, lengthscales, runs vs. inputs),
-       `Supervisor(faults=, stops=)` with `target_reached`, `no_improvement` and
-       `all_of` floors, and a "how do I…" index
-       ([`docs/HOWTO.md`](docs/HOWTO.md)). Later: the check in the UI.
-     - **Travel limits** *(done)*: `max_step` per variable, walking from the
-       last issued design under every policy (BAX steps towards its target when
-       its grid runs out nearby). Later: UI support.
-     - **Prior means** *(done)*: `default_constructor(spec, prior_mean={...})`,
-       with a learned offset (and optionally a scale), and warm-start guidance:
-       prior mean vs. an earlier system as a source.
-     - **High dimensions** *(parked)*: `campaign.check()` points to TuRBO and
-       neural-network surrogates when there are many inputs and few runs. SAAS
-       (needs JAX, MCMC fits) only on demand.
-  4. **Correlated outputs** *(done)*: `default_constructor(spec, correlated=True)`
-     (`MultiTaskGPConstructor`), with correlations of either sign, and
-     `MultiFidelityGPConstructor` renamed `MultiSourceGPConstructor` (sources are
-     fidelities or related systems). Later: correlated outputs with sources, and
-     with prior means.
-  5. **Small fixes:** a dimension-scaled prior for `kernel="matern52"` *(done)*,
-     an outstanding-designs list in the UI *(done)*, reporting multibax's shared
-     random draws across outputs upstream (drafted), and flagged-shot handling
-     *(done: faults vs. bad regions)*.
-     - **Faults vs. bad regions** *(done)*: a failing design is retried
-       `max_retries` times, then a person resolves the halt (retry, exclude, bad
-       region; buttons in the UI); `Verdict(bad_region=)` records runs that give
-       nothing usable, and a Dirichlet GP classifier steers proposals and
-       recommendations away from them. Later: check shots at a known-good design.
-  6. **Agent setup:** an MCP server over `Campaign`, then a setup copilot that
-     writes the spec / goal. The UI stays the run console and the
-     human-in-the-loop entry point.
-  7. **GPU support:** one setting (`Campaign(..., device="cuda")`, also in
-     `run_campaign` and the UI) that fits models and runs policies on the GPU,
-     while the history, saved files, experiments and the UI stay on the CPU (designs
-     come back as CPU tensors). Today everything runs on the CPU: the spec helpers
-     take a `device`, but about 70 places create tensors without one. The work:
-     - thread the device through the constructors, policies (candidate grids,
-       Sobol draws, BAX sampling and conditioning), the usability classifier,
-       `recommend` and `check()`;
-     - tests parametrized over devices, skipped when no GPU is present;
-     - a benchmark showing where it pays (large BAX grids, many runs, neural-network
-       surrogates). Lab-scale GPs (tens of runs) are usually faster on the CPU, so
-       the default stays CPU.
-     - **CUDA only:** abbot fits in float64, which Apple's MPS doesn't support.
-- **Deferred: integration.** Building out abbot comes first; then back to the
-  applications. sbido: Sam's review of the cutover PR, port master's BAX fallback
-  option (e6a5d77) into abbot or sbido, bump the abbot pin, then what the paper
-  benchmark needs (mat_finder regret-parity, continuous BAX). BAXstics: push the
-  `abbot-port` branch, bump its abbot pin, and merge to its main once abbot is
-  public.
-  blop backend: a `Campaign`-backed blop `Optimizer` for Bluesky beamlines
-  (`abbot[blop]`; see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)), built when a
-  beamline will use it. It is a thin adapter (blop's `Optimizer` protocol is a few
-  methods), so it stays cheap to add later.
-- **Later** — output constraints, nn-bax productionization (upstream to Xopt where
-  it fits).
+**Built:**
+- The ask/tell `Campaign`, blocking drivers, resume, batches and asynchronous
+  runs with pending designs.
+- Single- and multi-objective BO, uncertainty sampling, and goal-driven BAX
+  (InfoBAX, SwitchBAX, MeanBAX) over discrete grids.
+- Composite objectives and SBI (`composite_evaluate`, `Rescore`,
+  `abbot.interop.sbi`).
+- Multi-fidelity and multi-source BO with costs (`Source`,
+  `MultiSourceGPConstructor`, cost-aware `SimpleBO` and InfoBAX).
+- Output and domain constraints; names, `log=True` inputs and labeled categories
+  in the spec; `suggest(fixed=...)`; travel limits (`max_step`).
+- Prior means, and correlated outputs (`default_constructor(spec,
+  correlated=True)`).
+- Supervision: fault checks, retries and halts, bad regions with a usability
+  classifier, stopping rules, and `campaign.check()` diagnostics.
+- Xopt interop both ways: abbot as an Xopt generator, and Xopt generators (TuRBO,
+  Nelder-Mead, ...) in abbot's loop.
+- The NiceGUI lab frontend (`python -m abbot.ui`).
+
+**Next:**
+1. **The UI catches up with the engine:** constraints, travel limits, sources,
+   `check()`, and a model choice in the builder.
+2. **Agent setup:** an MCP server over `Campaign`, then a setup assistant that
+   writes the spec and goal. The UI stays the run console and the
+   human-in-the-loop entry point.
+3. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
+   and runs policies on the GPU, while the history, saved files, experiments and
+   the UI stay on the CPU. The default stays CPU, since lab-scale GPs are usually
+   faster there. CUDA only: abbot fits in float64, which Apple's MPS doesn't
+   support.
+
+**Later:**
+- Continuous BAX (no candidate grid).
+- Correlated outputs together with sources or prior means.
+- A BAX-shaped multi-fidelity goal; noise that varies with the source.
+- Check shots at a known-good design.
+- A Bluesky route: abbot as a blop `Optimizer` backend
+  (see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md)).
+- A run-level JSON format that includes cached SBI payloads.
+
+**Ease of use is a priority.** For each core workflow we periodically set the
+same problem up in abbot and in neighboring tools, and compare how much a
+newcomer must learn and get right by hand, to find what to improve in abbot.
+
+## Citing
+
+If abbot helps your work, please cite the repository (see
+[`CITATION.cff`](CITATION.cff)). Its goal-driven policies follow:
+
+- W. Neiswanger, K. A. Wang and S. Ermon, "Bayesian Algorithm Execution:
+  Estimating Computable Properties of Black-box Functions Using Mutual
+  Information," *ICML* 2021, [arXiv:2104.09460](https://arxiv.org/abs/2104.09460)
+  (InfoBAX).
+- S. R. Chitturi *et al.*, "Targeted materials discovery using Bayesian
+  algorithm execution," *npj Computational Materials* 10, 156 (2024),
+  [doi:10.1038/s41524-024-01326-2](https://doi.org/10.1038/s41524-024-01326-2)
+  (MeanBAX, SwitchBAX and target-subset goals).
+
+and its models and standard acquisitions come from BoTorch: M. Balandat *et al.*,
+"BoTorch: A Framework for Efficient Monte-Carlo Bayesian Optimization,"
+*NeurIPS* 2020, [arXiv:1910.06403](https://arxiv.org/abs/1910.06403).
+
+## License
+
+Apache-2.0; see [`LICENSE`](LICENSE).

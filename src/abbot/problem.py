@@ -7,7 +7,7 @@ the (future) web frontend, and any agent driver. It is pydantic so that
 rather than a format bridge.
 
 Design spaces are **type-polymorphic from day one** (Continuous | Integer |
-Enumerated | Structured) — the exact axis Badger is rigid on, and hence a differentiator.
+Enumerated | Structured).
 Each Domain maps onto a gest-api variable type for interop (see interop/xopt.py).
 
 NB: this is the frontend/interop-facing spec. The in-memory numeric bounds that
@@ -298,7 +298,7 @@ class OutputSpec(BaseModel):
 
     ``min_val`` / ``max_val`` make the output a constraint, in its raw units: a
     design is only acceptable if the output lands within them (``purity`` at least
-    0.9). Policies steer towards designs likely to satisfy every constraint, and the
+    0.9). Policies steer toward designs likely to satisfy every constraint, and the
     recommendation only picks designs likely to. For a bound on a combination of
     outputs, use ``ProblemSpec.output_constraints``.
     """

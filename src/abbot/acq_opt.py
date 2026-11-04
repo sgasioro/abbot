@@ -1,7 +1,6 @@
 """The CandidateOptimizer seam: candidate proposal decoupled from the surrogate.
 
-Basis: nn-bax ``acq_opt.py`` (``SubsetOptimizer`` discrete-argmax vs
-``ContinuousOptimizer``). ``Continuous`` covers any space with a continuous or
+``Continuous`` covers any space with a continuous or
 integer axis (``optimize_acqf``; integer axes relaxed then rounded; enumerated axes
 alongside them enumerated by ``optimize_acqf_mixed``). ``DiscreteArgmax`` covers
 all-enumerated spaces (``optimize_acqf_discrete``). True combinatorial
@@ -10,7 +9,7 @@ all-enumerated spaces (``optimize_acqf_discrete``). True combinatorial
 ``fixed_features={position: value}`` pins inputs, which is how a policy that doesn't
 choose sources proposes at their target (``spec.target_features()``).
 
-Decoupling proposal from the surrogate is what lets a discrete BAXstics problem
+Decoupling proposal from the surrogate is what lets a discrete materials problem
 and a continuous accelerator problem share one policy.
 """
 

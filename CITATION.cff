@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use abbot, please cite it as below."
+title: "abbot: goal-driven Bayesian experimental design for the lab"
+type: software
+authors:
+  - family-names: Gasiorowski
+    given-names: Sean
+repository-code: "https://github.com/sgasioro/abbot"
+license: Apache-2.0
+keywords:
+  - Bayesian optimization
+  - Bayesian algorithm execution
+  - experimental design
+  - laboratory automation

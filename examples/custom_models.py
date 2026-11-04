@@ -15,7 +15,7 @@ The loop checks it against the policy so you can't silently pair, e.g., a point 
 with a variance-hungry acquisition.
 
 Research models (PFN, deep-kernel) are the SAME seam — a ``build`` that returns a
-botorch ``Model`` — and are deliberately not built here (F-tier, add when a problem
+botorch ``Model`` — and are deliberately not built here (added when a problem
 needs them). For outputs that inform each other, abbot ships one:
 ``default_constructor(spec, correlated=True)`` (``MultiTaskGPConstructor``).
 

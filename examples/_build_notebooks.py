@@ -402,9 +402,8 @@ goal = FunctionGoal(lambda f, X: (f[:, 0] > f[:, 1]).nonzero(as_tuple=True)[0].t
 
 **What this showed:** given a *target region* (or any goal-as-code) rather than a
 maximum, BAX steers sampling toward designs that satisfy it. This is the
-goal-as-algorithm capability abbot ports from multibax — the same engine that
-drives sbido's BAX designers — with `FunctionGoal` giving the arbitrary-goal
-flexibility of nn-bax's `FunctionAlgorithm`, now on botorch.
+goal-as-algorithm capability abbot ports from multibax, now on botorch, with
+`FunctionGoal` for any goal you can write as code.
 """),
 ])
 

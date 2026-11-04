@@ -1,4 +1,4 @@
-"""The toy EnsembleModel satisfies the botorch Model contract (M1 smoke test).
+"""The toy EnsembleModel satisfies the botorch Model contract (smoke test).
 
 Proves the ModelConstructor seam is not GP-coupled: a non-GP surrogate expressed
 as a botorch EnsembleModel supports .posterior(X) and coherent (fixed-base-sample)

@@ -1,4 +1,4 @@
-"""SimpleBO on a SingleTaskGP recovers a known optimum (M1 verify), plus the
+"""SimpleBO on a SingleTaskGP recovers a known optimum, plus the
 loop driver and the uq-pairing guardrail.
 """
 

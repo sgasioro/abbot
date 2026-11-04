@@ -5,7 +5,7 @@ referenced from a serializable spec by registry key + pydantic config, not
 embedded. This keeps the problem spec and run state round-trippable (frontend +
 resume + agents) while still letting a config name a concrete implementation.
 
-Minimal M1 version: a dict-backed registry with a decorator. The pydantic
+Minimal version: a dict-backed registry with a decorator. The pydantic
 config schemas that pair a key with its kwargs are added as the frontend lands.
 """
 

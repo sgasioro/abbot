@@ -1,4 +1,4 @@
-"""Goal-as-algorithm layer for BAX (F1).
+"""Goal-as-algorithm layer for BAX.
 
 A ``Goal`` identifies the subset of a candidate grid that achieves the user's
 goal, given per-candidate predicted outputs ``f`` of shape ``(N, d_y)`` in RAW
@@ -12,7 +12,7 @@ multibax's ``SubsetAlgorithm.unnormalize``). ``PercentileSet`` + ``Wishlist`` co
 percentile and multi-band targets.
 
 Beyond the box/threshold builtins, ``FunctionGoal`` wraps an arbitrary
-``fn(f, X) -> indices`` (abbot's analogue of nn-bax ``FunctionAlgorithm``), so any
+``fn(f, X) -> indices``, so any
 goal expressible as "pick indices from (evaluated values, candidates)" is supported
 — ``LevelSet`` and ``TopK`` are two ready-made examples. The richer multibax
 algorithms (Pareto, etc.) port on demand on the same protocol.
@@ -169,8 +169,7 @@ class FunctionGoal:
 
     ``fn(f, X) -> list[int]`` receives the evaluated outputs ``f`` of shape
     ``(N, d_y)`` (raw units) and the candidate grid ``X`` of shape ``(N, d_x)``, and
-    returns target indices. This is abbot's analogue of nn-bax ``FunctionAlgorithm``,
-    adapted to abbot's convention that the goal sees the *evaluated values* (the
+    returns target indices. It follows abbot's convention that the goal sees the *evaluated values* (the
     ``BAXPolicy`` pre-evaluates the sampled function on the grid), not a callable —
     which keeps goals model/grid-agnostic and consistent with the box goals above.
     Anything expressible as "pick indices from (values, candidates)" fits: level

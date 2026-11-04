@@ -3,8 +3,7 @@
 Pure functions over core objects, kept out of the UI so they are testable and
 reusable by a notebook or an agent. Spec JSON reuses pydantic's
 ``model_dump_json`` / ``model_validate_json`` (the serializable contract we already
-rely on). History CSV is a flat ``step, <vars...>, <objectives...>`` table — the
-BAXstics-style artifact, but spec-driven (columns come from the spec, not
+rely on). History CSV is a flat ``step, <vars...>, <objectives...>`` table, spec-driven (columns come from the spec, not
 hard-coded).
 """
 

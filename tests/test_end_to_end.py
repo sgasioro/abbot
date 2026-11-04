@@ -1,4 +1,4 @@
-"""End-to-end integration: the M1 engine driving the M3 lab-BO flows and the M2
+"""End-to-end integration: the engine driving the lab-BO flows and the
 SBI aux seam, through run_campaign.
 
 Goal of this file is to surface integration breakage across the real seams a
@@ -22,7 +22,7 @@ from abbot.session import Campaign
 
 pytestmark = pytest.mark.slow  # run_campaign GP fits
 
-# --- M3: continuous lab-BO through a human-in-the-loop Experiment -------------
+# --- continuous lab-BO through a human-in-the-loop Experiment -------------
 
 
 def test_lab_bo_continuous_via_manual_experiment(tmp_path):
@@ -57,7 +57,7 @@ def test_lab_bo_continuous_via_manual_experiment(tmp_path):
     assert abs(float(result.best.candidate) - opt) < 0.1
 
 
-# --- M3: enumerated-discrete design space -------------------------------------
+# --- enumerated-discrete design space -----------------------------------------
 
 
 def test_lab_bo_enumerated_discrete():
@@ -93,7 +93,7 @@ def test_lab_bo_enumerated_discrete():
     assert abs(float(best_x) - best_choice) <= 1.0
 
 
-# --- M2 seam: composite (outputs, aux) is persisted and resumed ---------------
+# --- SBI seam: composite (outputs, aux) is persisted and resumed ---------------
 
 
 def test_sbi_aux_payload_persisted_and_resumed(tmp_path):

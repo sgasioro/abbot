@@ -2,26 +2,18 @@
 #
 #   conda env create -f environment.yml
 #   conda activate abbot
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
 #   pip install -e '.[ui,dev]'      # editable install + UI/dev extras
 #   python -m abbot.ui              # launch the lab frontend
 #
-# CPU by default (fine for the UI and the toy tests). For GPU, add
-# `pytorch-cuda=12.*` under dependencies and use the nvidia channel.
+# torch comes from pip, not conda: PyTorch's own index is the reliable way to
+# pick a build. The CPU build above is fine for the UI and the tests. For an
+# NVIDIA GPU, install a CUDA build instead, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+# (the right tag for your driver is listed at https://pytorch.org/get-started).
 name: abbot
 channels:
   - conda-forge
-  - pytorch
 dependencies:
   - python=3.12
-  - pytorch>=2.7
-  - numpy>=1.26
-  - pydantic>=2
   - pip
-  - pip:
-      # gest-api is on PyPI (not conda); the UI/dev extras pull nicegui, plotly,
-      # pytest, ruff. Installing the project editable brings its core deps too.
-      # botorch comes from PyPI: conda-forge's 0.18.x needs ninja-python, which
-      # conda-forge doesn't provide on every platform (e.g. osx-arm64).
-      - botorch>=0.18
-      - gest-api
-      - --editable .[ui,dev]
