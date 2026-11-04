@@ -1,6 +1,6 @@
 # abbot
 
-**Goal-driven Bayesian experiment design for the lab.**
+**Goal-driven Bayesian experimental design for the lab.**
 
 abbot helps you choose which experiment to run next. You describe the knobs you
 can turn, what you measure, and what you want to achieve; abbot suggests a

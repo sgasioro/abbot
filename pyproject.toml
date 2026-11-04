@@ -1,7 +1,7 @@
 [project]
 name = "abbot"
 version = "0.1.0"
-description = "Goal-driven Bayesian experiment design for the lab."
+description = "Goal-driven Bayesian experimental design for the lab."
 authors = [{name = "Sean Gasiorowski"}]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
