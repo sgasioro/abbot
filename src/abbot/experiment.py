@@ -133,7 +133,7 @@ def _bad_region_reason(bad: str | bool | None) -> str | None:
 class ManualExperiment:
     """Human-in-the-loop Experiment: a person measures the proposed candidate.
 
-    This is the M3 lab-tool's "experiment" — the loop proposes a design, a human
+    This is the lab tool's "experiment" — the loop proposes a design, a human
     runs the real-world reaction/synthesis and types back the measured value(s).
     By default it prompts on stdin, but a ``responder`` callable can be injected
     (so the same flow is headless-testable, and so a web frontend or an agent can

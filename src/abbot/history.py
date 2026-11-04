@@ -169,7 +169,7 @@ def _diff(old: Any, new: Any, path: str = "") -> list[tuple[str, Any, Any]]:
 class DataStore:
     """Persist/resume a run as per-step files (``steps/step_NNN.pt``).
 
-    Minimal M1 implementation: ``torch.save`` each Record to
+    Minimal implementation: ``torch.save`` each Record to
     ``<root>/steps/step_NNN.pt`` and reload them in order. A JSON sidecar for the
     serializable fields (and an aux cap/drop policy) is a follow-on.
 

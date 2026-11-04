@@ -1,10 +1,10 @@
-"""Toy NN ensemble as a botorch ``EnsembleModel`` — the M1 extensibility smoke test.
+"""Toy NN ensemble as a botorch ``EnsembleModel`` — the extensibility smoke test.
 
-This is NOT nn-bax productionization (that is F-tier). Its only job is to prove
+This is not a production neural-network surrogate. Its only job is to prove
 the ModelConstructor seam is not GP-coupled: a non-GP surrogate expressed as a
 botorch ``EnsembleModel`` satisfies ``.posterior(X)`` and yields coherent (fixed-
-index) function samples, exactly as a GP does via pathwise/rsample. nn-bax's
-MC-dropout maps onto this 1:1 — each masked forward pass is one ensemble member;
+index) function samples, exactly as a GP does via pathwise/rsample. MC-dropout
+maps onto this 1:1 — each masked forward pass is one ensemble member;
 coherent BAX samples come from fixing the member index.
 
 Scope reminder: MeanBAX/greedy runs on the posterior *mean* and needs only a

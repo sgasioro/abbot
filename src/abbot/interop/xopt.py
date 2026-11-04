@@ -1,4 +1,4 @@
-"""Xopt / gest-api interop (F3).
+"""Xopt / gest-api interop.
 
 Targets the gest-api **Generator Standard**, not Xopt internals. gest-api is
 pydantic-only; and crucially ``xopt.VOCS is gest_api.vocs.VOCS`` (same class), so

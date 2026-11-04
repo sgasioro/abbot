@@ -208,7 +208,7 @@ def test_bax_uses_supplied_candidates_and_matches_float32_history():
     cands = torch.tensor([[0.11], [0.52], [0.93]], dtype=torch.double)
     pol = BAXPolicy(PercentileSet(50.0), strategy="US", candidates=cands)
     assert torch.equal(pol.candidate_grid(spec), cands)
-    # Two of the three are already measured, stored in float32 (as sbido does).
+    # Two of the three are already measured, stored in float32 (as some applications do).
     h = History(records=[
         Record(candidate=cands[i].float(), observation=None, outputs=torch.tensor([0.0]))
         for i in (0, 2)

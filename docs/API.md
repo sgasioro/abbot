@@ -45,7 +45,7 @@ on them.
   `drift_monitor`, `consecutive_fault_monitor`, `standard_supervisor`; the stop
   rules `cost_cap`, `acquisition_monitor`, `target_reached`, `no_improvement`,
   `min_runs` (`Verdict.stop`); `all_of`, `any_of`, and `bind`. The default fault thresholds were calibrated on
-  sbido's scattering benchmark.
+  one small-angle scattering benchmark; treat them as starting points.
 - **Prior means** — `default_constructor(spec, prior_mean=, fit_prior_scale=)`
   and the constructors' `prior_mean=`. New.
 - **Correlated outputs** — `default_constructor(spec, correlated=True)`,
@@ -814,6 +814,6 @@ output constraints in the UI, a feasibility stopping rule, a run-level JSON seri
 - **Correlated outputs with sources, and with prior means.** One model over
   outputs *and* sources, and a prior mean per output in the correlated model;
   see [Correlated outputs](#correlated-outputs).
-- **PFN / deep-kernel surrogates — F-tier research, same seam.** Both are a custom
+- **PFN / deep-kernel surrogates — research models, same seam.** Both are a custom
   `ModelConstructor` returning a botorch `Model`; built when a problem needs them,
   not speculatively.

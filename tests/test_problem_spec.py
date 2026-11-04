@@ -1,4 +1,4 @@
-"""ProblemSpec round-trips to JSON (M1 verify)."""
+"""ProblemSpec round-trips to JSON."""
 
 import torch
 

@@ -114,8 +114,8 @@ def test_ensemble_constructor_drives_meanbax():
 
 
 def test_matern52_has_a_dimension_scaled_lengthscale_prior():
-    """Without one it failed to fit sparse data with many exact zeros (BAXstics'
-    clipped yields); the prior keeps the fit well posed."""
+    """Without one it failed to fit sparse data with many exact zeros (clipped
+    yields); the prior keeps the fit well posed."""
     from gpytorch.kernels import MaternKernel
 
     from abbot import ModelListConstructor, SingleTaskGPConstructor

@@ -101,7 +101,7 @@ src/abbot/
   experiment.py   # Experiment protocols, Verdict, ManualExperiment
   config.py       # name -> class registries
   goal.py         # Goal (BAX): PercentileSet, BandIntersection, Wishlist, LevelSet, TopK,
-                  #   FunctionGoal (arbitrary fn(f, X) -> indices — nn-bax-style flexibility)
+                  #   FunctionGoal (arbitrary fn(f, X) -> indices)
   composite.py    # composite objectives: composite_evaluate, Rescore (targets hook),
                   #   the ObjectiveReducer protocol
   supervision.py  # Supervisor: fault checks (per-shot, stall, drift) + stop rules

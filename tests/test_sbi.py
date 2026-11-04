@@ -1,6 +1,6 @@
 """Composite-SBI wiring: sbi_evaluate + aux caching + Rescore, driving a Campaign.
 
-Self-contained (no sbido/sbi): a toy analytic posterior stands in for the learned
+Self-contained (no sbi): a toy analytic posterior stands in for the learned
 one. The mechanism — observation -> posterior samples -> reduce -> (F, theta),
 theta cached on aux, loop fits GP over (xi, F) — is identical to the real case.
 """

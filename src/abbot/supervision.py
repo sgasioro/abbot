@@ -40,7 +40,7 @@ observation if it is numeric, else the record's outputs. Pass ``signal=`` to poi
 them at something else (e.g. ``lambda r: r.observation["obs"]``). Records without a
 signal (a run that raised, a result ingested with no observation) are skipped.
 
-The default thresholds were calibrated on one benchmark (sbido's small-angle
+The default thresholds were calibrated on one benchmark (a small-angle
 scattering problem); treat them as starting points for your apparatus. Calibrate once, offline, on held-out faulted and clean runs — tuning
 a threshold on the run it is scored on reports a detection rate the lab can't get.
 """
@@ -64,7 +64,7 @@ Signal = Callable[[Record], Any]
 Rule = Callable[[History], Verdict]
 
 # Below this relative spread, a window of observations counts as "unchanged". On
-# sbido's benchmark a stuck episode measured 0.12 (observation noise alone) against
+# that benchmark a stuck episode measured 0.12 (observation noise alone) against
 # 4.0 for a healthy run over the same designs.
 STALL_OBS_TOL = 0.5
 

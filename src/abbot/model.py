@@ -98,8 +98,8 @@ def _covar_module(kernel: Kernel, d: int):
     """``None`` keeps BoTorch's default kernel; ``"matern52"`` is a scaled ARD
     Matern-5/2 (the sklearn ``ConstantKernel * Matern(nu=2.5)`` multibax used), with
     BoTorch's dimension-scaled lengthscale prior. Without the prior it failed to fit
-    sparse data with many exact zeros (2 of 10 fits at 10 runs of BAXstics'
-    parabola data, 36% zero yields; 0 of 10 with it)."""
+    sparse data with many exact zeros (2 of 10 fits at 10 runs of a
+    catalysis dataset, 36% zero yields; 0 of 10 with it)."""
     if kernel == "default":
         return None
     if kernel == "matern52":
@@ -283,8 +283,8 @@ class EnsembleConstructor:
 
     Builds ``n_members`` small MLPs and trains each (independent init + a short Adam
     fit) so the spread across members is the uncertainty. This is the generality
-    PROOF that the ``ModelConstructor`` seam is not GP-coupled — NOT nn-bax
-    productionization (MC-dropout, deep kernels, calibration are F-tier).
+    PROOF that the ``ModelConstructor`` seam is not GP-coupled — not a
+    production neural-network surrogate (MC-dropout, deep kernels, calibration are later).
 
     ``provides_uq`` is honest and load-bearing (it feeds ``check_uq_pairing``):
       - ``n_members > 1`` -> ``"samples"`` (coherent member draws; the InfoBAX/
