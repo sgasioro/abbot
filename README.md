@@ -1,27 +1,36 @@
 # abbot
 
-**A goal-driven (a to b) Bayesian guidance (BO) framework (bot) targeting lab experiments.**
+**Goal-driven Bayesian experiment design for the lab.**
 
+abbot helps you choose which experiment to run next. You describe the knobs you
+can turn, what you measure, and what you want to achieve; abbot suggests a
+setting, you (or your instrument, or a simulation) run it and report the result,
+and it learns from every run. The goal can be:
 
-`abbot` runs experiment campaigns on top of [BoTorch](https://botorch.org): BoTorch
-supplies the models and acquisition functions, and abbot supplies the campaign
-around them. It is built for lab work, where:
+- **an optimum:** single- or multi-objective Bayesian optimization;
+- **a region:** every setting that hits a target band, a level set, the best point
+  per band (Bayesian algorithm execution, BAX);
+- **anything you can write as code** over the model's predictions.
 
-1. **the goal isn't always an optimum:** besides standard and multi-objective BO,
-   goal-driven BAX finds a region, a level set or the best point per band;
-2. **a measurement isn't always a number:** composite objectives reduce a spectrum,
-   replicates or an SBI posterior to outputs, keeping the raw observation;
-3. **runs are slow, supervised and sometimes fail:** an ask/tell loop with retries,
-   halts a person resolves, bad regions, resume, and a web UI.
+The aim is to make sophisticated methods (goal-driven search, multiple fidelities
+or sources, constraints, supervision) available through a short, readable spec
+with safe defaults, so a lab gets them without writing BoTorch code or tuning an
+algorithm.
 
-It grew out of several lab projects that each reimplemented the same method —
-surrogate + acquisition/BAX + propose→evaluate→retrain — and puts it behind one
-serializable `ProblemSpec` and an ask/tell loop.
+It's built for how lab work goes: a measurement that isn't one number (a spectrum,
+replicates, an SBI posterior), runs that are slow or fail, and a person who stays
+in charge of halts, retries and overrides.
+A web UI runs a campaign with no code. Built on [BoTorch](https://botorch.org):
+abbot uses its models and standard acquisition functions, and adds goal-driven
+(BAX) acquisitions and the campaign around them.
 
-**Status: alpha.** abbot is in active development. Anything marked *Stable* in
-[`docs/API.md`](docs/API.md) is safe to build on; *Provisional* parts may change
-between releases (renamed names keep working as aliases for a while). Issues and
-pull requests are welcome.
+Already using Xopt? abbot runs as an Xopt generator and can use Xopt's generators
+in its own loop. See [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) for how abbot fits
+next to BoTorch, Ax, Xopt and Bluesky.
+
+**Status: alpha.** APIs marked *Stable* in [`docs/API.md`](docs/API.md) are safe to
+build on; *Provisional* ones may change between releases. Issues and pull requests
+are welcome.
 
 ## Quickstart
 
@@ -79,9 +88,6 @@ model_constructor)` to choose your own. A few variations:
 See [`docs/HOWTO.md`](docs/HOWTO.md) for "how do I…" answers, [`docs/API.md`](docs/API.md)
 for the stability contract (what's safe to build on) and [`examples/`](examples/)
 for a runnable notebook per capability.
-
-See [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) for where abbot sits next to BoTorch,
-Ax, Xopt and Bluesky/blop.
 
 ## Layout
 

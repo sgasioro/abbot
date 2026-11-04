@@ -1,7 +1,7 @@
 [project]
 name = "abbot"
 version = "0.1.0"
-description = "Active-learning-for-labs layer on top of BoTorch: a Bayesian guide for lab experiments (from A to B)."
+description = "Goal-driven Bayesian experiment design for the lab."
 authors = [{name = "Sean Gasiorowski"}]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
