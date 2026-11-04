@@ -3,6 +3,8 @@ name = "abbot"
 version = "0.1.0"
 description = "Active-learning-for-labs layer on top of BoTorch: a Bayesian guide for lab experiments (from A to B)."
 authors = [{name = "Sean Gasiorowski"}]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.13"
 readme = "README.md"
 
