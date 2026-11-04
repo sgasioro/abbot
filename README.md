@@ -26,11 +26,11 @@ abbot uses its models and standard acquisition functions, and adds goal-driven
 
 abbot brings together methods that had been spread across several
 problem-specific packages. Labs work in different modes (a control room, a
-beamline, a bench), and good tools already exist for some of them, so abbot
-follows the [gest-api](https://pypi.org/project/gest-api/) generator standard and
-aims for first-class interoperability with Xopt. As it develops, the emphasis is
-on what can be shared with neighboring tools and what is better kept separate;
-see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md).
+beamline, a bench), and good tools already exist for some of them. abbot aims to
+cover the gaps, following the [gest-api](https://pypi.org/project/gest-api/)
+generator standard to promote interoperability and a unified ecosystem. As it
+develops, the emphasis is on what can be shared with neighboring tools and what
+is better kept separate; see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md).
 
 **Status: alpha.** APIs marked *Stable* in [`docs/API.md`](docs/API.md) are safe to
 build on; *Provisional* ones may change between releases. Issues and pull requests
