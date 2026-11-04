@@ -1,10 +1,11 @@
 # abbot in the ecosystem
 
-Where abbot sits next to BoTorch, Ax, Xopt and Bluesky/blop, what it owns, and
-what it deliberately leaves to them. Neighbor details were checked against
-ax-platform 1.3.1, xopt 3.2.2 and blop 1.1.0 (October 2026; the Xopt details
-were re-checked against its main branch in November 2026); they move, so
-re-check before relying on a specific claim.
+Where abbot sits next to BoTorch, Ax, Xopt, Bluesky/blop and other lab-oriented
+tools, what it owns, and what it deliberately leaves to them. Neighbor details
+were checked against ax-platform 1.3.1, xopt 3.2.2 and blop 1.1.0 (October 2026;
+the Xopt details were re-checked against its main branch in November 2026); the
+other lab-oriented tools are summarized from their papers and package pages
+(November 2026). They move, so re-check before relying on a specific claim.
 
 ## Position
 
@@ -51,9 +52,11 @@ observations are outside that model.
 DataFrame of scalars, and generators follow the gest-api `suggest(n)` / `ingest`
 protocol. Its `BaxGenerator` is
 InfoBAX only (expected information gain over `GridOptimize` /
-`CurvatureGridOptimize`), without discrete variables. abbot's BAX is broader
-(InfoBAX, MeanBAX, SwitchBAX; arbitrary goals; finite candidate sets; greedy
-kriging-believer batches). Interop runs both ways over the gest-api
+`CurvatureGridOptimize`), without discrete variables, and the
+[`bax-algorithms`](https://pypi.org/project/bax-algorithms/) package (xopt-org)
+adds further BAX algorithms for Xopt generators. abbot's BAX covers InfoBAX,
+MeanBAX and SwitchBAX, arbitrary goals, finite candidate sets and greedy
+kriging-believer batches. Interop runs both ways over the gest-api
 `suggest`/`ingest` protocol, with `spec_to_vocs` / `vocs_to_spec` moving the
 problem itself:
 - abbot's proposals in Xopt's loop: `CorePolicyGenerator` wraps a `Campaign` as
@@ -72,6 +75,37 @@ scipy backends. It maps nearly one-to-one onto `Campaign`, so abbot can be a
 blop backend; that is the route onto Bluesky beamlines, not a separate
 bluesky-adaptive agent competing with blop. blop requires Bluesky even in its
 core install, so it is not a home for labs that don't run a RunEngine.
+
+**Other lab-oriented BO tools.** Several packages bring BO to experimental
+science, each with its own emphasis. None of them is integrated with abbot;
+they are listed so a reader can pick the right tool.
+- [**Atlas**](https://github.com/aspuru-guzik-group/atlas) (Aspuru-Guzik group;
+  Hickman et al., *Digital Discovery* 2025): BO as the planner for self-driving
+  labs, used with the group's Olympus and ChemOS 2.0. It covers mixed and
+  molecular spaces, known constraints (any function of the inputs, simplex
+  compositions), unknown constraints learned from failed runs, multi-objective
+  scalarizations (Chimera and others), robust optimization, parameters that are
+  best on average across substrates, multi-fidelity, meta-learning from earlier
+  campaigns, and asynchronous runs. The closest overlap with abbot is learning
+  where runs fail: Atlas treats a failed measurement as a property of the design,
+  while abbot separates apparatus faults (retried, then resolved by a person)
+  from bad regions (learned and avoided).
+- [**BoFire**](https://github.com/experimental-design/bofire) (Dürholt et al.,
+  *JMLR* 2025): BO and classical design of experiments for chemistry, with
+  continuous, discrete, categorical and molecular inputs, close-to-target
+  objectives, multi-objective strategies and pydantic serialization.
+- [**BayBE**](https://github.com/emdgroup/baybe) (*Digital Discovery* 2025): a Bayesian back end for experimental
+  planning with little or no data, including transfer learning from related
+  campaigns.
+- [**gpCAM**](https://github.com/lbl-camera/gpCAM) (Berkeley Lab): Gaussian
+  process modeling and autonomous data acquisition, with user-supplied
+  acquisition and kernel functions and HPC-scale optimization.
+- **multibax** (Chitturi et al., *npj Computational Materials* 2024): the
+  reference implementation of target-subset BAX (MeanBAX, InfoBAX, SwitchBAX)
+  that abbot's goals and BAX policies port.
+
+abbot's emphasis among them is goal-driven search (BAX) next to optimization,
+measurements that aren't a single number, and campaigns a person supervises.
 
 ## Why not extend one of them
 
