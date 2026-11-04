@@ -28,7 +28,7 @@ abbot brings together methods that had been spread across several
 problem-specific packages. Labs work in different modes (a control room, a
 beamline, a bench), and good tools already exist for some of them. abbot aims to
 cover the gaps, following the [gest-api](https://pypi.org/project/gest-api/)
-generator standard to promote interoperability and a unified ecosystem. As it
+generator standard to promote interoperability and a coherent ecosystem. As it
 develops, the emphasis is on what can be shared with neighboring tools and what
 is better kept separate; see [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md).
 
