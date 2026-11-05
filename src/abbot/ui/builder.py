@@ -170,7 +170,7 @@ def _number(value) -> float | None:
     return float(value)
 
 
-def _tokens(values) -> list:
+def parse_values(values) -> list:
     """Enumerated values from a text field or a list: numbers, else labels."""
     if isinstance(values, str):
         sep = "," if "," in values else None
@@ -201,7 +201,7 @@ def _domain(row: dict, what: str = "Variable"):
             max_step=_number(row.get("max_step")),
         )
     if kind == "enumerated":
-        values = _tokens(row.get("values"))
+        values = parse_values(row.get("values"))
         if not values:
             raise ValueError(f"{what} {name!r}: list at least one allowed value.")
         return EnumeratedDomain(name=row["name"], values=values)

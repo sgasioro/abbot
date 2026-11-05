@@ -72,3 +72,11 @@ async def test_the_model_check_opens_in_a_dialog(monkeypatch):
         user.find(marker="check-model").click()
         await user.should_see(marker="check-report")
         assert states[-1].controller is not None
+
+
+def test_variable_options_fold_into_a_summary():
+    assert app._options_summary({"log": False, "max_step": None}) == ""
+    assert app._options_summary({"log": True, "max_step": 0.1, "start": 0.5}) == (
+        "log · step ≤ 0.1 from 0.5"
+    )
+    assert app._options_summary({"log": False, "max_step": 2.0, "start": None}) == "step ≤ 2"

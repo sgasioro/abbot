@@ -30,6 +30,7 @@ from abbot.ui.builder import (
     build_goal,
     build_spec,
     build_start,
+    parse_values,
     spec_to_rows,
 )
 from abbot.ui.controller import RunController, RunStatus
@@ -179,20 +180,20 @@ def _variable_editor(state: UIState) -> None:
             for i, row in enumerate(state.variable_rows):
                 with ui.row().classes("items-center gap-1 w-full no-wrap"):
                     ui.select(
-                        {"continuous": "Continuous", "enumerated": "Enumerated"},
+                        {"continuous": "Range", "enumerated": "Choices"},
                         value=row["kind"],
                         on_change=lambda e, r=row: (_set(r, "kind", e.value), redraw()),
-                    ).props("dense outlined").classes("w-32")
+                    ).props("dense outlined hide-dropdown-icon").classes("w-24")
                     ui.input("name", value=row.get("name", "")).bind_value(row, "name").props(
                         "dense outlined"
                     ).classes("w-20")
                     if row["kind"] == "continuous":
                         ui.number("lo", value=row.get("lower", 0.0)).bind_value(row, "lower").props(
                             "dense outlined"
-                        ).classes("w-16")
+                        ).classes("w-20")
                         ui.number("hi", value=row.get("upper", 1.0)).bind_value(row, "upper").props(
                             "dense outlined"
-                        ).classes("w-16")
+                        ).classes("w-20")
                     else:
                         ui.input("values", value=row.get("values", "0, 1, 2")).bind_value(
                             row, "values"
@@ -214,24 +215,60 @@ def _variable_editor(state: UIState) -> None:
 
 
 def _continuous_options(row: dict) -> None:
-    """Log scale and a travel limit for one continuous variable (a second line)."""
+    """Log scale and a travel limit for one continuous variable, folded away.
+
+    Collapsed, it is one "options" link with a summary of what's set; open, the
+    fields. ``start`` appears only once there is a max step, since only a travel
+    limit needs it.
+    """
     row.setdefault("log", False)
     row.setdefault("max_step", None)
     row.setdefault("start", None)
-    with ui.row().classes("items-center gap-1 w-full pl-4"):
-        ui.checkbox("log scale").bind_value(row, "log").props("dense").tooltip(
-            "For a quantity spanning orders of magnitude (a concentration, a rate)."
-        )
-        ui.number("max step").bind_value(row, "max_step").props(
-            "dense outlined"
-        ).classes("w-24").tooltip(
-            "Travel limit: how far it may move between runs. Blank for none."
-        )
-        ui.number("start").bind_value(row, "start").props(
-            "dense outlined"
-        ).classes("w-20").tooltip(
-            "The current setting; needed with a travel limit."
-        )
+    row.setdefault("_open", False)
+    box = ui.column().classes("gap-1 w-full pl-2")
+
+    def redraw() -> None:
+        box.clear()
+        with box:
+            summary = _options_summary(row)
+            with ui.row().classes("items-center gap-1"):
+                ui.button(
+                    "options" if not row["_open"] else "hide options",
+                    icon="expand_less" if row["_open"] else "expand_more",
+                    on_click=lambda: (_set(row, "_open", not row["_open"]), redraw()),
+                ).props("flat dense no-caps size=sm color=grey-7")
+                if summary and not row["_open"]:
+                    ui.label(summary).classes("text-xs text-indigo-700")
+            if not row["_open"]:
+                return
+            with ui.row().classes("items-center gap-1 w-full"):
+                ui.checkbox("log scale").bind_value(row, "log").props("dense").tooltip(
+                    "For a quantity spanning orders of magnitude (a concentration, a rate)."
+                )
+                ui.number(
+                    "max step", on_change=lambda e: start.set_visibility(e.value is not None)
+                ).bind_value(row, "max_step").props("dense outlined").classes(
+                    "w-24"
+                ).tooltip("Travel limit: how far it may move between runs. Blank for none.")
+                start = ui.number("start").bind_value(row, "start").props(
+                    "dense outlined"
+                ).classes("w-20").tooltip("The current setting, where the hardware starts.")
+                start.set_visibility(row.get("max_step") is not None)
+
+    redraw()
+
+
+def _options_summary(row: dict) -> str:
+    """A variable's options in a few words: "log · step ≤ 0.1 from 0.5"."""
+    parts = []
+    if row.get("log"):
+        parts.append("log")
+    if row.get("max_step") is not None:
+        step = f"step ≤ {_fmt(row['max_step'])}"
+        if row.get("start") is not None:
+            step += f" from {_fmt(row['start'])}"
+        parts.append(step)
+    return " · ".join(parts)
 
 
 def _objective_editor(state: UIState) -> None:
@@ -290,10 +327,14 @@ def _objective_editor(state: UIState) -> None:
 
 def _source_editor(state: UIState) -> None:
     """An optional source: runs that come at different fidelities or from different
-    codes, with a target (the one you trust) where abbot recommends."""
+    codes, and the one to trust, where abbot recommends."""
     with ui.row().classes("items-center gap-2"):
         ui.icon("layers").classes("text-indigo-600")
         ui.label("Sources").classes("text-base font-semibold")
+        ui.icon("info_outline").classes("text-gray-400 text-sm").tooltip(
+            "abbot picks which source to run, trading cost against information, and "
+            "recommends at the one you trust. Report each run's cost if you know it."
+        )
     row = state.source_row
     container = None
 
@@ -302,38 +343,17 @@ def _source_editor(state: UIState) -> None:
         if not state.source_on:
             return
         with container:
-            ui.label(
-                "abbot picks which source to run, trading cost against information, "
-                "and recommends at the target. Report each run's cost if you know it."
-            ).classes("text-xs text-gray-500")
-            with ui.row().classes("items-center gap-1 w-full"):
-                ui.select(
-                    {"enumerated": "Labeled", "continuous": "A range (fidelity)"},
+            with ui.row().classes("items-center gap-2 w-full"):
+                ui.input("name").bind_value(row, "name").props("dense outlined").classes("w-28")
+                ui.toggle(
+                    {"enumerated": "Labeled", "continuous": "Range"},
                     value=row["kind"],
                     on_change=lambda e: (_set(row, "kind", e.value), redraw()),
-                ).props("dense outlined").classes("w-40")
-                ui.input("name").bind_value(row, "name").props("dense outlined").classes("w-28")
-            with ui.row().classes("items-center gap-1 w-full"):
-                if row["kind"] == "enumerated":
-                    ui.input("values").bind_value(row, "values").props(
-                        "dense outlined"
-                    ).classes("w-48")
-                    ui.input("target").bind_value(row, "target").props(
-                        "dense outlined"
-                    ).classes("w-28")
-                else:
-                    ui.number("lo").bind_value(row, "lower").props("dense outlined").classes("w-20")
-                    ui.number("hi").bind_value(row, "upper").props("dense outlined").classes("w-20")
-                    ui.input("target").bind_value(row, "target").props(
-                        "dense outlined"
-                    ).classes("w-20")
-            if row["kind"] == "continuous":
-                with ui.row().classes("items-center gap-1 w-full"):
-                    ui.checkbox("log scale").bind_value(row, "log").props("dense")
-                    ui.select(
-                        {"high": "higher is more accurate", "low": "lower is more accurate"},
-                        value=row.get("accurate", "high"),
-                    ).bind_value(row, "accurate").props("dense outlined").classes("w-52")
+                ).props("dense no-caps")
+            if row["kind"] == "enumerated":
+                _labeled_source(row)
+            else:
+                _ranged_source(row)
 
     ui.switch(
         "Runs come from more than one source (fidelities, codes)",
@@ -342,6 +362,53 @@ def _source_editor(state: UIState) -> None:
     ).props("color=indigo")
     container = ui.column().classes("gap-2 w-full")
     redraw()
+
+
+def _labeled_source(row: dict) -> None:
+    """Labeled sources: the labels, and which one to trust (picked from them)."""
+    def labels() -> list[str]:
+        return [str(v) for v in _source_labels(row.get("values"))]
+
+    target = None  # the select, built after the labels field that refreshes it
+
+    def refresh_target() -> None:
+        if target is None:
+            return
+        options = labels()
+        if row.get("target") not in options:
+            row["target"] = options[-1] if options else None
+        target.set_options(options, value=row["target"])
+
+    with ui.row().classes("items-center gap-2 w-full"):
+        ui.input(
+            "sources", on_change=lambda _: refresh_target()
+        ).bind_value(row, "values").props("dense outlined").classes("w-52").tooltip(
+            "Comma-separated, e.g. simulation, experiment"
+        )
+        target = ui.select(labels(), value=row.get("target"), label="recommend at").props(
+            "dense outlined"
+        ).classes("w-36").on_value_change(lambda e: _set(row, "target", e.value))
+    refresh_target()
+
+
+def _ranged_source(row: dict) -> None:
+    """A fidelity range: low to high, which end is accurate, and where to recommend."""
+    with ui.row().classes("items-center gap-1 w-full"):
+        ui.number("from").bind_value(row, "lower").props("dense outlined").classes("w-20")
+        ui.number("to").bind_value(row, "upper").props("dense outlined").classes("w-20")
+        ui.input("recommend at").bind_value(row, "target").props("dense outlined").classes(
+            "w-28"
+        )
+    with ui.row().classes("items-center gap-2 w-full"):
+        ui.toggle(
+            {"high": "higher is more accurate", "low": "lower is more accurate"},
+            value=row.get("accurate", "high"),
+        ).bind_value(row, "accurate").props("dense no-caps")
+        ui.checkbox("log scale").bind_value(row, "log").props("dense")
+
+
+def _source_labels(values) -> list:
+    return parse_values(values) if values else []
 
 
 def _model_selector(state: UIState) -> None:
