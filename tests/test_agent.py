@@ -122,5 +122,13 @@ def test_the_mcp_server_serves_the_workspace(tmp_path):
             assert len(designs) == 2 and "temp" in designs[0]["design"]
             r = await client.call_tool("status", {"name": "nope"})
             assert r.is_error and "No campaign named 'nope'" in r.content[0].text
+            r = await client.call_tool("spec_guide", {})
+            assert "Who runs each experiment" in r.content[0].text
+
+            prompts = {p.name for p in (await client.list_prompts()).prompts}
+            assert "plan_campaign" in prompts
+            r = await client.get_prompt("plan_campaign", {"task": "anneal films"})
+            text = r.messages[0].content.text
+            assert "The task: anneal films" in text and "spec_guide" in text
 
     asyncio.run(session())

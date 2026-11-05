@@ -16,7 +16,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from abbot import __version__
-from abbot.agent.workspace import SPEC_GUIDE, Workspace
+from abbot.agent.workspace import PLANNING_GUIDE, SPEC_GUIDE, Workspace
 from abbot.problem import ProblemSpec
 
 INSTRUCTIONS = """\
@@ -40,9 +40,9 @@ def build_server(root: str | Path) -> MCPServer:
 
     @_tool(server)
     def spec_guide() -> str:
-        """How to write a spec and a goal, with examples. Read this before
-        create_campaign."""
-        return SPEC_GUIDE
+        """What to ask the person, and how to write a spec and a goal, with
+        examples. Read this before create_campaign."""
+        return PLANNING_GUIDE + "\n" + SPEC_GUIDE
 
     @_tool(server)
     def spec_schema() -> dict:
@@ -133,6 +133,18 @@ def build_server(root: str | Path) -> MCPServer:
     def history(name: str) -> str:
         """The spec and every result, as CSV."""
         return ws.history(name)
+
+    @server.prompt(title="Plan an abbot campaign")
+    def plan_campaign(task: str = "") -> str:
+        """Set up a campaign by talking it through: what can be set, what's
+        measured, the goal, limits and budget, then a plan to confirm."""
+        about = f" The task: {task}" if task.strip() else ""
+        return (
+            "Help me set up an abbot campaign to choose my experiments." + about
+            + "\n\n" + PLANNING_GUIDE
+            + "\nRead spec_guide for how to write the spec, then start by asking me"
+            " what you still need to know."
+        )
 
     return server
 

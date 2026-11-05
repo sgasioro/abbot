@@ -439,6 +439,14 @@ call each on a `Workspace`, which can also be used directly from Python:
   that fit the new spec are copied, and the reply counts what was skipped and why.
 - **Errors reach the agent** with abbot's message (an unknown name, a halt to
   resolve, a design that isn't outstanding), so it can correct itself.
+- **Planning with the person.** `spec_guide` opens with the questions to settle
+  before writing a spec: the knobs and the ranges the apparatus can reach, what's
+  measured, the goal, travel limits and unsafe settings, failure modes, budget,
+  earlier results, and who runs each experiment (`abbot.agent.PLANNING_GUIDE`).
+  The `plan_campaign` prompt starts that conversation from the person's side
+  (`/mcp__abbot__plan_campaign` in Claude Code). For Claude Code, the repository's
+  `skills/abbot` skill (copy it to `~/.claude/skills/`) connects the server if it
+  isn't connected yet, then follows the same questions.
 - **People decide.** The server's instructions ask the agent to confirm with the
   person before resolving a halt as a bad region, and before creating a campaign
   from a spec it inferred.

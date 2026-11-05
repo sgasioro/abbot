@@ -35,6 +35,33 @@ from abbot.ui.builder import (
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 # What an agent reads before writing a spec. Kept short; the schema has the rest.
+PLANNING_GUIDE = """\
+Setting up a campaign with the person. Find out, from what they've said and by
+asking:
+1. What they can set: each knob, its units, and the range the apparatus can
+   actually reach (not only the interesting part). Whether a knob spans orders of
+   magnitude. Choices that aren't numbers (a material, a mode).
+2. What each run measures, with units. Which outputs to maximize or minimize, which
+   only have to stay within limits (and the limits), which are only recorded.
+3. The goal: the single best setting, or a region (every setting that meets a
+   specification, everything above a threshold, the top few).
+4. Practical limits: how far a knob can move between runs and where it is now;
+   settings known to fail or be unsafe. Keep unsafe settings out of the ranges
+   rather than letting abbot find them.
+5. What a failed run looks like, so you can tell a failure from a bad result.
+6. The budget: how many runs, and whether runs differ in cost (a cheap simulation
+   next to the real experiment).
+7. Results they already have; add them with add_results after creating.
+8. Who runs each experiment: you, through a script or command, or the person by
+   hand (then you suggest, wait, and report what they tell you).
+Ask about everything that's missing in one message rather than one question at a
+time, and skip what you already know. Don't fill gaps with numbers from the
+examples in spec_guide or from probing the apparatus at its extremes; if the person
+doesn't know, propose a value, say it's a guess, and ask. Then show the plan in
+plain words (knobs and ranges, outputs and limits, goal, budget) and create the
+campaign once the person agrees.
+"""
+
 SPEC_GUIDE = """\
 A campaign is a spec (what you can set and what you measure), optionally a goal
 (find a region rather than an optimum), and the measurements reported back.

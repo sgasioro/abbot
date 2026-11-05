@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Setup assistant:** the MCP server's `plan_campaign` prompt has the agent talk
+  a campaign through with the person before it writes a spec: the knobs and their
+  reachable ranges, what's measured, the goal, limits and failure modes, budget,
+  earlier results, and who runs each experiment. `spec_guide` opens with the same
+  questions, so an agent that never sees the prompt asks them too. An abbot skill
+  for Claude Code (`skills/abbot`) installs and connects the server, then hands off.
+- `benchmarks/agent`: real agent sessions against a simulated anneal rig the agent
+  can't read, with and without the skill.
+
 ## 0.2.0
 
 - **UI:** the setup panel covers log-scaled variables, travel limits (with the
