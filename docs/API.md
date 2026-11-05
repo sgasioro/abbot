@@ -431,8 +431,12 @@ call each on a `Workspace`, which can also be used directly from Python:
 - **The loop.** `suggest(name, n, fixed=)` returns `{"id", "design"}` items;
   `report_result(name, id, outputs, cost=)` takes raw outputs by name;
   `report_failure`, `cancel`, `add_results` (runs measured outside the loop) and
-  `resolve_halt(name, answer, reason=)` complete it. `status`, `recommend`,
-  `check_model` and `history` (CSV) read.
+  `resolve_halt(name, answer, reason=)` complete it. These reply with a short
+  state (runs, outstanding designs, any halt) without fitting the model;
+  `status`, `recommend`, `check_model` and `history` (CSV) read.
+- **Changing the spec.** A campaign's spec is fixed. To narrow a range or add an
+  output, create a new campaign with `results_from=<old name>`: the measured runs
+  that fit the new spec are copied, and the reply counts what was skipped and why.
 - **Errors reach the agent** with abbot's message (an unknown name, a halt to
   resolve, a design that isn't outstanding), so it can correct itself.
 - **People decide.** The server's instructions ask the agent to confirm with the

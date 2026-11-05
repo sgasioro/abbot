@@ -10,8 +10,9 @@
   render again.
 - **Agent access:** `abbot-mcp` (`abbot[mcp]`) serves named campaigns, saved on
   disk, to an MCP client: create, suggest, report results or failures, resolve
-  halts, recommend and check the model. `abbot.agent.Workspace` is the same
-  surface from Python.
+  halts, recommend and check the model, and start a narrowed campaign from an
+  earlier one's runs (`results_from`). `abbot.agent.Workspace` is the same
+  surface from Python. Tested with headless agent sessions on a simulated lab.
 
 ## 0.1.0
 

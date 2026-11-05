@@ -58,12 +58,16 @@ def build_server(root: str | Path) -> MCPServer:
         model: str = "default",
         initial_designs: list[dict] | None = None,
         max_retries: int = 1,
+        results_from: str | None = None,
     ) -> dict:
         """Create and save a campaign. spec and goal are described by spec_guide.
         initial_designs: designs to run first ({variable: value}); with travel
         limits, the first is the current setting. Without them abbot picks a few
-        space-filling designs."""
-        return ws.create(name, spec, goal, strategy, model, initial_designs, max_retries)
+        space-filling designs. results_from: another campaign whose results to
+        copy in where they fit this spec (e.g. after narrowing a range)."""
+        return ws.create(
+            name, spec, goal, strategy, model, initial_designs, max_retries, results_from
+        )
 
     @_tool(server)
     def list_campaigns() -> list[dict]:
@@ -81,7 +85,8 @@ def build_server(root: str | Path) -> MCPServer:
         name: str, id: str, outputs: dict[str, float], cost: float | None = None
     ) -> dict:
         """Report what was measured for a suggested design: {output: raw value}
-        for every output, and the run's cost if known."""
+        for every output, and the run's cost if known. Returns a short state;
+        status and recommend give the full picture."""
         return ws.report_result(name, id, outputs, cost)
 
     @_tool(server)

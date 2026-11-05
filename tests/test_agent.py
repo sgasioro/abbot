@@ -77,6 +77,33 @@ def test_results_from_outside_the_loop_and_clear_errors(tmp_path):
     assert not (tmp_path / "other").exists()
 
 
+def test_a_narrowed_campaign_keeps_the_runs_that_fit(tmp_path):
+    ws = Workspace(tmp_path)
+    ws.create("wide", SPEC)
+    ws.add_results("wide", [
+        {"design": {"temp": t}, "outputs": {"yield": _yield({"temp": t})}}
+        for t in (25.0, 50.0, 75.0)
+    ])
+    (s,) = ws.suggest("wide")
+    ws.report_failure("wide", s["id"], "interlock")
+    narrow = {**SPEC, "domain": [{"kind": "continuous", "name": "temp",
+                                  "lower": 20, "upper": 62}]}
+    out = ws.create("narrow", narrow, results_from="wide")
+    assert out["runs"] == 2 and out["copied"] == 2
+    assert out["skipped"] == {"outside the new ranges": 1, "failed or bad-region run": 1}
+    with pytest.raises(ValueError, match="No campaign named"):
+        ws.create("other", SPEC, results_from="nope")
+
+
+def test_the_loop_replies_are_short(tmp_path):
+    ws = Workspace(tmp_path)
+    ws.create("opt", SPEC)
+    (s,) = ws.suggest("opt")
+    brief = ws.report_result("opt", s["id"], {"yield": 0.5})
+    assert "recommended" not in brief and "cost_spent" not in brief
+    assert ws.status("opt")["recommended"]
+
+
 def test_the_mcp_server_serves_the_workspace(tmp_path):
     pytest.importorskip("mcp")
     from mcp import Client

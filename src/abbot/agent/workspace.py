@@ -74,6 +74,9 @@ model: "default" (independent GPs) or "correlated" (one GP over correlated outpu
 Loop: suggest -> run the design -> report_result (or report_failure). A failed design
 is retried; after repeated failures the campaign halts until resolve_halt is called
 with "retry", "exclude" or "bad_region" (the design itself gives nothing usable).
+A campaign's spec is fixed once created. To change it (narrow a range the apparatus
+can't reach, add an output), create a new campaign with results_from=<old name>:
+the runs that fit the new spec are copied in.
 """
 
 
@@ -96,8 +99,14 @@ class Workspace:
         model: str = "default",
         initial_designs: list[dict] | None = None,
         max_retries: int = 1,
+        results_from: str | None = None,
     ) -> dict:
-        """Create and save a campaign. Refuses a name that already exists."""
+        """Create and save a campaign. Refuses a name that already exists.
+
+        ``results_from`` copies another campaign's results into the new one (say,
+        after narrowing a range): every measured run whose design and outputs fit
+        the new spec. The reply counts what was copied and skipped.
+        """
         if not _NAME.match(name):
             raise ValueError(
                 f"Campaign name {name!r}: use letters, digits, '_', '-' or '.', "
@@ -120,11 +129,16 @@ class Workspace:
             "max_retries": max_retries,
             "abbot_version": __version__,
         }
+        source = self._campaign(results_from) if results_from else None
         campaign = self._build(folder, config)  # validates goal, model, designs
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "campaign.json").write_text(json.dumps(config, indent=1))
         self._open[name] = campaign
-        return self.status(name)
+        extra: dict[str, Any] = {"policy": type(campaign.policy).__name__}
+        if source is not None:
+            copied, skipped = _copy_results(source, campaign)
+            extra.update(copied=copied, skipped=skipped)
+        return {**self._brief(name), **extra}
 
     def campaigns(self) -> list[dict]:
         """Every saved campaign, with its size and whether it needs attention."""
@@ -160,17 +174,17 @@ class Workspace:
         """The measured outputs (raw values, by name) for an outstanding design."""
         c = self._campaign(name)
         c.ingest(outputs, id=id, costs=cost)
-        return self.status(name)
+        return self._brief(name)
 
     def report_failure(self, name: str, id: str, error: str) -> dict:
         """An outstanding design couldn't be run; it is retried as usual."""
         self._campaign(name).fail(id, error)
-        return self.status(name)
+        return self._brief(name)
 
     def cancel(self, name: str, id: str) -> dict:
         """Withdraw an outstanding design: nothing recorded, no retry."""
         self._campaign(name).cancel(id)
-        return self.status(name)
+        return self._brief(name)
 
     def add_results(self, name: str, results: list[dict]) -> dict:
         """Results measured outside the loop (earlier data, a run the lab chose).
@@ -181,12 +195,12 @@ class Workspace:
         c = self._campaign(name)
         for item in results:
             c.record(item["design"], item["outputs"], cost=item.get("cost"))
-        return self.status(name)
+        return self._brief(name)
 
     def resolve_halt(self, name: str, answer: str, reason: str | None = None) -> dict:
         """Answer a halt: ``"retry"``, ``"exclude"`` or ``"bad_region"``."""
         self._campaign(name).resolve(answer, reason=reason)
-        return self.status(name)
+        return self._brief(name)
 
     # -- reading --
 
@@ -194,19 +208,8 @@ class Workspace:
         """Where the campaign stands: runs, outstanding designs, halt, recommendation."""
         c = self._campaign(name)
         spec = c.spec
-        out: dict[str, Any] = {
-            "name": name,
-            "runs": len(c.history),
-            "failed_runs": sum(bool(r.fault) for r in c.history.records),
-            "outstanding": [{"id": cand.id, "design": dict(cand)} for cand in c.outstanding()],
-            "halted": c.halted,
-            "stopped": c.stopped,
-            "cost_spent": c.history.cost_spent,
-            "policy": type(c.policy).__name__,
-        }
-        if c.halted:
-            out["halted_on"] = c.halted_on
-            out["resolve_with"] = ["retry", "exclude", "bad_region"]
+        out = self._brief(name)
+        out["policy"] = type(c.policy).__name__
         if any(r.outputs is not None for r in c.history.records):
             out["recommended"] = self.recommend(name)
         out["variables"] = spec.variable_names
@@ -238,6 +241,26 @@ class Workspace:
 
     # -- internals --
 
+    def _brief(self, name: str) -> dict:
+        """The short state the loop's calls return: no model fit, nothing repeated
+        that the caller already knows. ``status`` adds the recommendation."""
+        c = self._campaign(name)
+        out: dict[str, Any] = {
+            "name": name,
+            "runs": len(c.history),
+            "failed_runs": sum(bool(r.fault) for r in c.history.records),
+            "outstanding": [{"id": cand.id, "design": dict(cand)} for cand in c.outstanding()],
+            "halted": c.halted,
+        }
+        if c.halted:
+            out["halted_on"] = c.halted_on
+            out["resolve_with"] = ["retry", "exclude", "bad_region"]
+        if c.stopped:
+            out["stopped"] = c.stopped
+        if any(r.cost is not None for r in c.history.records):
+            out["cost_spent"] = c.history.cost_spent
+        return out
+
     def _campaign(self, name: str) -> Campaign:
         if name in self._open:
             return self._open[name]
@@ -264,6 +287,50 @@ class Workspace:
             initial_designs=config.get("initial_designs"),
             max_retries=config.get("max_retries", 1),
         )
+
+
+def _copy_results(source: Campaign, target: Campaign) -> tuple[int, dict[str, int]]:
+    """Record ``source``'s measured runs in ``target`` where they fit its spec.
+
+    Failed runs and bad-region runs aren't copied: they belong to the old setup.
+    Returns the number copied and the skipped ones counted by reason.
+    """
+    spec = target.spec
+    copied, skipped = 0, {}
+
+    def skip(reason: str) -> None:
+        skipped[reason] = skipped.get(reason, 0) + 1
+
+    for r in source.history.records:
+        if r.outputs is None or r.fault or r.bad_region:
+            skip("failed or bad-region run")
+            continue
+        design = source.spec.as_dict(r.candidate)
+        outputs = dict(zip(source.spec.output_names,
+                           torch.as_tensor(r.outputs).reshape(-1).tolist()))
+        if set(spec.variable_names) - set(design) or set(spec.output_names) - set(outputs):
+            skip("variables or outputs differ")
+            continue
+        design = {k: design[k] for k in spec.variable_names}
+        if not _fits(spec, design):
+            skip("outside the new ranges")
+            continue
+        target.record(design, {k: outputs[k] for k in spec.output_names}, cost=r.cost)
+        copied += 1
+    return copied, skipped
+
+
+def _fits(spec: ProblemSpec, design: dict) -> bool:
+    """Whether a design is inside the spec's ranges and choices."""
+    for d in spec.inputs:
+        value = design[d.name]
+        lower, upper = getattr(d, "lower", None), getattr(d, "upper", None)
+        if lower is not None and not lower <= value <= upper:
+            return False
+        values = getattr(d, "values", None)
+        if values is not None and value not in values:
+            return False
+    return True
 
 
 def _goal_row(goal: dict) -> dict:
