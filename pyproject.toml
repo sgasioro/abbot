@@ -1,6 +1,6 @@
 [project]
 name = "abbot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Goal-driven Bayesian experimental design for the lab."
 authors = [{name = "Sean Gasiorowski"}]
 license = "Apache-2.0"
@@ -27,6 +27,9 @@ dependencies = [
     "gest-api",
 ]
 
+[project.scripts]
+abbot-mcp = "abbot.agent.server:main"
+
 [project.urls]
 Repository = "https://github.com/sgasioro/abbot"
 Issues = "https://github.com/sgasioro/abbot/issues"
@@ -38,6 +41,8 @@ xopt = ["xopt>=3.2"]
 sbi = ["sbi>=0.22,<0.23", "pyro-ppl>=1.9"]
 # Web frontend. NiceGUI is FastAPI-based; plotly for live progress plots.
 ui = ["nicegui>=1.4", "plotly>=5"]
+# Agent access: an MCP server over named, saved campaigns (`abbot-mcp`).
+mcp = ["mcp>=2.3,<3"]
 dev = ["pytest>=8", "ruff>=0.8"]
 # Example notebooks (examples/*.ipynb) + headless execution for the smoke test.
 examples = ["jupyter", "nbclient>=0.10", "nbformat>=5", "matplotlib>=3.9"]

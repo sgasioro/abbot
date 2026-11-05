@@ -36,7 +36,7 @@ jobs:
           cache: pip
       # The CPU wheel: abbot runs on the CPU, and the CUDA wheel is gigabytes.
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - run: pip install -e '.[ui,dev]'
+      - run: pip install -e '.[ui,dev,mcp]'
       - name: Fast tests
         run: pytest -m "not slow" -q
       - name: Slow tests (GP fits, policies, end-to-end loops)

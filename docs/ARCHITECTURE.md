@@ -33,8 +33,11 @@ src/abbot/
   diagnostics.py  # campaign.check(): leave-one-out fit, noise, lengthscales
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
-    builder.py    # form rows -> ProblemSpec; optimizer selection
+    builder.py    # form rows <-> ProblemSpec (sources, ranges, travel limits), goals, model
     app.py        # single-dashboard: Define / Run / Progress; `python -m abbot.ui`
+  agent/          # agent access [extra: mcp]
+    workspace.py  # Workspace: named campaigns saved on disk, JSON in and out
+    server.py     # MCP server over a Workspace; `abbot-mcp`
   interop/
     xopt.py       # gest VOCS <-> spec + CorePolicyGenerator (runs under Xopt)
     sbi.py        # SBI as a composite objective: PosteriorSampler, sbi_evaluate,
@@ -118,4 +121,7 @@ physical measurements, no caller-side negation. `run_campaign` returns a
 Three design properties are kept so that agents can drive abbot without
 architecture changes: **headless-first**,
 **typed JSON-serializable `ProblemSpec` + run state** (no live-object references),
-and **ask/tell as the public contract**.
+and **ask/tell as the public contract**. `abbot.agent` builds on them: a
+`Workspace` keeps campaigns by name in a directory (each a JSON recipe plus its
+`DataStore`), and the MCP server is one tool per `Workspace` call. Spec, goal and
+model choices go through the same builder the UI uses, so the two stay in step.

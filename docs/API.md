@@ -63,6 +63,9 @@ on them.
 - **`abbot.cost`** (`CostModel`, `FixedCost`, `CallableCost`, `FittedCost`,
   `PowerLawCost`, `SourceCost`), `Record.cost` / `Record.acquisition` and the timing
   fields, `SimpleBO` / `ParetoBO(cost_model=)` — new.
+- **Agent access** — `abbot.agent` (`Workspace`, `SPEC_GUIDE`) and the MCP server
+  `abbot.agent.server` (`build_server`, the `abbot-mcp` command; `abbot[mcp]`). New;
+  tool names and the shape of their results may change.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
   the engine through `Campaign`, not by importing UI internals.
 - **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`,
@@ -402,6 +405,45 @@ use from the spec, with your keyword arguments) or one built on
   expect numbers.
 - **Not supported:** `fixed=`, source variables, and what VOCS can't hold
   (domain and output linear constraints, integer domains).
+
+## Agent access (MCP)
+
+```bash
+pip install "abbot[mcp]"
+abbot-mcp --dir ~/abbot-campaigns        # an MCP server over stdio
+claude mcp add abbot -- abbot-mcp --dir ~/abbot-campaigns   # e.g. in Claude Code
+```
+
+Other MCP clients take the same command in their server config
+(`{"command": "abbot-mcp", "args": ["--dir", "..."]}`). The server's tools are one
+call each on a `Workspace`, which can also be used directly from Python:
+
+- **Campaigns by name.** `create_campaign(name, spec, goal=, strategy=, model=,
+  initial_designs=, max_retries=)` saves `<dir>/<name>/campaign.json` (how to
+  rebuild it) and a `DataStore` beside it. Every later call reopens the campaign by
+  name, so a restarted server, or another session, carries on where it stopped,
+  outstanding designs and halts included. `list_campaigns` shows them.
+- **The spec and goal are JSON.** The spec is a `ProblemSpec` as JSON
+  (`spec_guide` has examples; `spec_schema` the full schema). A goal is one of
+  `band`, `level`, `topk` or `percentile` (the UI's goal kinds), and makes the
+  campaign a `BAXPolicy` with the given `strategy`; without one the spec's default
+  policy optimizes. `model` is `"default"` or `"correlated"`.
+- **The loop.** `suggest(name, n, fixed=)` returns `{"id", "design"}` items;
+  `report_result(name, id, outputs, cost=)` takes raw outputs by name;
+  `report_failure`, `cancel`, `add_results` (runs measured outside the loop) and
+  `resolve_halt(name, answer, reason=)` complete it. These reply with a short
+  state (runs, outstanding designs, any halt) without fitting the model;
+  `status`, `recommend`, `check_model` and `history` (CSV) read.
+- **Changing the spec.** A campaign's spec is fixed. To narrow a range or add an
+  output, create a new campaign with `results_from=<old name>`: the measured runs
+  that fit the new spec are copied, and the reply counts what was skipped and why.
+- **Errors reach the agent** with abbot's message (an unknown name, a halt to
+  resolve, a design that isn't outstanding), so it can correct itself.
+- **People decide.** The server's instructions ask the agent to confirm with the
+  person before resolving a halt as a bad region, and before creating a campaign
+  from a spec it inferred.
+- **Not exposed:** custom models, `FunctionGoal`, composite measurements and
+  supervisors with fault checks or stop rules. Use the Python API for those.
 
 ## Supervisors: faults and stops
 
@@ -797,7 +839,7 @@ explicitly if you need it pinned.
 
 ## Deprecation policy (pre-1.0)
 
-- `abbot` is `0.1.0` — pre-release. The **Stable** tier above is the compatibility
+- `abbot` is `0.2.0` — pre-release. The **Stable** tier above is the compatibility
   promise; **Provisional** may change on any release; **Private** has no promise.
 - Soft-deprecated aliases (`ObjectiveSpec`, `objectives=`, `constraints=`,
   `InequalitySpec`, `_safe_fit`, `_ensure_grid`) are kept at least one minor version after a replacement ships.
@@ -807,7 +849,7 @@ explicitly if you need it pinned.
 ## Planned, not yet built
 
 Named here so you don't design around their absence as if permanent:
-output constraints in the UI, a feasibility stopping rule, a run-level JSON serializer including the SBI `aux` payload, a
+a feasibility stopping rule, a run-level JSON serializer including the SBI `aux` payload, a
 `TARGET` objective direction, continuous BAX (pathwise / seeded-ascent), the full
 `sbi`-backed benchmark, and a blop backend for Bluesky.
 
