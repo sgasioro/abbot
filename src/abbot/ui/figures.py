@@ -41,7 +41,7 @@ class VizSelections:
 
 
 def blank_fig(title: str = "building…") -> dict:
-    return {"data": [], "layout": {**PLOT_LAYOUT, "title": title}}
+    return {"data": [], "layout": {**PLOT_LAYOUT, "title": {"text": title}}}
 
 
 def progress_fig(history: History, spec: ProblemSpec, policy=None, model=None) -> dict:
@@ -64,8 +64,8 @@ def progress_fig(history: History, spec: ProblemSpec, policy=None, model=None) -
             "y": y, "x": list(range(len(y))), "type": "scatter", "mode": "lines+markers",
             "line": {"color": ACCENT, "width": 2}, "marker": {"color": ACCENT, "size": 6},
         }],
-        "layout": {**PLOT_LAYOUT, "title": title, "xaxis": {"title": "step"},
-                   "yaxis": {"title": ylab}},
+        "layout": {**PLOT_LAYOUT, "title": {"text": title}, "xaxis": {"title": {"text": "step"}},
+                   "yaxis": {"title": {"text": ylab}}},
     }
 
 
@@ -84,8 +84,8 @@ def bax_progress_fig(history: History, spec: ProblemSpec, policy, model) -> dict
             "y": [identified, collected],
             "type": "bar", "marker": {"color": [ACCENT, "#9ca3af"]},
         }],
-        "layout": {**PLOT_LAYOUT, "title": "Target region discovered",
-                   "yaxis": {"title": "count"}},
+        "layout": {**PLOT_LAYOUT, "title": {"text": "Target region discovered"},
+                   "yaxis": {"title": {"text": "count"}}},
     }
 
 
@@ -112,9 +112,9 @@ def model_fig(history: History, spec: ProblemSpec, model, sel: VizSelections) ->
                 {"x": px, "y": py, "type": "scatter", "mode": "markers",
                  "marker": {"color": "#111", "size": 7}, "name": "observed"},
             ],
-            "layout": {**PLOT_LAYOUT, "title": f"Posterior over {s['var_name']}",
-                       "xaxis": {"title": s["var_name"]},
-                       "yaxis": {"title": s["objective_name"]}},
+            "layout": {**PLOT_LAYOUT, "title": {"text": f"Posterior over {s['var_name']}"},
+                       "xaxis": {"title": {"text": s["var_name"]}},
+                       "yaxis": {"title": {"text": s["objective_name"]}}},
         }
     # 2-D (or a 2-var slice of higher-D) contour.
     vx, vy = sel.var_x, sel.var_y
@@ -127,12 +127,12 @@ def model_fig(history: History, spec: ProblemSpec, model, sel: VizSelections) ->
     return {
         "data": [
             {"x": s["x"], "y": s["y"], "z": s["z"], "type": "contour",
-             "colorscale": "Viridis", "colorbar": {"title": s["objective_name"]}},
+             "colorscale": "Viridis", "colorbar": {"title": {"text": s["objective_name"]}}},
             {"x": px, "y": py, "type": "scatter", "mode": "markers",
              "marker": {"color": "white", "size": 7, "line": {"color": "black", "width": 1}}},
         ],
-        "layout": {**PLOT_LAYOUT, "title": title,
-                   "xaxis": {"title": s["var_x_name"]}, "yaxis": {"title": s["var_y_name"]}},
+        "layout": {**PLOT_LAYOUT, "title": {"text": title},
+                   "xaxis": {"title": {"text": s["var_x_name"]}}, "yaxis": {"title": {"text": s["var_y_name"]}}},
     }
 
 
@@ -153,6 +153,6 @@ def parity_fig(history: History, spec: ProblemSpec, model, sel: VizSelections) -
             {"x": obs, "y": pred, "error_y": {"type": "data", "array": std, "visible": True},
              "type": "scatter", "mode": "markers", "marker": {"color": ACCENT, "size": 7}},
         ],
-        "layout": {**PLOT_LAYOUT, "title": f"Parity — {name}",
-                   "xaxis": {"title": "observed"}, "yaxis": {"title": "predicted"}},
+        "layout": {**PLOT_LAYOUT, "title": {"text": f"Parity — {name}"},
+                   "xaxis": {"title": {"text": "observed"}}, "yaxis": {"title": {"text": "predicted"}}},
     }

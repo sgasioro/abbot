@@ -7,8 +7,10 @@ from abbot.goal import BandIntersection, LevelSet, PercentileSet, TopK
 from abbot.problem import ContinuousDomain, EnumeratedDomain
 from abbot.ui.builder import (
     BAX_STRATEGY_LABELS,
+    build_constructor,
     build_goal,
     build_spec,
+    build_start,
 )
 
 
@@ -150,3 +152,93 @@ def test_bax_strategy_labels_cover_the_engine_strategies():
 
     assert set(BAX_STRATEGY_LABELS) == set(_BAX_UQ)
     assert BAX_STRATEGY_LABELS["SwitchBAX"].startswith("Balanced")
+
+
+# --- the rest of the spec: log scale, travel limits, ranges, sources, model ---
+
+
+def test_build_spec_log_scale_travel_limit_and_output_ranges():
+    spec = build_spec(
+        [{"kind": "continuous", "name": "conc", "lower": 1e-3, "upper": 1.0, "log": True,
+          "max_step": "0.2"}],
+        [{"name": "yield", "direction": "MAXIMIZE", "min_val": None, "max_val": ""},
+         {"name": "purity", "direction": "OBSERVE", "min_val": 0.9}],
+    )
+    assert spec.domain[0].log and spec.domain[0].max_step == 0.2
+    assert spec.outputs[0].min_val is None and spec.outputs[0].max_val is None
+    assert spec.outputs[1].min_val == 0.9
+
+
+def test_build_spec_labeled_and_ranged_sources():
+    rows = [{"kind": "continuous", "name": "x", "lower": 0, "upper": 1}]
+    out = [{"name": "f", "direction": "MAXIMIZE"}]
+    labeled = build_spec(rows, out, {"kind": "enumerated", "name": "code",
+                                     "values": "sim, experiment", "target": "experiment"})
+    assert labeled.sources[0].target == "experiment"
+    assert labeled.variable_names == ["x", "code"]
+    ranged = build_spec(rows, out, {"kind": "continuous", "name": "mesh", "lower": 0.1,
+                                    "upper": 1.0, "target": "0.1", "log": True,
+                                    "accurate": "low"})
+    assert ranged.sources[0].target == 0.1 and ranged.sources[0].accurate == "low"
+    assert build_spec(rows, out, {"kind": "enumerated", "name": " "}).sources is None
+    with pytest.raises(ValueError, match="target"):
+        build_spec(rows, out, {"kind": "enumerated", "name": "code", "values": "a, b"})
+
+
+def test_build_start_only_with_travel_limits():
+    rows = [{"kind": "continuous", "name": "x", "lower": 0, "upper": 10, "max_step": 1,
+             "start": 2.0},
+            {"kind": "continuous", "name": "y", "lower": 0, "upper": 4},
+            {"kind": "enumerated", "name": "c", "values": "a, b"}]
+    out = [{"name": "f", "direction": "MAXIMIZE"}]
+    assert build_start(build_spec(rows, out), rows) == [{"x": 2.0, "y": 2.0, "c": "a"}]
+    free = [{**rows[0], "max_step": None}] + rows[1:]
+    assert build_start(build_spec(free, out), free) is None
+    missing = [{**rows[0], "start": None}] + rows[1:]
+    with pytest.raises(ValueError, match="where it starts"):
+        build_start(build_spec(missing, out), missing)
+
+
+def test_build_constructor_choices():
+    rows = [{"kind": "continuous", "name": "x", "lower": 0, "upper": 1}]
+    one = build_spec(rows, [{"name": "f", "direction": "MAXIMIZE"}])
+    two = build_spec(rows, [{"name": "f", "direction": "MAXIMIZE"},
+                            {"name": "g", "direction": "OBSERVE"}])
+    assert build_constructor(two) is None
+    assert build_constructor(two, "correlated") is not None
+    with pytest.raises(ValueError, match="two outputs"):
+        build_constructor(one, "correlated")
+    sourced = build_spec(rows, [{"name": "f", "direction": "MAXIMIZE"},
+                                {"name": "g", "direction": "OBSERVE"}],
+                         {"kind": "enumerated", "name": "code", "values": "a, b", "target": "b"})
+    with pytest.raises(ValueError, match="sources yet"):
+        build_constructor(sourced, "correlated")
+
+
+def test_spec_to_rows_round_trips_the_editor_fields():
+    from abbot.ui.builder import spec_to_rows
+
+    spec = build_spec(
+        [{"kind": "continuous", "name": "conc", "lower": 0.01, "upper": 1.0, "log": True,
+          "max_step": 0.2},
+         {"kind": "enumerated", "name": "solvent", "values": "water, ethanol"}],
+        [{"name": "yield", "direction": "MAXIMIZE"},
+         {"name": "purity", "direction": "OBSERVE", "min_val": 0.9}],
+        {"kind": "continuous", "name": "mesh", "lower": 0.1, "upper": 1.0, "target": "0.1",
+         "log": True, "accurate": "low"},
+    )
+    again = build_spec(*spec_to_rows(spec))
+    assert again == spec
+
+
+def test_spec_to_rows_refuses_what_the_editor_cant_show():
+    from abbot.problem import LinearConstraint
+    from abbot.ui.builder import spec_to_rows
+
+    spec = build_spec(
+        [{"kind": "continuous", "name": "a", "lower": 0, "upper": 1},
+         {"kind": "continuous", "name": "b", "lower": 0, "upper": 1}],
+        [{"name": "f", "direction": "MAXIMIZE"}],
+    ).model_copy(update={"domain_constraints": [LinearConstraint({"a": 1, "b": 1}, max_val=1)]})
+    with pytest.raises(ValueError, match="linear constraints"):
+        spec_to_rows(spec)

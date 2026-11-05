@@ -65,9 +65,15 @@ class RunController:
         return self.campaign.suggest(n)
 
     def submit(
-        self, results: object, observations: list | None = None, *, id: str | None = None
+        self,
+        results: object,
+        observations: list | None = None,
+        *,
+        id: str | None = None,
+        cost: float | None = None,
     ) -> CampaignState:
-        state = self.campaign.ingest(results, observations=observations, id=id)
+        """Record a measured result; ``cost`` is what the run cost, if known."""
+        state = self.campaign.ingest(results, observations=observations, id=id, costs=cost)
         self._sync_status()
         return state
 

@@ -23,7 +23,16 @@ from abbot.experiment import MockAnalyticExperiment
 from abbot.policy import BAXPolicy, default_policy
 from abbot.session import Campaign, default_initial_designs
 from abbot.ui import figures
-from abbot.ui.builder import BAX_STRATEGY_LABELS, build_goal, build_spec
+from abbot.ui.builder import (
+    BAX_STRATEGY_LABELS,
+    MODEL_LABELS,
+    build_constructor,
+    build_goal,
+    build_spec,
+    build_start,
+    parse_values,
+    spec_to_rows,
+)
 from abbot.ui.controller import RunController, RunStatus
 
 logger = logging.getLogger(__name__)
@@ -42,6 +51,14 @@ class UIState:
         self.method: str = "optimize"
         self.goal_row: dict = {"kind": "band", "percentile": 80.0}
         self.bax_strategy: str = "SwitchBAX"
+        # An optional source variable (fidelity levels, two codes, sim vs. experiment).
+        self.source_on: bool = False
+        self.source_row: dict = {
+            "kind": "enumerated", "name": "source", "values": "simulation, experiment",
+            "target": "experiment", "lower": 0.0, "upper": 1.0, "log": False,
+            "accurate": "high",
+        }
+        self.model: str = "default"  # a MODEL_LABELS key
         self.controller: RunController | None = None
         self.spec = None
         self.n_suggest: int = 1  # how many designs "Suggest" asks for
@@ -71,7 +88,8 @@ class UIState:
         rows = self.objective_rows
         if self.method == "bax":
             rows = [{**r, "direction": "OBSERVE"} for r in self.objective_rows]
-        spec = build_spec(self.variable_rows, rows)  # may raise
+        source = self.source_row if self.source_on else None
+        spec = build_spec(self.variable_rows, rows, source)  # may raise
 
         if self.method == "bax":
             goal = build_goal(self._normalized_goal_row(), spec)  # may raise
@@ -80,8 +98,14 @@ class UIState:
             policy = default_policy(spec)
         # The GP constructor declares its own UQ capability (calibrated variance),
         # which satisfies every builtin policy; Campaign checks the pairing.
-        campaign = Campaign(spec, policy)
-        campaign.seed(default_initial_designs(spec))
+        # With travel limits the campaign starts from the current settings, not
+        # from space-filling seeds.
+        start = build_start(spec, self.variable_rows)  # may raise
+        campaign = Campaign(
+            spec, policy, build_constructor(spec, self.model), initial_designs=start
+        )
+        if start is None:
+            campaign.seed(default_initial_designs(spec))
         self.spec = spec
         self.viz_obj = 0
         self.viz_vx = 0
@@ -154,15 +178,15 @@ def _variable_editor(state: UIState) -> None:
         container.clear()
         with container:
             for i, row in enumerate(state.variable_rows):
-                with ui.row().classes("items-center gap-1 w-full"):
+                with ui.row().classes("items-center gap-1 w-full no-wrap"):
                     ui.select(
-                        {"continuous": "Continuous", "enumerated": "Enumerated"},
+                        {"continuous": "Range", "enumerated": "Choices"},
                         value=row["kind"],
                         on_change=lambda e, r=row: (_set(r, "kind", e.value), redraw()),
-                    ).props("dense outlined").classes("w-32")
+                    ).props("dense outlined hide-dropdown-icon").classes("w-24")
                     ui.input("name", value=row.get("name", "")).bind_value(row, "name").props(
                         "dense outlined"
-                    ).classes("w-24")
+                    ).classes("w-20")
                     if row["kind"] == "continuous":
                         ui.number("lo", value=row.get("lower", 0.0)).bind_value(row, "lower").props(
                             "dense outlined"
@@ -173,11 +197,13 @@ def _variable_editor(state: UIState) -> None:
                     else:
                         ui.input("values", value=row.get("values", "0, 1, 2")).bind_value(
                             row, "values"
-                        ).props("dense outlined").classes("w-48")
+                        ).props("dense outlined").classes("w-40")
                     ui.button(
                         icon="delete",
                         on_click=lambda _, idx=i: (_pop(state.variable_rows, idx), redraw()),
                     ).props("flat dense round color=grey")
+                if row["kind"] == "continuous":
+                    _continuous_options(row)
 
     def add() -> None:
         n = len(state.variable_rows) + 1
@@ -186,6 +212,63 @@ def _variable_editor(state: UIState) -> None:
 
     redraw()
     ui.button("Add variable", icon="add", on_click=add).props("flat dense color=indigo")
+
+
+def _continuous_options(row: dict) -> None:
+    """Log scale and a travel limit for one continuous variable, folded away.
+
+    Collapsed, it is one "options" link with a summary of what's set; open, the
+    fields. ``start`` appears only once there is a max step, since only a travel
+    limit needs it.
+    """
+    row.setdefault("log", False)
+    row.setdefault("max_step", None)
+    row.setdefault("start", None)
+    row.setdefault("_open", False)
+    box = ui.column().classes("gap-1 w-full pl-2")
+
+    def redraw() -> None:
+        box.clear()
+        with box:
+            summary = _options_summary(row)
+            with ui.row().classes("items-center gap-1"):
+                ui.button(
+                    "options" if not row["_open"] else "hide options",
+                    icon="expand_less" if row["_open"] else "expand_more",
+                    on_click=lambda: (_set(row, "_open", not row["_open"]), redraw()),
+                ).props("flat dense no-caps size=sm color=grey-7")
+                if summary and not row["_open"]:
+                    ui.label(summary).classes("text-xs text-indigo-700")
+            if not row["_open"]:
+                return
+            with ui.row().classes("items-center gap-1 w-full"):
+                ui.checkbox("log scale").bind_value(row, "log").props("dense").tooltip(
+                    "For a quantity spanning orders of magnitude (a concentration, a rate)."
+                )
+                ui.number(
+                    "max step", on_change=lambda e: start.set_visibility(e.value is not None)
+                ).bind_value(row, "max_step").props("dense outlined").classes(
+                    "w-24"
+                ).tooltip("Travel limit: how far it may move between runs. Blank for none.")
+                start = ui.number("start").bind_value(row, "start").props(
+                    "dense outlined"
+                ).classes("w-20").tooltip("The current setting, where the hardware starts.")
+                start.set_visibility(row.get("max_step") is not None)
+
+    redraw()
+
+
+def _options_summary(row: dict) -> str:
+    """A variable's options in a few words: "log · step ≤ 0.1 from 0.5"."""
+    parts = []
+    if row.get("log"):
+        parts.append("log")
+    if row.get("max_step") is not None:
+        step = f"step ≤ {_fmt(row['max_step'])}"
+        if row.get("start") is not None:
+            step += f" from {_fmt(row['start'])}"
+        parts.append(step)
+    return " · ".join(parts)
 
 
 def _objective_editor(state: UIState) -> None:
@@ -213,13 +296,23 @@ def _objective_editor(state: UIState) -> None:
                     if not bax:
                         ui.select(
                             {"MAXIMIZE": "Maximize", "MINIMIZE": "Minimize",
-                             "OBSERVE": "Observe (BAX)"},
+                             "OBSERVE": "Observe"},
                             value=row["direction"],
                         ).bind_value(row, "direction").props("dense outlined").classes("w-36")
                     ui.button(
                         icon="delete",
                         on_click=lambda _, idx=i: (_pop(state.objective_rows, idx), redraw()),
                     ).props("flat dense round color=grey")
+                row.setdefault("min_val", None)
+                row.setdefault("max_val", None)
+                with ui.row().classes("items-center gap-1 w-full pl-4"):
+                    ui.label("keep within").classes("text-xs text-gray-500")
+                    ui.number("min").bind_value(row, "min_val").props(
+                        "dense outlined"
+                    ).classes("w-20")
+                    ui.number("max").bind_value(row, "max_val").props(
+                        "dense outlined"
+                    ).classes("w-20")
 
     def add() -> None:
         n = len(state.objective_rows) + 1
@@ -230,6 +323,106 @@ def _objective_editor(state: UIState) -> None:
     ui.button("Add output" if bax else "Add objective", icon="add", on_click=add).props(
         "flat dense color=indigo"
     )
+
+
+def _source_editor(state: UIState) -> None:
+    """An optional source: runs that come at different fidelities or from different
+    codes, and the one to trust, where abbot recommends."""
+    with ui.row().classes("items-center gap-2"):
+        ui.icon("layers").classes("text-indigo-600")
+        ui.label("Sources").classes("text-base font-semibold")
+        ui.icon("info_outline").classes("text-gray-400 text-sm").tooltip(
+            "abbot picks which source to run, trading cost against information, and "
+            "recommends at the one you trust. Report each run's cost if you know it."
+        )
+    row = state.source_row
+    container = None
+
+    def redraw() -> None:
+        container.clear()
+        if not state.source_on:
+            return
+        with container:
+            with ui.row().classes("items-center gap-2 w-full"):
+                ui.input("name").bind_value(row, "name").props("dense outlined").classes("w-28")
+                ui.toggle(
+                    {"enumerated": "Labeled", "continuous": "Range"},
+                    value=row["kind"],
+                    on_change=lambda e: (_set(row, "kind", e.value), redraw()),
+                ).props("dense no-caps")
+            if row["kind"] == "enumerated":
+                _labeled_source(row)
+            else:
+                _ranged_source(row)
+
+    ui.switch(
+        "Runs come from more than one source (fidelities, codes)",
+        value=state.source_on,
+        on_change=lambda e: (_set(state, "source_on", e.value), redraw()),
+    ).props("color=indigo")
+    container = ui.column().classes("gap-2 w-full")
+    redraw()
+
+
+def _labeled_source(row: dict) -> None:
+    """Labeled sources: the labels, and which one to trust (picked from them)."""
+    def labels() -> list[str]:
+        return [str(v) for v in _source_labels(row.get("values"))]
+
+    target = None  # the select, built after the labels field that refreshes it
+
+    def refresh_target() -> None:
+        if target is None:
+            return
+        options = labels()
+        if row.get("target") not in options:
+            row["target"] = options[-1] if options else None
+        target.set_options(options, value=row["target"])
+
+    with ui.row().classes("items-center gap-2 w-full"):
+        ui.input(
+            "sources", on_change=lambda _: refresh_target()
+        ).bind_value(row, "values").props("dense outlined").classes("w-52").tooltip(
+            "Comma-separated, e.g. simulation, experiment"
+        )
+        target = ui.select(labels(), value=row.get("target"), label="recommend at").props(
+            "dense outlined"
+        ).classes("w-36").on_value_change(lambda e: _set(row, "target", e.value))
+    refresh_target()
+
+
+def _ranged_source(row: dict) -> None:
+    """A fidelity range: low to high, which end is accurate, and where to recommend."""
+    with ui.row().classes("items-center gap-1 w-full"):
+        ui.number("from").bind_value(row, "lower").props("dense outlined").classes("w-20")
+        ui.number("to").bind_value(row, "upper").props("dense outlined").classes("w-20")
+        ui.input("recommend at").bind_value(row, "target").props("dense outlined").classes(
+            "w-28"
+        )
+    with ui.row().classes("items-center gap-2 w-full"):
+        ui.toggle(
+            {"high": "higher is more accurate", "low": "lower is more accurate"},
+            value=row.get("accurate", "high"),
+        ).bind_value(row, "accurate").props("dense no-caps")
+        ui.checkbox("log scale").bind_value(row, "log").props("dense")
+
+
+def _source_labels(values) -> list:
+    return parse_values(values) if values else []
+
+
+def _model_selector(state: UIState) -> None:
+    """The surrogate: independent GPs per output, or one GP over correlated outputs."""
+    with ui.row().classes("items-center gap-2"):
+        ui.icon("insights").classes("text-indigo-600")
+        ui.label("Model").classes("text-base font-semibold")
+    ui.select(MODEL_LABELS, value=state.model).bind_value(state, "model").props(
+        "dense outlined"
+    ).classes("w-full")
+    ui.label(
+        "Correlated outputs share what one output teaches about another; use it when "
+        "outputs move together."
+    ).classes("text-xs text-gray-500")
 
 
 def _method_selector(state: UIState, on_change) -> None:
@@ -304,7 +497,7 @@ def _goal_editor(state: UIState) -> None:
                     ).bind_value(goal, "output").props("dense outlined").classes("w-32")
                     ui.number("threshold", value=goal.get("threshold", 0.0)).bind_value(
                         goal, "threshold"
-                    ).props("dense outlined").classes("w-28")
+                    ).props("dense outlined").classes("w-32")
                 ui.select(
                     {False: "above threshold (≥)", True: "below threshold (≤)"},
                     value=goal.get("upper", False),
@@ -346,8 +539,11 @@ def _goal_editor(state: UIState) -> None:
     ).bind_value(state, "bax_strategy").props("dense outlined").classes("w-full")
 
 
-def _set(row: dict, key: str, value) -> None:
-    row[key] = value
+def _set(row, key: str, value) -> None:
+    if isinstance(row, dict):
+        row[key] = value
+    else:
+        setattr(row, key, value)
 
 
 def _pop(rows: list, idx: int) -> None:
@@ -366,7 +562,7 @@ def _build_page() -> None:
     with ui.header().classes("items-center bg-indigo-700"), ui.row().classes("items-center gap-2"):
         ui.icon("science").classes("text-white text-2xl")
         ui.label("abbot").classes("text-white text-xl font-bold")
-        ui.label("a Bayesian guide for lab experiments").classes("text-indigo-200 text-sm")
+        ui.label("goal-driven Bayesian experimental design").classes("text-indigo-200 text-sm")
 
     def _create() -> None:
         try:
@@ -395,6 +591,10 @@ def _build_page() -> None:
                     if state.method == "bax":
                         with ui.card().classes("w-full"):
                             _goal_editor(state)
+                    with ui.card().classes("w-full"):
+                        _source_editor(state)
+                    with ui.card().classes("w-full"):
+                        _model_selector(state)
                     with ui.card().classes("w-full"):
                         ui.switch(
                             "Mock mode (synthetic experiment → auto-run)"
@@ -482,7 +682,19 @@ def _control_panel(state: UIState) -> None:
                       f"{spec.n_outputs} output(s)"
         else:
             summary = f"{len(spec.domain)} variable(s), {spec.n_objectives} objective(s)"
+        extras = []
+        if spec.sources:
+            extras.append(f"source {spec.sources[0].name!r} (target {spec.sources[0].target})")
+        if any(o.min_val is not None or o.max_val is not None for o in spec.outputs):
+            extras.append("output ranges")
+        if spec.has_travel_limits:
+            extras.append("travel limits")
+        if extras:
+            summary += "; " + ", ".join(extras)
         ui.label(summary).classes("text-xs text-gray-500")
+        ui.button("Check the model", icon="fact_check", on_click=lambda: _show_check(state)).props(
+            "flat dense color=indigo"
+        ).mark("check-model")
 
         if ctrl.can_auto:
             _auto_controls(state)
@@ -491,6 +703,19 @@ def _control_panel(state: UIState) -> None:
 
         ui.separator()
         _data_io_controls(state)
+
+
+def _show_check(state: UIState) -> None:
+    """``campaign.check()`` in a dialog: fit quality, noise, lengthscales, warnings."""
+    try:
+        report = str(state.controller.campaign.check())
+    except Exception as exc:  # noqa: BLE001 - too few runs, no model yet, ...
+        report = f"Can't check yet: {exc}"
+    with ui.dialog() as dialog, ui.card().classes("w-full"):
+        ui.label("Model check").classes("text-base font-semibold")
+        ui.label(report).classes("font-mono text-sm whitespace-pre-wrap").mark("check-report")
+        ui.button("Close", on_click=dialog.close).props("flat color=indigo")
+    dialog.open()
 
 
 def _data_io_controls(state: UIState) -> None:
@@ -530,33 +755,19 @@ def _data_io_controls(state: UIState) -> None:
 def _import_spec_control(state: UIState) -> None:
     """Upload a ProblemSpec JSON to populate the editor rows."""
     from abbot import io as abbot_io
-    from abbot.problem import ContinuousDomain, EnumeratedDomain
 
     def on_upload(e) -> None:
         try:
             spec = abbot_io.spec_from_json(e.content.read().decode())
+            variables, outputs, source = spec_to_rows(spec)
         except Exception as exc:  # noqa: BLE001
             ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
             return
-        unsupported = spec.source_names + [
-            d.name for d in spec.domain if not isinstance(d, (ContinuousDomain, EnumeratedDomain))
-        ]
-        if unsupported:
-            ui.notify(
-                f"The editor can't show {unsupported} yet (sources and integer or "
-                "structured variables); run this spec through the Python API.",
-                type="negative", multi_line=True, close_button=True,
-            )
-            return
-        rows = []
-        for d in spec.domain:
-            if isinstance(d, ContinuousDomain):
-                rows.append({"kind": "continuous", "name": d.name, "lower": d.lower, "upper": d.upper})
-            elif isinstance(d, EnumeratedDomain):
-                rows.append({"kind": "enumerated", "name": d.name,
-                             "values": ", ".join(str(v) for v in d.values)})
-        state.variable_rows = rows or state.variable_rows
-        state.objective_rows = [{"name": o.name, "direction": o.direction} for o in spec.outputs]
+        state.variable_rows = variables or state.variable_rows
+        state.objective_rows = outputs
+        state.source_on = source is not None
+        if source is not None:
+            state.source_row = source
         ui.notify("Spec loaded into the editor.", type="positive")
         state._left.refresh()
 
@@ -622,6 +833,11 @@ def _outstanding_card(state: UIState, cand) -> None:
                 inputs[o.name] = ui.number(f"{o.name}").props("outlined dense").classes(
                     "w-28"
                 ).mark(f"{cand.id}-{o.name}")
+            cost = None
+            if state.spec.sources:
+                cost = ui.number("cost (optional)").props("outlined dense").classes(
+                    "w-32"
+                ).mark(f"{cand.id}-cost")
 
         def done(message: str, kind: str = "positive") -> None:
             ui.notify(message, type=kind)
@@ -637,7 +853,8 @@ def _outstanding_card(state: UIState, cand) -> None:
             if any(v is None for v in vals):
                 ui.notify("Enter all measured values first.", type="warning")
                 return
-            ctrl.submit(torch.tensor(vals, dtype=torch.double), id=cand.id)
+            spent = cost.value if cost is not None else None
+            ctrl.submit(torch.tensor(vals, dtype=torch.double), id=cand.id, cost=spent)
             done("Recorded.")
 
         def do_fail() -> None:
@@ -744,13 +961,16 @@ def _viz_panel(state: UIState) -> None:
                     {j: o.name for j, o in enumerate(spec.outputs)},
                     value=state.viz_obj, label="output",
                     on_change=lambda e: _reviz(state, "viz_obj", e.value),
-                ).props("dense outlined")
+                ).props("dense outlined").classes("w-32")
             if len(spec.domain) > 2:
-                names = {i: n for i, n in enumerate(spec.variable_names)}
+                # Design variables only: a source is shown at its target.
+                names = {i: d.name for i, d in enumerate(spec.domain)}
                 ui.select(names, value=state.viz_vx, label="x-axis var",
-                          on_change=lambda e: _reviz(state, "viz_vx", e.value)).props("dense outlined")
+                          on_change=lambda e: _reviz(state, "viz_vx", e.value)).props(
+                              "dense outlined").classes("w-32")
                 ui.select(names, value=state.viz_vy, label="y-axis var",
-                          on_change=lambda e: _reviz(state, "viz_vy", e.value)).props("dense outlined")
+                          on_change=lambda e: _reviz(state, "viz_vy", e.value)).props(
+                              "dense outlined").classes("w-32")
 
     with ui.row().classes("w-full no-wrap gap-3"):
         with ui.card().classes("grow"):

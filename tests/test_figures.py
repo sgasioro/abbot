@@ -34,7 +34,7 @@ def test_progress_fig_single_objective_is_convergence():
     )
     h = _hist([([0.1], [1.0]), ([0.5], [3.0]), ([0.9], [2.0])])
     fig = figures.progress_fig(h, spec)
-    assert fig["layout"]["title"].startswith("Best f")
+    assert fig["layout"]["title"]["text"].startswith("Best f")
     assert fig["data"][0]["y"] == [1.0, 3.0, 3.0]  # running max
 
 
@@ -46,7 +46,7 @@ def test_progress_fig_multiobjective_is_hypervolume():
     )
     h = _hist([([0.1], [0.1, 0.9]), ([0.5], [0.5, 0.5]), ([0.9], [0.9, 0.1])])
     fig = figures.progress_fig(h, spec)
-    assert fig["layout"]["title"] == "Dominated hypervolume"
+    assert fig["layout"]["title"]["text"] == "Dominated hypervolume"
 
 
 def test_progress_fig_pure_bax_is_target_region_without_model():
@@ -57,7 +57,7 @@ def test_progress_fig_pure_bax_is_target_region_without_model():
     h = _hist([([0.2], [1.0]), ([0.6], [2.0])])
     # No model yet -> identified 0, collected 2; dispatch must not raise.
     fig = figures.progress_fig(h, spec, policy=None, model=None)
-    assert fig["layout"]["title"] == "Target region discovered"
+    assert fig["layout"]["title"]["text"] == "Target region discovered"
     assert fig["data"][0]["y"] == [0, 2]
 
 
