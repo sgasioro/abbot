@@ -38,6 +38,8 @@ _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 SPEC_GUIDE = """\
 A campaign is a spec (what you can set and what you measure), optionally a goal
 (find a region rather than an optimum), and the measurements reported back.
+The numbers in the examples below are illustrations. Take ranges, limits and
+directions from the person or their setup, and ask when they're missing.
 
 Spec (JSON):
   {"domain": [
