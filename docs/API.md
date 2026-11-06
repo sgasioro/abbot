@@ -410,11 +410,20 @@ use from the spec, with your keyword arguments) or one built on
 
 ```bash
 pip install "abbot[mcp]"
-abbot-mcp --dir ~/abbot-campaigns        # an MCP server over stdio
-claude mcp add abbot -- abbot-mcp --dir ~/abbot-campaigns   # e.g. in Claude Code
+abbot-mcp setup     # Claude Code: register the server, install the abbot skill
+abbot-mcp start     # open Claude Code here on the planning questions
 ```
 
-Other MCP clients take the same command in their server config
+`setup` registers the server for all your folders (user scope) as this
+environment's Python running `-m abbot.agent --dir ~/abbot-campaigns` (`--dir` to
+choose), so it works without the environment activated, and installs the skill in
+`~/.claude/skills/abbot`. It says what it will change and asks first; a second run
+changes nothing, and an edited skill is only replaced if you agree. `start` runs
+setup if it's missing, then opens `claude` on the `plan_campaign` prompt
+(`abbot-mcp start "anneal films with measure.py"` fills in the task).
+
+The server itself is `abbot-mcp --dir ~/abbot-campaigns` (or `python -m
+abbot.agent`), over stdio. Other MCP clients take that command in their server config
 (`{"command": "abbot-mcp", "args": ["--dir", "..."]}`). The server's tools are one
 call each on a `Workspace`, which can also be used directly from Python:
 
@@ -445,13 +454,9 @@ call each on a `Workspace`, which can also be used directly from Python:
   earlier results, and who runs each experiment (`abbot.agent.PLANNING_GUIDE`).
   The `plan_campaign` prompt starts that conversation from the person's side
   (`/mcp__abbot__plan_campaign` in Claude Code). For Claude Code, the repository's
-  `skills/abbot` skill connects the server if it isn't connected yet, then follows
-  the same questions. Copy it to `~/.claude/skills/abbot/`, or fetch it:
-
-  ```bash
-  mkdir -p ~/.claude/skills/abbot && curl -fsSL -o ~/.claude/skills/abbot/SKILL.md \
-    https://raw.githubusercontent.com/sgasioro/abbot/main/skills/abbot/SKILL.md
-  ```
+  `skills/abbot` skill (installed by `abbot-mcp setup`, or copy it to
+  `~/.claude/skills/abbot/`) connects the server if it isn't connected yet, then
+  follows the same questions.
 - **People decide.** The server's instructions ask the agent to confirm with the
   person before resolving a halt as a bad region, and before creating a campaign
   from a spec it inferred.

@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-abbot-mcp = "abbot.agent.server:main"
+abbot-mcp = "abbot.agent.launch:main"
 
 [project.urls]
 Repository = "https://github.com/sgasioro/abbot"
@@ -53,6 +53,11 @@ requires = ["hatchling"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/abbot"]
+
+# The Claude Code skill lives at skills/abbot in the repository; `abbot-mcp setup`
+# installs it from the wheel.
+[tool.hatch.build.targets.wheel.force-include]
+"skills/abbot/SKILL.md" = "abbot/agent/skill/SKILL.md"
 
 [tool.ruff]
 line-length = 88

@@ -7,7 +7,10 @@
   reachable ranges, what's measured, the goal, limits and failure modes, budget,
   earlier results, and who runs each experiment. `spec_guide` opens with the same
   questions, so an agent that never sees the prompt asks them too. An abbot skill
-  for Claude Code (`skills/abbot`) installs and connects the server, then hands off.
+  for Claude Code (`skills/abbot`) connects the server, then hands off.
+- **`abbot-mcp setup` / `abbot-mcp start`:** register the server with Claude Code
+  and install the skill (asking first), then open a session on the planning
+  prompt. The skill ships in the wheel. A bare `abbot-mcp` still serves.
 - `benchmarks/agent`: real agent sessions against a simulated anneal rig the agent
   can't read, with and without the skill.
 

@@ -17,10 +17,12 @@ Otherwise, set them up with the person's agreement. Each command changes their
 setup, so say what it does before you run it.
 1. Check for abbot: `python -c "import abbot.agent.server"`. If it's missing,
    install it into their environment: `pip install "abbot[mcp]"`.
-2. Register the server, saving campaigns in a folder they choose:
-   `claude mcp add abbot -- abbot-mcp --dir ~/abbot-campaigns`.
-3. Tell them to restart Claude Code (or run `/mcp`) so the tools load, and to
-   come back to this task afterwards.
+2. Run `abbot-mcp setup` (or `python -m abbot.agent setup`). It registers the
+   server with Claude Code for all their folders, saving campaigns in
+   `~/abbot-campaigns` (`--dir` to choose another), and installs this skill. It
+   asks before changing anything; pass `--yes` only once they've agreed.
+3. Tell them to restart Claude Code (or run `/mcp`) so the tools load. Next time,
+   `abbot-mcp start` opens Claude Code straight on the planning questions.
 
 ## 2. Plan the campaign with the person
 

@@ -1,13 +1,12 @@
 """An MCP server over :class:`~abbot.agent.workspace.Workspace` (``abbot[mcp]``).
 
 Run ``abbot-mcp --dir ./campaigns`` (or ``python -m abbot.agent``) and point an MCP
-client at it over stdio. Each tool is one call on the workspace; errors come back
+client at it over stdio (the command line is in :mod:`abbot.agent.launch`). Each tool is one call on the workspace; errors come back
 to the agent as tool errors with abbot's own message.
 """
 
 from __future__ import annotations
 
-import argparse
 import functools
 from collections.abc import Callable
 from pathlib import Path
@@ -169,16 +168,3 @@ def _tool(server: MCPServer) -> Callable[[Callable], Callable]:
         return server.tool()(wrapper)
 
     return register
-
-
-def main(argv: list[str] | None = None) -> None:
-    """Entry point: ``abbot-mcp [--dir DIR]``, serving over stdio."""
-    parser = argparse.ArgumentParser(
-        prog="abbot-mcp", description="Serve abbot campaigns to an MCP client over stdio."
-    )
-    parser.add_argument(
-        "--dir", default="abbot-campaigns",
-        help="where campaigns are saved (default: ./abbot-campaigns)",
-    )
-    args = parser.parse_args(argv)
-    build_server(args.dir).run("stdio")

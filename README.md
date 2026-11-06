@@ -109,7 +109,8 @@ model_constructor)` to choose your own. A few variations:
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
 - **From an AI agent** — `abbot-mcp --dir ~/abbot-campaigns` (with the `mcp` extra)
-  serves named, saved campaigns over MCP. The agent first talks the campaign
+  serves named, saved campaigns over MCP; in Claude Code, `abbot-mcp start` sets
+  it up and opens a session. The agent first talks the campaign
   through with you (ranges, limits, goal, budget), then suggests, records results
   and hands a halt back to you. See
   [Agent access](https://github.com/sgasioro/abbot/blob/main/docs/API.md#agent-access-mcp).
