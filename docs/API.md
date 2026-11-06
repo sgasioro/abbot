@@ -445,8 +445,13 @@ call each on a `Workspace`, which can also be used directly from Python:
   earlier results, and who runs each experiment (`abbot.agent.PLANNING_GUIDE`).
   The `plan_campaign` prompt starts that conversation from the person's side
   (`/mcp__abbot__plan_campaign` in Claude Code). For Claude Code, the repository's
-  `skills/abbot` skill (copy it to `~/.claude/skills/`) connects the server if it
-  isn't connected yet, then follows the same questions.
+  `skills/abbot` skill connects the server if it isn't connected yet, then follows
+  the same questions. Copy it to `~/.claude/skills/abbot/`, or fetch it:
+
+  ```bash
+  mkdir -p ~/.claude/skills/abbot && curl -fsSL -o ~/.claude/skills/abbot/SKILL.md \
+    https://raw.githubusercontent.com/sgasioro/abbot/main/skills/abbot/SKILL.md
+  ```
 - **People decide.** The server's instructions ask the agent to confirm with the
   person before resolving a halt as a bad region, and before creating a campaign
   from a spec it inferred.
