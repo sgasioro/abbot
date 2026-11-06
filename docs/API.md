@@ -411,7 +411,7 @@ use from the spec, with your keyword arguments) or one built on
 ```bash
 pip install "abbot[mcp]"
 abbot-mcp setup     # Claude Code: register the server, install the abbot skill
-abbot-mcp start     # open Claude Code here on the planning questions
+abbot-mcp start     # open Claude Code here to plan a campaign
 ```
 
 `setup` registers the server for all your folders (user scope) as this
@@ -419,8 +419,9 @@ environment's Python running `-m abbot.agent --dir ~/abbot-campaigns` (`--dir` t
 choose), so it works without the environment activated, and installs the skill in
 `~/.claude/skills/abbot`. It says what it will change and asks first; a second run
 changes nothing, and an edited skill is only replaced if you agree. `start` runs
-setup if it's missing, then opens `claude` on the `plan_campaign` prompt
-(`abbot-mcp start "anneal films with measure.py"` fills in the task).
+setup if it's missing, then opens `claude` on the skill (`/abbot`), which asks
+the planning questions (`abbot-mcp start "anneal films with measure.py"` fills in
+the task).
 
 The server itself is `abbot-mcp --dir ~/abbot-campaigns` (or `python -m
 abbot.agent`), over stdio. Other MCP clients take that command in their server config

@@ -77,11 +77,11 @@ def test_setup_without_a_terminal_needs_yes(claude, tmp_path, monkeypatch):
     assert launch.skill_target().exists() is False
 
 
-def test_start_sets_up_then_opens_the_planning_prompt(claude, tmp_path):
+def test_start_sets_up_then_opens_the_skill(claude, tmp_path):
     with pytest.raises(SystemExit) as done:
         launch.main(["start", "anneal films", "--dir", str(tmp_path / "c"), "--yes"])
     assert done.value.code == 0
-    assert claude()[-1] == ["/mcp__abbot__plan_campaign anneal films"]
+    assert claude()[-1] == ["/abbot anneal films"]
     assert ["mcp", "get", "abbot"] in claude()
 
 

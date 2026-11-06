@@ -2,8 +2,10 @@
 
 ``setup`` registers the MCP server with Claude Code (user scope, so it works from any
 folder) and installs the abbot skill in ``~/.claude/skills/abbot``. ``start`` runs
-setup if it's missing, then opens Claude Code in the current folder on the
-``plan_campaign`` prompt. Other MCP clients don't need either: give them the
+setup if it's missing, then opens Claude Code in the current folder on the skill
+(``/abbot``), which plans the campaign with the person. It doesn't open on the
+server's ``plan_campaign`` prompt: Claude Code submits the first message before MCP
+servers connect, so that command doesn't exist yet; skills load from disk first. Other MCP clients don't need either: give them the
 ``abbot-mcp --dir ...`` command.
 """
 
@@ -104,13 +106,13 @@ def setup(directory: str = DEFAULT_DIR, yes: bool = False, ask=input) -> bool:
 
 def start(task: str = "", directory: str = DEFAULT_DIR, yes: bool = False,
           ask=input) -> int:
-    """Open Claude Code here on the planning prompt, setting up first if needed."""
+    """Open Claude Code here on the abbot skill, setting up first if needed."""
     claude = _claude()
     if (not _registered(claude) or not skill_target().exists()) and not setup(
         directory, yes, ask
     ):
         return 1
-    prompt = f"/mcp__{SERVER}__plan_campaign {task}".strip()
+    prompt = f"/abbot {task}".strip()
     sys.stdout.flush()
     return subprocess.call([claude, prompt])
 
@@ -125,8 +127,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="abbot-mcp",
         description="Serve abbot campaigns to an MCP client over stdio. "
-        "`abbot-mcp setup` connects Claude Code; `abbot-mcp start` opens it on "
-        "the planning prompt.",
+        "`abbot-mcp setup` connects Claude Code; `abbot-mcp start` opens it to "
+        "plan a campaign.",
     )
     parser.add_argument(
         "--dir", default="abbot-campaigns",
@@ -154,7 +156,7 @@ def _launch(argv: list[str]) -> None:
     )
     p = sub.add_parser(
         "start", parents=[common],
-        help="open Claude Code here on the planning prompt (sets up first if needed)",
+        help="open Claude Code here to plan a campaign (sets up first if needed)",
     )
     p.add_argument("task", nargs="?", default="", help="what you want to do, briefly")
     args = parser.parse_args(argv)
