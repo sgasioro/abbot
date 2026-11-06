@@ -52,6 +52,9 @@ class Record:
     finished_at: float | None = None
     fit_seconds: float | None = None
     acquisition_seconds: float | None = None
+    # Earlier values of ``outputs`` that Campaign.correct replaced, oldest first:
+    # {"outputs": [...], "at": epoch seconds, "reason": str | None}.
+    corrections: list[dict] | None = None
 
     @property
     def usable(self) -> bool:

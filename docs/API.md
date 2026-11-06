@@ -28,6 +28,7 @@ without a deprecation period.
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
 | Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
+| Plots | `abbot.plots.model`, `progress`, `check` (matplotlib figures) |
 
 ### Provisional — may change
 Useful and tested, but the surface is still settling; pin a version if you depend
@@ -63,7 +64,7 @@ on them.
 - **`abbot.cost`** (`CostModel`, `FixedCost`, `CallableCost`, `FittedCost`,
   `PowerLawCost`, `SourceCost`), `Record.cost` / `Record.acquisition` and the timing
   fields, `SimpleBO` / `ParetoBO(cost_model=)` — new.
-- **Agent access** — `abbot.agent` (`Workspace`, `SPEC_GUIDE`) and the MCP server
+- **Agent access** — `abbot.agent` (`Workspace`, `SPEC_GUIDE`, `PLANNING_GUIDE`) and the MCP server
   `abbot.agent.server` (`build_server`, the `abbot-mcp` command; `abbot[mcp]`). New;
   tool names and the shape of their results may change.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
@@ -444,6 +445,13 @@ call each on a `Workspace`, which can also be used directly from Python:
   `resolve_halt(name, answer, reason=)` complete it. These reply with a short
   state (runs, outstanding designs, any halt) without fitting the model;
   `status`, `recommend`, `check_model` and `history` (CSV) read.
+- **Fixing a value.** `correct_result(name, run, outputs, reason=)` corrects a run
+  already reported (by the id `suggest` gave it), keeping the old values on the
+  run; the reply shows what changed.
+- **Plots.** `plot(name, kind=, output=, variables=, at=)` saves a PNG in
+  `<dir>/<name>/plots/` (`model`, `progress` or `check`; see [Plots](#plots)) and
+  replies with its path and the image, so the agent can look at it and tell the
+  person where it is.
 - **Changing the spec.** A campaign's spec is fixed. To narrow a range or add an
   output, create a new campaign with `results_from=<old name>`: the measured runs
   that fit the new spec are copied, and the reply counts what was skipped and why.
@@ -622,6 +630,44 @@ reuses the cached fit, so it costs one fit at most.
   `abbot.diagnostics.check(history, spec, model)` runs the same checks on any
   fitted model.
 
+## Plots
+
+`abbot.plots` draws a campaign with matplotlib (`pip install matplotlib`; the
+`mcp` extra includes it). Each function returns a `Figure`; save it with
+`fig.savefig("model.png")`.
+
+```python
+from abbot import plots
+
+plots.model(campaign)                                     # what the model predicts
+plots.model(campaign, output="cond", variables=["temp", "time"], at={"substrate": "sapphire"})
+plots.progress(campaign)
+plots.check(campaign)
+```
+
+- **`model(campaign, output=, variables=, at=)`** shows the model's mean with a
+  95% band, the runs, the latest run and the outstanding designs. It marks the
+  goal: a band or threshold on the output axis, and the stretches the model
+  currently puts in the goal region. Output limits (`min_val` / `max_val`) show as
+  lines.
+  - One variable: one panel per output.
+  - Two: contours of the mean and its uncertainty, with the goal region outlined.
+  - More: one slice per variable through the recommended design (`at=` overrides
+    some of it); runs at other settings are drawn faded. Name two `variables` for
+    a contour slice instead.
+  - Labeled categories show one point per label. Log-scaled variables get a log
+    axis. Sources are held at the target.
+  - The outputs shown by default are the ones the goal reads, else the objectives
+    plus any output with limits.
+  - With several variables, a goal that ranks designs (top-k, percentile) can't be
+    shaded on a slice; band and level goals are.
+- **`progress(campaign)`**: each run and the best so far (one objective), the
+  dominated hypervolume (several), or each run's goal outputs against the goal (a
+  goal and no objective).
+- **`check(campaign)`**: each run's leave-one-out error in standard deviations
+  with the ±2σ band and the ±3σ outlier lines, per output: the numbers behind
+  `campaign.check()`.
+
 ## Outstanding candidates
 
 `suggest(n)` returns `n` `Candidate`s: `{variable name: value}` dicts with an
@@ -637,7 +683,15 @@ a lab can have several vials, or a cluster several jobs, in flight at once.
 | `record(x, y)` | if `x` exactly equals an outstanding design, closes it; otherwise records a new design |
 
 `outstanding()` lists them, oldest first; `state().pending` / `.pending_ids` carry
-the same in JSON. Every `Record` stores the `id` it closed. `step` runs the oldest
+the same in JSON.
+
+**Correcting a recorded value.** `campaign.correct(run, outputs, reason=None)`
+fixes a run already recorded (a value typed or read wrong). `run` is its id or its
+index in the history; `outputs` is every output, or a `{name: value}` dict of only
+the ones to change. The replaced values stay on the record
+(`Record.corrections`: the old outputs, when, and `reason`), the change is saved
+with the store, and the model refits on its next use. Only runs that counted can be
+corrected: fault checks and stop rules aren't re-run, so a failed run stays failed. Every `Record` stores the `id` it closed. `step` runs the oldest
 outstanding candidate before suggesting a new one.
 
 **Proposals avoid work in flight.** When the policy proposes, it receives every

@@ -36,6 +36,7 @@ is shown.
 | never retry, ask me at once | `Campaign(spec, max_retries=0)`. |
 | tell abbot a region gives nothing usable | `per_shot(is_dark, bad_region="dark")` in `faults=`, or a rule returning `Verdict(bad_region=True)`; proposals then steer away. [Faults and bad regions](API.md#faults-and-bad-regions) |
 | withdraw a design I won't run | `campaign.cancel(c.id)`. |
+| fix a value I recorded wrong | `campaign.correct(c.id, {"yield": 0.65}, reason="typo")`; the old value is kept on the record. [Outstanding candidates](API.md#outstanding-candidates) |
 | block unsafe designs before they run | `Campaign(..., pre_run=check)`, with `check(design)` returning `None` or a reason. [Failure behavior](API.md#failure-behavior) |
 | save progress and resume after a crash | `Campaign(spec, store=DataStore("runs/today"))`; building it again on the same folder resumes, outstanding designs included. [Outstanding candidates](API.md#outstanding-candidates) |
 | catch bad shots and a drifting instrument | `supervisor=standard_supervisor(spec.bounds_tensor(), detector)` from `abbot.supervision`; for your own mix, `Supervisor(faults=[per_shot(detector), ...])`. [Supervisors](API.md#supervisors-faults-and-stops) |
@@ -60,7 +61,7 @@ is shown.
 | --- | --- |
 | check that the model makes sense | `print(campaign.check())`: leave-one-out fit, suspicious runs, noise, lengthscales. [Diagnostics and stopping](API.md#diagnostics-and-stopping) |
 | get the best design | `campaign.result().best` (a `Record`; its design is `spec.as_dict(best.candidate)`). |
-| plot progress | `abbot.analysis.convergence` (one objective) or `hypervolume` (several); `slice_1d` / `slice_2d` for the model. |
+| plot the model or progress | `abbot.plots.model(campaign)` (mean, uncertainty, runs and the goal), `plots.progress(campaign)`, `plots.check(campaign)`; each returns a matplotlib figure. [Plots](API.md#plots) |
 | export the runs | `abbot.io.history_to_csv(campaign.history, spec)`. |
 
 ## Going further

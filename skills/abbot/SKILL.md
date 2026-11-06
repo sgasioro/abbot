@@ -41,7 +41,9 @@ The person can also start this interview with the server's `plan_campaign` promp
 
 Repeat: `suggest`, run the design (or ask the person to run it), then
 `report_result` with the raw measured values (never negate them). If a run fails,
-use `report_failure`. When the campaign halts, or a failure suggests the spec is
-wrong (an interlock inside a range, say), stop and ask the person. Don't resolve it
-yourself. To change the spec, create a new campaign with `results_from=<old name>`.
+use `report_failure`. If a value was reported wrong, fix it with `correct_result`
+(don't start a new campaign). When the person wants to see where things stand, use
+`plot` and give them the file's path. When the campaign halts, or a failure
+suggests the spec is wrong (an interlock inside a range, say), stop and ask the
+person. Don't resolve it yourself. To change the spec, create a new campaign with `results_from=<old name>`.
 Finish with `recommend`, and say how sure the model is (`check_model`).

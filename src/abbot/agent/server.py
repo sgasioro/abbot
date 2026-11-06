@@ -13,6 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.utilities.types import Image
 
 from abbot import __version__
 from abbot.agent.workspace import PLANNING_GUIDE, SPEC_GUIDE, Workspace
@@ -106,6 +107,16 @@ def build_server(root: str | Path) -> MCPServer:
         return ws.add_results(name, results)
 
     @_tool(server)
+    def correct_result(
+        name: str, run: str, outputs: dict[str, float], reason: str | None = None
+    ) -> dict:
+        """Correct a run that was already reported (a value typed or read wrong):
+        run is its id from suggest (e.g. "c0003"); outputs names only the outputs
+        to change, with raw values. The old values are kept on the run with
+        reason. Don't start a new campaign to fix a typo."""
+        return ws.correct_result(name, run, outputs, reason)
+
+    @_tool(server)
     def resolve_halt(name: str, answer: str, reason: str | None = None) -> dict:
         """Answer a halt: "retry" (the cause is fixed), "exclude" (skip that
         design), or "bad_region" (the design itself gives nothing usable; abbot
@@ -128,6 +139,25 @@ def build_server(root: str | Path) -> MCPServer:
         variables that don't matter)."""
         return ws.check(name)
 
+    @_tool(server, structured_output=False)
+    def plot(
+        name: str,
+        kind: str = "model",
+        output: str | None = None,
+        variables: list[str] | None = None,
+        at: dict | None = None,
+    ) -> list:
+        """Draw the campaign as a PNG, saved in the campaign's folder; replies with
+        the file's path (give it to the person) and the image. kind: "model" (the
+        model's prediction with its uncertainty, the runs, the next design and the
+        goal: a band or threshold, and the region the model puts in it), "progress"
+        (best so far, or each run against the goal) or "check" (each run's
+        leave-one-out error, for how far to trust the model). For "model": output
+        picks one output; variables one (a slice) or two (a contour); at holds the
+        other variables ({variable: value}, default the recommended design)."""
+        path = ws.plot(name, kind, output, variables, at)
+        return [f"Saved {path}", Image(path=path)]
+
     @_tool(server)
     def history(name: str) -> str:
         """The spec and every result, as CSV."""
@@ -148,7 +178,7 @@ def build_server(root: str | Path) -> MCPServer:
     return server
 
 
-def _tool(server: MCPServer) -> Callable[[Callable], Callable]:
+def _tool(server: MCPServer, **options) -> Callable[[Callable], Callable]:
     """Register a tool whose errors reach the agent with abbot's message.
 
     The SDK hides the text of an unexpected exception from the client. This server
@@ -165,6 +195,6 @@ def _tool(server: MCPServer) -> Callable[[Callable], Callable]:
                 text = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
                 raise ToolError(f"{type(exc).__name__}: {text}") from exc
 
-        return server.tool()(wrapper)
+        return server.tool(**options)(wrapper)
 
     return register
