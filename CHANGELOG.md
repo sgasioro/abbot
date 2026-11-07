@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 - **Setup assistant:** the MCP server's `plan_campaign` prompt has the agent talk
   a campaign through with the person before it writes a spec: the knobs and their

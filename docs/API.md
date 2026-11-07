@@ -912,7 +912,7 @@ explicitly if you need it pinned.
 
 ## Deprecation policy (pre-1.0)
 
-- `abbot` is `0.2.0` — pre-release. The **Stable** tier above is the compatibility
+- `abbot` is `0.2.1` — pre-release. The **Stable** tier above is the compatibility
   promise; **Provisional** may change on any release; **Private** has no promise.
 - Soft-deprecated aliases (`ObjectiveSpec`, `objectives=`, `constraints=`,
   `InequalitySpec`, `_safe_fit`, `_ensure_grid`) are kept at least one minor version after a replacement ships.
