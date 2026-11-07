@@ -18,7 +18,7 @@ from nicegui import ui
 
 from abbot.experiment import MockAnalyticExperiment  # noqa: F401 - tests patch it here
 from abbot.ui import expert, running, setup, summary, theme
-from abbot.ui.state import STEPS, UIState
+from abbot.ui.state import UIState
 
 logger = logging.getLogger(__name__)
 
@@ -96,22 +96,17 @@ def _new_campaign(state: UIState) -> None:
             ui.column().classes("gap-3"):
         ui.label("Start a new campaign?").classes("text-lg font-semibold")
         ui.label("This one's runs are lost unless you download them first (expert "
-                 "panel, Runs, export csv). The setup stays, so you can adjust it.").classes(
-            "ab-sub max-w-md")
+                 "panel, Runs, export csv).").classes("ab-sub max-w-md")
 
-        def go() -> None:
+        def go(keep_setup: bool) -> None:
             dialog.close()
-            if state.controller is not None:
-                state.controller.stop()
-            state.controller = None
-            state.spec = None
-            state.finished = False
-            state.step = len(STEPS) - 1
-            state.reached = len(STEPS) - 1
+            state.new_campaign(keep_setup)
             state.refresh()
 
-        with ui.row().classes("gap-3 pt-2"):
-            theme.primary("Start over", go, marker="new-confirm")
+        with ui.row().classes("gap-3 pt-2 flex-wrap"):
+            theme.primary("Start from this setup", lambda: go(True), marker="new-keep")
+            ui.button("Start from scratch", on_click=lambda: go(False)).props(
+                "outline no-caps").mark("new-scratch")
             ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
     dialog.open()
 

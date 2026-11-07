@@ -202,6 +202,29 @@ class UIState:
         else:
             self.controller = RunController(campaign)
 
+    SETUP_FIELDS = ("name", "variable_rows", "objective_rows", "method", "goal_row",
+                    "bax_strategy", "source_on", "source_row", "model", "mock")
+
+    def new_campaign(self, keep_setup: bool = True) -> None:
+        """Drop the running campaign and go back to the first step, nothing ticked.
+        ``keep_setup`` keeps the answers as a starting point; otherwise they go
+        back to the defaults."""
+        if self.controller is not None:
+            self.controller.stop()
+        self.controller = None
+        self.spec = None
+        self.finished = False
+        self.focus = None
+        self.hold = {}
+        self.n_suggest = 1
+        self.step = self.reached = 0
+        self._progress = self._plot_model = self._live = None
+        if not keep_setup:
+            fresh = UIState.__new__(UIState)
+            UIState.__init__(fresh)
+            for field in self.SETUP_FIELDS:
+                setattr(self, field, getattr(fresh, field))
+
     # -- redrawing --
 
     def refresh(self) -> None:

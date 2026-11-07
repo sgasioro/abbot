@@ -7,6 +7,7 @@ import pytest
 
 pytest.importorskip("nicegui")
 
+from nicegui import ui
 from nicegui.testing import user_simulation
 
 from abbot.ui import app
@@ -210,3 +211,26 @@ async def test_finishing_shows_the_recommendation(ui_states):
         assert state.finished
         user.find(marker="keep-going").click()
         await user.should_see("Run this next")
+
+
+@pytest.mark.anyio
+async def test_a_new_campaign_starts_again_at_the_first_step(ui_states):
+    async with user_simulation(root=app._build_page) as user:
+        state = await _start(user, ui_states, lambda s: s.variable_rows[0].update(name="temp"))
+        await _wait_outstanding(user, state.controller.campaign)
+        user.find(marker="new").click()
+        user.find(marker="new-keep").click()
+        await user.should_see("What can you set?")
+        assert state.controller is None and (state.step, state.reached) == (0, 0)
+        assert state.variable_rows[0]["name"] == "temp"  # the setup is kept
+        assert "✓" not in [e.text for e in user.find(kind=ui.label).elements]
+        state.step = state.reached = 4
+        with user.client:
+            state.refresh()
+        await user.should_see(marker="create")
+        user.find(marker="create").click()
+        await user.should_see("Run this next")
+        user.find(marker="new").click()
+        user.find(marker="new-scratch").click()
+        await user.should_see("What can you set?")
+        assert state.variable_rows[0]["name"] == "x1"  # back to the defaults
