@@ -104,6 +104,30 @@ def test_the_loop_replies_are_short(tmp_path):
     assert ws.status("opt")["recommended"]
 
 
+def test_a_value_reported_wrong_is_corrected_in_place(tmp_path):
+    ws = Workspace(tmp_path)
+    ws.create("opt", SPEC)
+    (s,) = ws.suggest("opt")
+    ws.report_result("opt", s["id"], {"yield": -0.84})
+    reply = ws.correct_result("opt", s["id"], {"yield": 0.65}, reason="typo")
+    assert reply["runs"] == 1
+    assert reply["corrected"] == {"run": s["id"], "was": {"yield": -0.84},
+                                  "now": {"yield": 0.65}}
+    assert Workspace(tmp_path).recommend("opt")[0]["outputs"] == {"yield": 0.65}
+
+
+def test_plots_are_saved_in_the_campaign_folder(tmp_path):
+    pytest.importorskip("matplotlib")
+    ws = Workspace(tmp_path)
+    ws.create("opt", SPEC)
+    _run(ws, "opt", 6)
+    path = ws.plot("opt")
+    assert path == tmp_path / "opt" / "plots" / "model-006runs.png" and path.exists()
+    assert ws.plot("opt", "check").name == "check-006runs.png"
+    with pytest.raises(ValueError, match="kind must be"):
+        ws.plot("opt", "contour")
+
+
 def test_the_mcp_server_serves_the_workspace(tmp_path):
     pytest.importorskip("mcp")
     from mcp import Client
@@ -122,5 +146,22 @@ def test_the_mcp_server_serves_the_workspace(tmp_path):
             assert len(designs) == 2 and "temp" in designs[0]["design"]
             r = await client.call_tool("status", {"name": "nope"})
             assert r.is_error and "No campaign named 'nope'" in r.content[0].text
+            r = await client.call_tool("report_result", {
+                "name": "opt", "id": designs[0]["id"], "outputs": {"yield": 0.1}})
+            r = await client.call_tool("correct_result", {
+                "name": "opt", "run": designs[0]["id"], "outputs": {"yield": 0.2}})
+            assert not r.is_error and '"now"' in r.content[0].text
+            r = await client.call_tool("plot", {"name": "opt"})
+            assert not r.is_error
+            assert [c.type for c in r.content] == ["text", "image"]
+            assert r.content[0].text.endswith("model-001runs.png")
+            r = await client.call_tool("spec_guide", {})
+            assert "Who runs each experiment" in r.content[0].text
+
+            prompts = {p.name for p in (await client.list_prompts()).prompts}
+            assert "plan_campaign" in prompts
+            r = await client.get_prompt("plan_campaign", {"task": "anneal films"})
+            text = r.messages[0].content.text
+            assert "The task: anneal films" in text and "spec_guide" in text
 
     asyncio.run(session())

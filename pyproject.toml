@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-abbot-mcp = "abbot.agent.server:main"
+abbot-mcp = "abbot.agent.launch:main"
 
 [project.urls]
 Repository = "https://github.com/sgasioro/abbot"
@@ -41,8 +41,9 @@ xopt = ["xopt>=3.2"]
 sbi = ["sbi>=0.22,<0.23", "pyro-ppl>=1.9"]
 # Web frontend. NiceGUI is FastAPI-based; plotly for live progress plots.
 ui = ["nicegui>=1.4", "plotly>=5"]
-# Agent access: an MCP server over named, saved campaigns (`abbot-mcp`).
-mcp = ["mcp>=2.3,<3"]
+# Agent access: an MCP server over named, saved campaigns (`abbot-mcp`); matplotlib
+# draws its plots (abbot.plots).
+mcp = ["mcp>=2.3,<3", "matplotlib>=3.9"]
 dev = ["pytest>=8", "ruff>=0.8"]
 # Example notebooks (examples/*.ipynb) + headless execution for the smoke test.
 examples = ["jupyter", "nbclient>=0.10", "nbformat>=5", "matplotlib>=3.9"]
@@ -53,6 +54,11 @@ requires = ["hatchling"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/abbot"]
+
+# The Claude Code skill lives at skills/abbot in the repository; `abbot-mcp setup`
+# installs it from the wheel.
+[tool.hatch.build.targets.wheel.force-include]
+"skills/abbot/SKILL.md" = "abbot/agent/skill/SKILL.md"
 
 [tool.ruff]
 line-length = 88

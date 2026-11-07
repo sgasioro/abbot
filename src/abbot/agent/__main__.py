@@ -1,3 +1,3 @@
-from abbot.agent.server import main
+from abbot.agent.launch import main
 
 main()

@@ -109,8 +109,10 @@ model_constructor)` to choose your own. A few variations:
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`.
 - **From an AI agent** — `abbot-mcp --dir ~/abbot-campaigns` (with the `mcp` extra)
-  serves named, saved campaigns over MCP, so an agent can set one up, suggest,
-  record results and hand a halt back to you. See
+  serves named, saved campaigns over MCP; in Claude Code, `abbot-mcp start` sets
+  it up and opens a session. The agent first talks the campaign
+  through with you (ranges, limits, goal, budget), then suggests, records results
+  and hands a halt back to you. See
   [Agent access](https://github.com/sgasioro/abbot/blob/main/docs/API.md#agent-access-mcp).
 
 See [`docs/HOWTO.md`](https://github.com/sgasioro/abbot/blob/main/docs/HOWTO.md) for "how do I…" answers, [`docs/API.md`](https://github.com/sgasioro/abbot/blob/main/docs/API.md)
@@ -209,13 +211,18 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   Nelder-Mead, ...) in abbot's loop.
 - The NiceGUI lab frontend (`python -m abbot.ui`), with output ranges, travel
   limits, sources, a model choice and `check()`.
-- An MCP server (`abbot-mcp`) for agents, over named campaigns saved on disk.
+- An MCP server (`abbot-mcp`) for agents, over named campaigns saved on disk, with
+  a setup assistant: the agent asks what it needs before writing the spec
+  (`plan_campaign`, and a Claude Code skill).
 
 **Next:**
-1. **A setup assistant:** an agent that writes the spec and goal from a
-   description of the experiment. The UI stays the run console and the
-   human-in-the-loop entry point.
-2. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
+1. **A guided UI:** step-by-step setup and plain-language progress, with an
+   expert panel that shows (and edits) the whole spec, in the same
+   `campaign.json` format the agent server writes.
+2. **Your own experiment in the UI:** `python -m abbot.ui --experiment
+   module:Class`, then a command adapter (`./measure.sh {temp} {conc}` printing
+   JSON) so a script can run the experiment without writing Python.
+3. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
    and runs policies on the GPU, while the history, saved files, experiments and
    the UI stay on the CPU. The default stays CPU, since lab-scale GPs are usually
    faster there. CUDA only: abbot fits in float64, which Apple's MPS doesn't

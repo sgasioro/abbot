@@ -35,6 +35,33 @@ from abbot.ui.builder import (
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 # What an agent reads before writing a spec. Kept short; the schema has the rest.
+PLANNING_GUIDE = """\
+Setting up a campaign with the person. Find out, from what they've said and by
+asking:
+1. What they can set: each knob, its units, and the range the apparatus can
+   actually reach (not only the interesting part). Whether a knob spans orders of
+   magnitude. Choices that aren't numbers (a material, a mode).
+2. What each run measures, with units. Which outputs to maximize or minimize, which
+   only have to stay within limits (and the limits), which are only recorded.
+3. The goal: the single best setting, or a region (every setting that meets a
+   specification, everything above a threshold, the top few).
+4. Practical limits: how far a knob can move between runs and where it is now;
+   settings known to fail or be unsafe. Keep unsafe settings out of the ranges
+   rather than letting abbot find them.
+5. What a failed run looks like, so you can tell a failure from a bad result.
+6. The budget: how many runs, and whether runs differ in cost (a cheap simulation
+   next to the real experiment).
+7. Results they already have; add them with add_results after creating.
+8. Who runs each experiment: you, through a script or command, or the person by
+   hand (then you suggest, wait, and report what they tell you).
+Ask about everything that's missing in one message rather than one question at a
+time, and skip what you already know. Don't fill gaps with numbers from the
+examples in spec_guide or from probing the apparatus at its extremes; if the person
+doesn't know, propose a value, say it's a guess, and ask. Then show the plan in
+plain words (knobs and ranges, outputs and limits, goal, budget) and create the
+campaign once the person agrees.
+"""
+
 SPEC_GUIDE = """\
 A campaign is a spec (what you can set and what you measure), optionally a goal
 (find a region rather than an optimum), and the measurements reported back.
@@ -73,7 +100,9 @@ strategy (with a goal): SwitchBAX (balanced, default), MeanBAX (fast), InfoBAX
 (thorough), US (explore only).
 model: "default" (independent GPs) or "correlated" (one GP over correlated outputs).
 
-Loop: suggest -> run the design -> report_result (or report_failure). A failed design
+Loop: suggest -> run the design -> report_result (or report_failure). A value
+reported wrong is fixed with correct_result (by the run's id); plot draws the
+model, the progress or predicted-vs-measured for the person. A failed design
 is retried; after repeated failures the campaign halts until resolve_halt is called
 with "retry", "exclude" or "bad_region" (the design itself gives nothing usable).
 A campaign's spec is fixed once created. To change it (narrow a range the apparatus
@@ -199,6 +228,32 @@ class Workspace:
             c.record(item["design"], item["outputs"], cost=item.get("cost"))
         return self._brief(name)
 
+    def correct_result(
+        self,
+        name: str,
+        run: str | int,
+        outputs: dict[str, float],
+        reason: str | None = None,
+    ) -> dict:
+        """Correct a reported run's measured values (a value typed wrong). ``run``
+        is its id (as ``suggest`` gave it) or its index in the history; ``outputs``
+        names only the outputs to change. The old values are kept on the run."""
+        c = self._campaign(name)
+        step = c._find_run(run)
+        before = _record_dict(c.history.records[step], c.spec)["outputs"]
+        c.correct(step, outputs, reason=reason)
+        out = self._brief(name)
+        out["corrected"] = {
+            "run": run, "was": before,
+            "now": _record_dict(c.history.records[step], c.spec)["outputs"],
+        }
+        if out["outstanding"]:
+            out["note"] = (
+                "The outstanding designs were chosen before this correction; cancel "
+                "them and suggest again to use it."
+            )
+        return out
+
     def resolve_halt(self, name: str, answer: str, reason: str | None = None) -> dict:
         """Answer a halt: ``"retry"``, ``"exclude"`` or ``"bad_region"``."""
         self._campaign(name).resolve(answer, reason=reason)
@@ -235,6 +290,44 @@ class Workspace:
     def check(self, name: str) -> str:
         """``campaign.check()``: does the model fit, and what looks off."""
         return str(self._campaign(name).check())
+
+    def plot(
+        self,
+        name: str,
+        kind: str = "model",
+        output: str | list[str] | None = None,
+        variables: list[str] | None = None,
+        at: dict | None = None,
+    ) -> Path:
+        """Draw the campaign and save it as a PNG in its folder (``plots/``);
+        returns the file's path. ``kind`` is ``"model"`` (what the model predicts,
+        with the runs and the goal), ``"progress"`` or ``"check"`` (each run's
+        leave-one-out error); see :mod:`abbot.plots` for ``output``,
+        ``variables`` and ``at``."""
+        from abbot import plots
+
+        c = self._campaign(name)
+        if kind == "model":
+            fig = plots.model(c, output=output, variables=variables, at=at)
+        elif kind == "progress":
+            fig = plots.progress(c)
+        elif kind == "check":
+            fig = plots.check(c)
+        else:
+            raise ValueError(f"kind must be 'model', 'progress' or 'check', not {kind!r}")
+        parts = [kind, f"{len(c.history):03d}runs"]
+        for v in ([output] if isinstance(output, str) else output or []) + list(variables or []):
+            parts.append(re.sub(r"[^A-Za-z0-9_.-]", "_", str(v)))
+        if at:
+            parts.append("at")
+        folder = self.root / name / "plots"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / ("-".join(parts) + ".png")
+        fig.savefig(path, dpi=110)
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
+        return path
 
     def history(self, name: str) -> str:
         """The spec and every result as the self-describing CSV the UI also reads."""
@@ -345,6 +438,8 @@ def _goal_row(goal: dict) -> dict:
 
 def _record_dict(record: Record, spec: ProblemSpec) -> dict:
     out: dict[str, Any] = {"design": spec.as_dict(record.candidate)}
+    if record.id is not None:
+        out["run"] = record.id
     if record.outputs is not None:
         values = torch.as_tensor(record.outputs).reshape(-1).tolist()
         out["outputs"] = dict(zip(spec.output_names, values))

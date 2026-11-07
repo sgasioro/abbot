@@ -28,6 +28,7 @@ without a deprecation period.
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
 | Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
+| Plots | `abbot.plots.model`, `progress`, `check` (matplotlib figures) |
 
 ### Provisional — may change
 Useful and tested, but the surface is still settling; pin a version if you depend
@@ -63,7 +64,7 @@ on them.
 - **`abbot.cost`** (`CostModel`, `FixedCost`, `CallableCost`, `FittedCost`,
   `PowerLawCost`, `SourceCost`), `Record.cost` / `Record.acquisition` and the timing
   fields, `SimpleBO` / `ParetoBO(cost_model=)` — new.
-- **Agent access** — `abbot.agent` (`Workspace`, `SPEC_GUIDE`) and the MCP server
+- **Agent access** — `abbot.agent` (`Workspace`, `SPEC_GUIDE`, `PLANNING_GUIDE`) and the MCP server
   `abbot.agent.server` (`build_server`, the `abbot-mcp` command; `abbot[mcp]`). New;
   tool names and the shape of their results may change.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
@@ -410,11 +411,21 @@ use from the spec, with your keyword arguments) or one built on
 
 ```bash
 pip install "abbot[mcp]"
-abbot-mcp --dir ~/abbot-campaigns        # an MCP server over stdio
-claude mcp add abbot -- abbot-mcp --dir ~/abbot-campaigns   # e.g. in Claude Code
+abbot-mcp setup     # Claude Code: register the server, install the abbot skill
+abbot-mcp start     # open Claude Code here to plan a campaign
 ```
 
-Other MCP clients take the same command in their server config
+`setup` registers the server for all your folders (user scope) as this
+environment's Python running `-m abbot.agent --dir ~/abbot-campaigns` (`--dir` to
+choose), so it works without the environment activated, and installs the skill in
+`~/.claude/skills/abbot`. It says what it will change and asks first; a second run
+changes nothing, and an edited skill is only replaced if you agree. `start` runs
+setup if it's missing, then opens `claude` on the skill (`/abbot`), which asks
+the planning questions (`abbot-mcp start "anneal films with measure.py"` fills in
+the task).
+
+The server itself is `abbot-mcp --dir ~/abbot-campaigns` (or `python -m
+abbot.agent`), over stdio. Other MCP clients take that command in their server config
 (`{"command": "abbot-mcp", "args": ["--dir", "..."]}`). The server's tools are one
 call each on a `Workspace`, which can also be used directly from Python:
 
@@ -434,11 +445,27 @@ call each on a `Workspace`, which can also be used directly from Python:
   `resolve_halt(name, answer, reason=)` complete it. These reply with a short
   state (runs, outstanding designs, any halt) without fitting the model;
   `status`, `recommend`, `check_model` and `history` (CSV) read.
+- **Fixing a value.** `correct_result(name, run, outputs, reason=)` corrects a run
+  already reported (by the id `suggest` gave it), keeping the old values on the
+  run; the reply shows what changed.
+- **Plots.** `plot(name, kind=, output=, variables=, at=)` saves a PNG in
+  `<dir>/<name>/plots/` (`model`, `progress` or `check`; see [Plots](#plots)) and
+  replies with its path and the image, so the agent can look at it and tell the
+  person where it is.
 - **Changing the spec.** A campaign's spec is fixed. To narrow a range or add an
   output, create a new campaign with `results_from=<old name>`: the measured runs
   that fit the new spec are copied, and the reply counts what was skipped and why.
 - **Errors reach the agent** with abbot's message (an unknown name, a halt to
   resolve, a design that isn't outstanding), so it can correct itself.
+- **Planning with the person.** `spec_guide` opens with the questions to settle
+  before writing a spec: the knobs and the ranges the apparatus can reach, what's
+  measured, the goal, travel limits and unsafe settings, failure modes, budget,
+  earlier results, and who runs each experiment (`abbot.agent.PLANNING_GUIDE`).
+  The `plan_campaign` prompt starts that conversation from the person's side
+  (`/mcp__abbot__plan_campaign` in Claude Code). For Claude Code, the repository's
+  `skills/abbot` skill (installed by `abbot-mcp setup`, or copy it to
+  `~/.claude/skills/abbot/`) connects the server if it isn't connected yet, then
+  follows the same questions.
 - **People decide.** The server's instructions ask the agent to confirm with the
   person before resolving a halt as a bad region, and before creating a campaign
   from a spec it inferred.
@@ -603,6 +630,44 @@ reuses the cached fit, so it costs one fit at most.
   `abbot.diagnostics.check(history, spec, model)` runs the same checks on any
   fitted model.
 
+## Plots
+
+`abbot.plots` draws a campaign with matplotlib (`pip install matplotlib`; the
+`mcp` extra includes it). Each function returns a `Figure`; save it with
+`fig.savefig("model.png")`.
+
+```python
+from abbot import plots
+
+plots.model(campaign)                                     # what the model predicts
+plots.model(campaign, output="cond", variables=["temp", "time"], at={"substrate": "sapphire"})
+plots.progress(campaign)
+plots.check(campaign)
+```
+
+- **`model(campaign, output=, variables=, at=)`** shows the model's mean with a
+  95% band, the runs, the latest run and the outstanding designs. It marks the
+  goal: a band or threshold on the output axis, and the stretches the model
+  currently puts in the goal region. Output limits (`min_val` / `max_val`) show as
+  lines.
+  - One variable: one panel per output.
+  - Two: contours of the mean and its uncertainty, with the goal region outlined.
+  - More: one slice per variable through the recommended design (`at=` overrides
+    some of it); runs at other settings are drawn faded. Name two `variables` for
+    a contour slice instead.
+  - Labeled categories show one point per label. Log-scaled variables get a log
+    axis. Sources are held at the target.
+  - The outputs shown by default are the ones the goal reads, else the objectives
+    plus any output with limits.
+  - With several variables, a goal that ranks designs (top-k, percentile) can't be
+    shaded on a slice; band and level goals are.
+- **`progress(campaign)`**: each run and the best so far (one objective), the
+  dominated hypervolume (several), or each run's goal outputs against the goal (a
+  goal and no objective).
+- **`check(campaign)`**: each run's leave-one-out error in standard deviations
+  with the ±2σ band and the ±3σ outlier lines, per output: the numbers behind
+  `campaign.check()`.
+
 ## Outstanding candidates
 
 `suggest(n)` returns `n` `Candidate`s: `{variable name: value}` dicts with an
@@ -618,7 +683,15 @@ a lab can have several vials, or a cluster several jobs, in flight at once.
 | `record(x, y)` | if `x` exactly equals an outstanding design, closes it; otherwise records a new design |
 
 `outstanding()` lists them, oldest first; `state().pending` / `.pending_ids` carry
-the same in JSON. Every `Record` stores the `id` it closed. `step` runs the oldest
+the same in JSON.
+
+**Correcting a recorded value.** `campaign.correct(run, outputs, reason=None)`
+fixes a run already recorded (a value typed or read wrong). `run` is its id or its
+index in the history; `outputs` is every output, or a `{name: value}` dict of only
+the ones to change. The replaced values stay on the record
+(`Record.corrections`: the old outputs, when, and `reason`), the change is saved
+with the store, and the model refits on its next use. Only runs that counted can be
+corrected: fault checks and stop rules aren't re-run, so a failed run stays failed. Every `Record` stores the `id` it closed. `step` runs the oldest
 outstanding candidate before suggesting a new one.
 
 **Proposals avoid work in flight.** When the policy proposes, it receives every

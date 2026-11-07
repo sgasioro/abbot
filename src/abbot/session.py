@@ -850,6 +850,70 @@ class Campaign:
         logger.info("canceled %s at %s", item.id, self._to_dict(item.x))
         return self.state()
 
+    def correct(
+        self,
+        run: str | int,
+        outputs: object,
+        *,
+        reason: str | None = None,
+    ) -> CampaignState:
+        """Correct the measured outputs of a run already recorded: a value typed
+        wrong, a reading recalibrated afterwards.
+
+        ``run`` is the run's id (``"c0003"``, as ``suggest`` handed it out) or its
+        index in the history. ``outputs`` is every output (as for :meth:`ingest`),
+        or a ``{output name: value}`` dict naming only the ones to change. The
+        values it replaces stay on the record (``Record.corrections``, with
+        ``reason``) and the change is saved with the store; the model refits on
+        its next use. Only runs that counted can be corrected: fault checks and
+        stopping rules aren't re-run, so a failed run stays failed.
+        """
+        step = self._find_run(run)
+        r = self.history.records[step]
+        if r.outputs is None or r.fault:
+            raise ValueError(
+                f"correct(): run {run!r} failed, so it has no measured values to "
+                "correct. Record the design again with record() if it was measured."
+            )
+        old = torch.as_tensor(r.outputs, dtype=torch.double).reshape(-1)
+        if isinstance(outputs, Mapping):
+            names = self.spec.output_names
+            unknown = [k for k in outputs if k not in names]
+            if unknown:
+                raise ValueError(
+                    f"correct(): unknown output(s) {unknown}; the outputs are {names}."
+                )
+            new = old.clone()
+            for k, v in outputs.items():
+                new[names.index(k)] = float(v)
+        else:
+            new, _ = split_eval(outputs, self.spec)
+        entry = {"outputs": old.tolist(), "at": time.time(), "reason": reason}
+        r.corrections = [*(r.corrections or []), entry]
+        r.outputs = new
+        if self.store is not None:
+            self.store.save_step(step, r)
+        logger.info("corrected run %s: %s -> %s", run, old.tolist(), new.tolist())
+        self._stale()
+        self._after_ingest()
+        return self.state()
+
+    def _find_run(self, run: str | int) -> int:
+        """The history index of a run given by id or index."""
+        n = len(self.history)
+        if isinstance(run, int) and not isinstance(run, bool):
+            if not 0 <= run < n:
+                raise IndexError(f"run {run} is out of range: the history has {n} run(s).")
+            return run
+        steps = [i for i, r in enumerate(self.history.records) if r.id == run]
+        if steps:
+            return steps[-1]
+        if run in self._inflight:
+            raise KeyError(f"{run!r} is outstanding, not recorded yet; report it first.")
+        ids = [r.id for r in self.history.records if r.id is not None]
+        known = f"recorded ids run {ids[0]} to {ids[-1]}" if ids else "no run has an id"
+        raise KeyError(f"No recorded run {run!r} ({known}); or give its index.")
+
     def resolve(self, answer: str = "retry", *, reason: str | None = None) -> CampaignState:
         """Answer a halt, so the campaign can carry on.
 

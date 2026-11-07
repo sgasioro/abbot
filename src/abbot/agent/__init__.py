@@ -4,6 +4,6 @@
 as an MCP server (``abbot[mcp]``, ``abbot-mcp``).
 """
 
-from abbot.agent.workspace import SPEC_GUIDE, Workspace
+from abbot.agent.workspace import PLANNING_GUIDE, SPEC_GUIDE, Workspace
 
-__all__ = ["SPEC_GUIDE", "Workspace"]
+__all__ = ["PLANNING_GUIDE", "SPEC_GUIDE", "Workspace"]
