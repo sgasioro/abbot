@@ -34,6 +34,7 @@ def _build_page() -> None:
         with ui.row().classes(
             "w-full items-center justify-between no-wrap px-6 py-3 max-sm:px-3"
         ):
+            state._status = None
             with ui.row().classes("items-center gap-6 no-wrap max-sm:gap-2 min-w-0"):
                 ui.label("abbot").classes("ab-brand")
                 if state.controller is None:
@@ -41,7 +42,7 @@ def _build_page() -> None:
                 else:
                     ui.label(state.name).classes("text-base max-sm:hidden").mark("campaign-title")
                     text, tone = summary.status_words(state.controller)
-                    ui.label(text).classes(f"ab-status {tone}").mark("status")
+                    state._status = ui.label(text).classes(f"ab-status {tone}").mark("status")
             with ui.row().classes("items-center gap-4 no-wrap max-sm:gap-2 shrink-0"):
                 if state.controller is not None:
                     theme.link("New campaign", lambda: _new_campaign(state), marker="new"
@@ -60,7 +61,7 @@ def _build_page() -> None:
 
     @ui.refreshable
     def body() -> None:
-        state._live = None
+        state._live = state._live_data = None
         with ui.row().classes("w-full no-wrap items-stretch gap-0 max-md:flex-col"):
             width = "max-w-3xl mx-auto" if not state.expert else "max-w-2xl"
             with ui.column().classes(f"grow w-full {width} px-8 py-8 max-sm:px-4 gap-4"):

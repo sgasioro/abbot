@@ -35,8 +35,8 @@ def render(state: UIState) -> None:
             _next_card(state)
         with ui.element("div").classes("ab-card w-full p-6"), ui.column().classes("gap-2 w-full"):
             ui.label("How it's going").classes("text-lg font-semibold")
-            state._progress = ui.column().classes("gap-1 w-full").mark("progress")
-            _fill_progress(state)
+            state._progress = ui.markdown(_progress_text(state)).classes(
+                "text-[0.95rem] w-full").mark("progress")
         with ui.element("div").classes("ab-card w-full p-4"):
             _model_plot(state)
         if not state.finished and len(campaign.history.clean):
@@ -187,25 +187,35 @@ def _auto_card(state: UIState) -> None:
             ui.label("Simulated experiment").classes("text-xl font-semibold")
             ui.label("a made-up experiment runs each design").classes("ab-sub text-sm")
 
+        def show_running() -> None:
+            run_button.set_visibility(not ctrl.is_running)
+            pause_button.set_visibility(ctrl.is_running)
+            update_live(state)  # the status chip
+
         def go() -> None:
             try:
                 ctrl.start()
             except Exception as exc:  # noqa: BLE001
                 ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
                 return
-            state.refresh()
+            show_running()
 
         def pause() -> None:
             ctrl.pause()
-            state.refresh()
+            show_running()
 
         async def step() -> None:
             if state._stepping:
                 ui.notify("A step is already running.", type="info")
                 return
+
+            def work() -> dict:
+                ctrl.step_once()
+                return live_data(state)
+
             state._stepping = True
             try:
-                await run.io_bound(ctrl.step_once)
+                data = await run.io_bound(work)
             except Exception as exc:  # noqa: BLE001
                 ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
                 return
@@ -213,29 +223,40 @@ def _auto_card(state: UIState) -> None:
                 state._stepping = False
             if state.controller is ctrl:
                 _surface_warning(state)
-                state.refresh()
+                update_live(state, data)
 
         def stop() -> None:
             ctrl.stop()
             state.refresh()
 
+        # Run and Pause swap in place, so starting or pausing redraws nothing.
         with ui.row().classes("gap-2"):
-            if ctrl.is_running:
-                theme.primary("Pause", pause)
-            else:
-                theme.primary("Run", go)
+            run_button = theme.primary("Run", go)
+            pause_button = theme.primary("Pause", pause)
+            run_button.set_visibility(not ctrl.is_running)
+            pause_button.set_visibility(ctrl.is_running)
             ui.button("Step", on_click=step).props("outline no-caps")
             ui.button("Stop", on_click=stop).props("flat no-caps color=grey-8")
 
 
 async def tick(state: UIState) -> None:
-    """The auto-run timer: one step if running, then update in place."""
+    """The auto-run timer: one step if running, then update in place.
+
+    The step, the model fit and everything drawn from them (the summary, the
+    figures, the expert panel's rows) are computed on a worker thread; the event
+    loop only swaps the new content in, so the page stays clickable."""
     ctrl = state.controller
     if ctrl is None or not ctrl.is_running or state._stepping:
         return
+
+    def work() -> dict | None:
+        if not ctrl.tick():
+            return None
+        return live_data(state)
+
     state._stepping = True
     try:
-        stepped = await run.io_bound(ctrl.tick)
+        data = await run.io_bound(work)
     except Exception as exc:  # misconfiguration surfaces here; show it
         logger.exception("auto step failed")
         ctrl.stop()
@@ -246,11 +267,11 @@ async def tick(state: UIState) -> None:
         state._stepping = False
     if state.controller is not ctrl:
         return  # the campaign was reset while this step ran
-    if not stepped:
+    if data is None:
         state.refresh()  # it stopped (budget, halt): redraw the controls once
         return
     _surface_warning(state)
-    update_live(state)
+    update_live(state, data)
 
 
 # -- a halt ------------------------------------------------------------------------
@@ -302,18 +323,13 @@ def _halt_card(state: UIState) -> None:
 # -- how it's going ----------------------------------------------------------------
 
 
-def _fill_progress(state: UIState) -> None:
-    box = state._progress
-    if box is None:
-        return
-    box.clear()
+def _progress_text(state: UIState) -> str:
     try:
         lines = summary.progress_lines(state.controller.campaign)
     except Exception as exc:  # a summary must not break the page
         logger.exception("progress summary failed")
         lines = [f"Couldn't summarize yet: {exc}"]
-    with box:
-        ui.markdown("\n\n".join(lines)).classes("text-[0.95rem]")
+    return "\n\n".join(lines)
 
 
 def _model_plot(state: UIState) -> None:
@@ -358,20 +374,39 @@ def _reviz(state: UIState, attr: str, value) -> None:
     state.refresh()
 
 
-def update_live(state: UIState) -> None:
-    """New results: update the summary, the plot, the header and the expert panel
-    in place (no teardown, so an auto-run doesn't flicker)."""
-    _fill_progress(state)
-    plot = getattr(state, "_plot_model", None)
+def live_data(state: UIState) -> dict:
+    """Everything the live parts of the page show, computed without touching the
+    page (safe on a worker thread): the summary, the model figure, the status, and
+    the expert panel's parts."""
     model = state.fitted_model()
-    if plot is not None and model is not None:
-        plot.update_figure(model_figure(state, model))
-    elif model is not None:
-        state.refresh()  # the first result: build the plot
-        return
-    state.refresh_header()
-    if state._live is not None:
-        state._live()
+    return {
+        "progress": _progress_text(state),
+        "model": model_figure(state, model) if model is not None else None,
+        "status": summary.status_words(state.controller),
+        "expert": state._live_data() if state._live_data is not None else None,
+    }
+
+
+def update_live(state: UIState, data: dict | None = None) -> None:
+    """Show new results by changing content in place: no element is rebuilt, so
+    nothing flickers or moves while an auto-run steps."""
+    if data is None:
+        data = live_data(state)
+    progress = state._progress
+    if progress is not None and progress.content != data["progress"]:
+        progress.set_content(data["progress"])
+    if data["model"] is not None:
+        if state._plot_model is None:
+            state.refresh()  # the first result: build the plot once
+            return
+        state._plot_model.update_figure(data["model"])
+    if state._status is not None:
+        text, tone = data["status"]
+        if state._status.text != text:
+            state._status.set_text(text)
+            state._status.classes(replace=f"ab-status {tone}")
+    if state._live is not None and data["expert"] is not None:
+        state._live(data["expert"])
 
 
 def _surface_warning(state: UIState) -> None:

@@ -44,6 +44,7 @@ class UIState:
         self.step: int = 0  # index into STEPS while setting up
         self.reached: int = 0  # the furthest step reached (earlier ones are done)
         self.expert: bool = False  # the expert panel is open
+        self.expert_tab: str | None = None  # its tab last chosen (kept across redraws)
         self.controller: RunController | None = None
         self.spec: ProblemSpec | None = None
         self.n_suggest: int = 1  # how many designs the expert panel's Suggest asks for
@@ -61,7 +62,9 @@ class UIState:
         self._header = None
         self._main = None
         self._expert = None
-        self._live = None  # updates the expert panel's live parts in place
+        self._live = None  # shows new data in the expert panel's live parts
+        self._live_data = None  # computes that data (no page access; any thread)
+        self._status = None  # the header's status chip
         self._progress = None
         self._plot_model = None
 
@@ -218,7 +221,7 @@ class UIState:
         self.hold = {}
         self.n_suggest = 1
         self.step = self.reached = 0
-        self._progress = self._plot_model = self._live = None
+        self._progress = self._plot_model = self._live = self._live_data = None
         if not keep_setup:
             fresh = UIState.__new__(UIState)
             UIState.__init__(fresh)

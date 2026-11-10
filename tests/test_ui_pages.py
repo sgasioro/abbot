@@ -234,3 +234,39 @@ async def test_a_new_campaign_starts_again_at_the_first_step(ui_states):
         user.find(marker="new-scratch").click()
         await user.should_see("What can you set?")
         assert state.variable_rows[0]["name"] == "x1"  # back to the defaults
+
+
+@pytest.mark.anyio
+async def test_an_auto_run_updates_in_place_without_rebuilding(ui_states):
+    async with user_simulation(root=app._build_page) as user:
+        state = await _start(user, ui_states, lambda s: setattr(s, "mock", True))
+        user.find(marker="expert").click()
+        await user.should_see(marker="runs-table")
+        ctrl = state.controller
+        for _ in range(3):  # past the first result, which builds the plot once
+            ctrl.step_once()
+        with user.client:
+            state.refresh()
+        await user.should_see(marker="model-plot")
+        user.find("Plots").click()  # a tab other than the first
+        before = {k: getattr(state, k) for k in ("_progress", "_plot_model", "_status")}
+        table = user.find(marker="runs-table").elements.pop()
+        rows = len(table.rows)
+        user.find("Run").click()
+        for _ in range(100):
+            if len(ctrl.campaign.history) >= 6:
+                break
+            await asyncio.sleep(0.1)
+        user.find("Pause").click()
+        await asyncio.sleep(0.5)
+        assert len(ctrl.campaign.history) >= 6
+        for key, element in before.items():
+            assert getattr(state, key) is element, f"{key} was rebuilt"
+        assert user.find(marker="runs-table").elements.pop() is table
+        assert len(table.rows) > rows  # same table, new rows
+        assert f"{len(ctrl.campaign.history)} runs" in state._progress.content
+        assert state.expert_tab == "Plots"
+        with user.client:
+            state.refresh()  # a full redraw (recording a run, say) keeps the tab
+        await user.should_see(marker="runs-note")
+        assert state.expert_tab == "Plots"

@@ -30,26 +30,30 @@ def render(state: UIState) -> None:
             _running(state)
 
 
-def _tabs(names: list[str], note: str = ""):
+def _tabs(state: UIState, names: list[str], note: str = ""):
+    """The tab row, with a note on the right; returns the tabs, each tab, the note's
+    label (so it can be updated in place), and the tab to show: the one last chosen,
+    so a redraw doesn't jump back to the first."""
     with ui.row().classes("w-full items-center justify-between px-4 pt-3 pb-2 no-wrap"):
-        tabs = ui.tabs().props("dense no-caps active-bg-color=white indicator-color=transparent "
-                               "active-color=grey-10").classes("text-gray-600")
+        tabs = ui.tabs(on_change=lambda e: setattr(state, "expert_tab", e.value)).props(
+            "dense no-caps active-bg-color=white indicator-color=transparent "
+            "active-color=grey-10").classes("text-gray-600")
         with tabs:
             made = [ui.tab(n).classes("rounded-lg") for n in names]
-        if note:
-            ui.label(note).classes("text-xs ab-sub max-md:hidden")
+        label = ui.label(note).classes("text-xs ab-sub max-md:hidden")
     ui.separator()
-    return tabs, made
+    shown = next((t for t in made if t.props["name"] == state.expert_tab), made[0])
+    return tabs, made, label, shown
 
 
 # -- setting up ---------------------------------------------------------------
 
 
 def _setup(state: UIState) -> None:
-    tabs, (t_spec, t_json, t_policy) = _tabs(["Spec", "spec.json", "Policy & model"],
-                                             "follows the steps as you edit them")
+    tabs, (t_spec, t_json, t_policy), _, shown = _tabs(
+        state, ["Spec", "spec.json", "Policy & model"], "follows the steps as you edit them")
     spec, error = state.preview()
-    with ui.tab_panels(tabs, value=t_spec).classes("w-full bg-transparent"):
+    with ui.tab_panels(tabs, value=shown).classes("w-full bg-transparent"):
         with ui.tab_panel(t_spec).classes("p-4"):
             if spec is None:
                 ui.label(f"Not a complete spec yet: {error}").classes("ab-error")
@@ -168,18 +172,14 @@ def _policy_and_model(state: UIState, spec) -> None:
 
 
 def _running(state: UIState) -> None:
-    campaign = state.controller.campaign
-    n = len(campaign.history)
-    failed = sum(bool(r.fault) for r in campaign.history.records)
-    note = f"{n} runs · {failed} failed"
-    if state.spec.sources and any(r.cost is not None for r in campaign.history.records):
-        note += f" · cost {summary.fmt(campaign.history.cost_spent)}"
-    tabs, (t_runs, t_plots, t_model, t_spec) = _tabs(["Runs", "Plots", "Model", "Spec"], note)
-    with ui.tab_panels(tabs, value=t_runs).classes("w-full bg-transparent"):
+    tabs, (t_runs, t_plots, t_model, t_spec), note, shown = _tabs(
+        state, ["Runs", "Plots", "Model", "Spec"], _note(state))
+    parts: dict = {"note": note.mark("runs-note")}
+    with ui.tab_panels(tabs, value=shown).classes("w-full bg-transparent"):
         with ui.tab_panel(t_runs).classes("p-4"):
-            _runs(state)
+            _runs(state, parts)
         with ui.tab_panel(t_plots).classes("p-4"):
-            _plots(state)
+            _plots(state, parts)
         with ui.tab_panel(t_model).classes("p-4"):
             _check(state)
         with ui.tab_panel(t_spec).classes("p-4"):
@@ -187,8 +187,46 @@ def _running(state: UIState) -> None:
             ui.element("div").classes("h-4")
             _config_json(state)
 
+    def data() -> dict:  # no page access: runs on the auto-run's worker thread
+        campaign = state.controller.campaign
+        model = state.fitted_model()
+        out = {"note": _note(state), "rows": _run_rows(state)}
+        if "progress" in parts:
+            out["progress"] = _safe(figures.progress_fig, campaign.history, state.spec,
+                                    campaign.policy, model)
+        if "parity" in parts and model is not None:
+            out["parity"] = _safe(figures.parity_fig, campaign.history, state.spec, model,
+                                  state.selections())
+        if "model" in parts and model is not None:
+            out["model"] = running.model_figure(state, model)
+        return out
 
-def _runs(state: UIState) -> None:
+    def show(new: dict) -> None:  # swap the content in; nothing is rebuilt
+        if parts["note"].text != new["note"]:
+            parts["note"].set_text(new["note"])
+        table = parts["table"]
+        if table.rows != new["rows"]:
+            table.rows = new["rows"]
+            table.update()
+        for key in ("progress", "parity", "model"):
+            if key in new and new[key] is not None and key in parts:
+                parts[key].update_figure(new[key])
+
+    state._live_data = data
+    state._live = show
+
+
+def _note(state: UIState) -> str:
+    campaign = state.controller.campaign
+    n = len(campaign.history)
+    failed = sum(bool(r.fault) for r in campaign.history.records)
+    note = f"{n} runs · {failed} failed"
+    if state.spec.sources and any(r.cost is not None for r in campaign.history.records):
+        note += f" · cost {summary.fmt(campaign.history.cost_spent)}"
+    return note
+
+
+def _runs(state: UIState, parts: dict) -> None:
     ctrl = state.controller
     spec = state.spec
     if not ctrl.can_auto:
@@ -196,13 +234,8 @@ def _runs(state: UIState) -> None:
     table = theme.table(_run_columns(spec), _run_rows(state), key="id",
                         pagination=0).mark("runs-table")
     table.on("rowClick", lambda e: _correct_dialog(state, e.args[1]))
+    parts["table"] = table
     ui.label("Click a measured run to correct a value.").classes("text-xs ab-sub pt-1")
-
-    def live() -> None:
-        table.rows = _run_rows(state)
-        table.update()
-
-    state._live = live
     with ui.row().classes("items-center gap-4 pt-3 text-sm"):
         _csv_io(state)
 
@@ -336,7 +369,7 @@ def _csv_io(state: UIState) -> None:
     theme.link("export csv", export)
 
 
-def _plots(state: UIState) -> None:
+def _plots(state: UIState, parts: dict) -> None:
     model = state.fitted_model()
     campaign = state.controller.campaign
     if not len(campaign.history):
@@ -345,16 +378,17 @@ def _plots(state: UIState) -> None:
     with ui.column().classes("w-full gap-3"):
         if model is not None:
             with ui.element("div").classes("ab-card p-2 w-full"):
-                ui.plotly(running.model_figure(state, model)).classes("w-full")
+                parts["model"] = ui.plotly(running.model_figure(state, model)).classes("w-full")
         with ui.element("div").classes("ab-card p-2 w-full"):
-            ui.plotly(_safe(figures.progress_fig, campaign.history, state.spec,
-                            campaign.policy, model)).classes("w-full")
+            parts["progress"] = ui.plotly(_safe(figures.progress_fig, campaign.history,
+                                                state.spec, campaign.policy, model)).classes(
+                "w-full")
         if model is not None:
             parity = _safe(figures.parity_fig, campaign.history, state.spec, model,
                            state.selections())
             if parity is not None:
                 with ui.element("div").classes("ab-card p-2 w-full"):
-                    ui.plotly(parity).classes("w-full")
+                    parts["parity"] = ui.plotly(parity).classes("w-full")
 
 
 def _safe(builder, *args):
