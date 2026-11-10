@@ -18,6 +18,7 @@ from abbot.problem import (
     OutputSpec,
     ProblemSpec,
     Source,
+    infer_kind,
 )
 
 # Spec fields the guided steps don't edit. A spec that has them keeps them in an
@@ -263,7 +264,7 @@ def _domain(row: dict, what: str = "Variable"):
     kind = row.get("kind", "continuous")
     name = row.get("name") or "(unnamed)"
     if kind == "json":
-        return _DOMAIN.validate_python(row.get("raw") or {})
+        return _DOMAIN.validate_python(infer_kind(row.get("raw") or {}))
     if kind == "continuous":
         lower, upper = row.get("lower"), row.get("upper")
         if lower is None or upper is None:

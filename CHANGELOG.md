@@ -29,6 +29,10 @@
   `Workspace.open` / `close` / `config` / `free_name` are new, and the MCP
   server's `close_campaign` hands a campaign over to the UI. Simulations aren't
   saved.
+- A spec's domain entries (and source domains) may leave out `kind` where it's
+  plain: `values` is enumerated, `dim` structured, `lower`/`upper` continuous
+  (whole numbers still say `"kind": "integer"`). An entry that can't be told says
+  what to add, instead of pydantic's "Unable to extract tag".
 - Fixed: the `campaign.json` the expert panel showed left out each variable's
   `kind`, so it didn't load back.
 

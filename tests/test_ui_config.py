@@ -103,3 +103,14 @@ def test_a_campaign_started_in_the_ui_is_saved_where_the_agent_looks(tmp_path):
 
     s.mock = True
     assert s.save_path() is None  # a simulation isn't saved
+
+
+def test_a_knob_without_a_kind():
+    s = UIState()
+    s.apply_config({"spec": {
+        "domain": [{"name": "temp", "lower": 20, "upper": 80},
+                   {"name": "solvent", "values": ["water", "ethanol"]}],
+        "outputs": [{"name": "y", "direction": "MAXIMIZE"}]}})
+    assert [r["kind"] for r in s.variable_rows] == ["continuous", "enumerated"]
+    with pytest.raises(ValueError, match='add "kind"'):
+        s.apply_config({"spec": {"domain": [{"name": "n"}], "outputs": [{"name": "y"}]}})
