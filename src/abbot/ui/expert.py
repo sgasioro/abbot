@@ -98,14 +98,22 @@ def _config_editor(state: UIState) -> None:
             "ab-error pb-2")
     editor = ui.codemirror(text, language="JSON", line_wrapping=True).classes(
         "w-full text-xs border rounded").style("height: 60vh").mark("config-editor")
-    status = ui.label("").classes("text-xs pt-1").mark("config-status")
-    edits = {"n": 0, "good": text}
+    with ui.row().classes("items-center justify-between w-full no-wrap gap-3"):
+        status = ui.label("").classes("text-xs pt-1").mark("config-status")
+        go = theme.link("Review and start →", lambda: _to_start(state),
+                        marker="json-to-start").classes("text-sm font-medium shrink-0")
+    go.set_visibility(problem is None and state.step != len(STEPS) - 1)
+    edits = {"n": 0, "good": text, "go": go}
 
     async def changed(e) -> None:
         edits["n"] += 1
         mine = edits["n"]
         await asyncio.sleep(0.6)  # wait for a pause in typing
-        if mine != edits["n"] or e.value == edits["good"]:
+        if mine != edits["n"]:
+            return
+        if e.value == edits["good"]:  # back to what the steps hold: nothing to apply
+            status.set_text("")
+            _show_go(edits, state.step != len(STEPS) - 1)
             return
         apply_config_text(state, e.value, status, edits)
 
@@ -126,12 +134,14 @@ def apply_config_text(state: UIState, text: str, status, edits: dict | None = No
         status.set_text(f"Not valid JSON (line {exc.lineno}): {exc.msg}. "
                         "The steps keep the last valid setup.")
         status.classes(replace="text-xs pt-1 ab-error")
+        _show_go(edits, False)
         return False
     try:
         state.apply_config(config)
     except Exception as exc:  # noqa: BLE001 - shown to the person as is
         status.set_text(f"{_message(exc)} The steps keep the last valid setup.")
         status.classes(replace="text-xs pt-1 ab-error")
+        _show_go(edits, False)
         return False
     if edits is not None:
         edits["good"] = text
@@ -139,8 +149,20 @@ def apply_config_text(state: UIState, text: str, status, edits: dict | None = No
     state.reached = len(STEPS) - 1  # a complete setup: every step can be visited
     status.set_text("Applied to the steps.")
     status.classes(replace="text-xs pt-1 ab-sub")
+    _show_go(edits, state.step != len(STEPS) - 1)
     state.refresh_setup()
     return True
+
+
+def _show_go(edits: dict | None, show: bool) -> None:
+    if edits is not None and "go" in edits:
+        edits["go"].set_visibility(show)
+
+
+def _to_start(state: UIState) -> None:
+    """A complete campaign.json: skip the questions, to the Start step's summary."""
+    state.step = state.reached = len(STEPS) - 1
+    state.refresh()
 
 
 def _spec_tables(state: UIState, spec, variable_rows: list[dict] | None) -> None:

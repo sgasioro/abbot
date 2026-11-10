@@ -278,8 +278,9 @@ def _import_spec(state: UIState) -> None:
         except Exception as exc:  # noqa: BLE001
             ui.notify(_message(exc), type="negative", multi_line=True, close_button=True)
             return
-        state.reached = len(STEPS) - 1
-        ui.notify("Loaded it into the steps.", type="positive")
+        state.step = state.reached = len(STEPS) - 1  # complete: straight to Start
+        ui.notify("Loaded. Check what abbot will do, or go back to any step.",
+                  type="positive")
         state.refresh()
 
     upload = ui.upload(on_upload=on_upload, auto_upload=True).props(

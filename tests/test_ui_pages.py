@@ -309,6 +309,11 @@ async def test_editing_campaign_json_fills_the_steps(ui_states):
         await user.should_see("model must be one of")
         assert state.campaign_config() == config  # the last valid setup stays
 
+        await _edit_json(user, json.dumps(config))
+        user.find(marker="json-to-start").click()  # no need to walk the steps
+        await user.should_see("Ready to start")
+        await user.should_see("Keep to 1 linear constraint.")
+
 
 @pytest.mark.anyio
 async def test_a_saved_campaign_opens_where_it_stopped(ui_states):
