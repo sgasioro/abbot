@@ -4,7 +4,9 @@ Knobs (what can be set), Measurements (what each run gives), Goal (the best sett
 or every setting that hits a target), Extras (sources, the model, a name), and
 Start (who runs the experiments, and what abbot will do). The rows these edit are
 the same ones the expert panel shows. What only the expert panel's JSON can set
-(whole-number knobs, constraints, several sources) shows here, marked as such.
+(whole-number knobs, constraints, several sources) shows here, tagged as such. The
+first step also offers the other ways in: a saved campaign, a file, or writing
+campaign.json in the expert panel.
 """
 
 from __future__ import annotations
@@ -94,6 +96,7 @@ def _knobs(state: UIState) -> None:
     theme.title("What can you set?",
                 "Each knob abbot may change between runs, and the range it can reach. "
                 "Use Choices for settings that aren't numbers, like a material.")
+    _other_starts(state)
     box = ui.column().classes("w-full gap-3")
 
     def redraw() -> None:
@@ -115,12 +118,28 @@ def _knobs(state: UIState) -> None:
     if extra:
         with ui.row().classes("items-center gap-2"):
             ui.label(extra).classes("ab-sub text-sm").mark("extra-note")
-            _expert_only()
-    with ui.row().classes("items-center gap-6 flex-wrap"):
-        theme.link("+ Add a knob", add, marker="add-knob")
-        _import_spec(state)
+            _expert_only(state)
+    theme.link("+ Add a knob", add, marker="add-knob")
+
+
+def _other_starts(state: UIState) -> None:
+    """Ways in besides answering the steps: carry on a saved campaign, load a file,
+    or write campaign.json by hand."""
+    with ui.row().classes("items-center gap-x-5 gap-y-1 flex-wrap text-sm px-4 py-2 "
+                          "rounded-lg").style("background: var(--ab-panel)").mark(
+            "other-starts"):
+        ui.label("Or:").classes("ab-sub")
         if state.workspace is not None:
             theme.link("Open a saved campaign", lambda: _open_saved(state), marker="open-saved")
+        _import_spec(state)
+        theme.link("Write campaign.json", lambda: open_json(state), marker="write-json")
+
+
+def open_json(state: UIState) -> None:
+    """Open the expert panel on the campaign.json editor."""
+    state.expert = True
+    state.expert_tab = "campaign.json"
+    state.refresh()
 
 
 def _extra_words(state: UIState) -> str:
@@ -136,10 +155,12 @@ def _extra_words(state: UIState) -> str:
     return " and ".join(parts)
 
 
-def _expert_only() -> None:
-    """The mark on what's set in the expert panel's JSON, not in the steps."""
-    ui.label("set in the expert panel").classes("ab-status grey text-xs").tooltip(
-        "Change it in the expert panel's campaign.json")
+def _expert_only(state: UIState) -> None:
+    """The mark on what's set in the expert panel's JSON, not in the steps; it
+    opens the editor."""
+    tag = ui.label("set in campaign.json").classes("ab-status grey text-xs cursor-pointer")
+    tag.tooltip("Edit it in the expert panel")
+    tag.on("click", lambda _: open_json(state))
 
 
 def _knob_row(state: UIState, row: dict, i: int, redraw) -> None:
@@ -187,7 +208,7 @@ def _json_knob(state: UIState, row: dict, i: int, redraw) -> None:
         ui.label(row.get("name") or "?").classes("font-medium w-40 truncate")
         ui.label(domain_words(row.get("raw") or {})).classes("ab-sub text-sm").mark(
             f"knob-{i}-json")
-        _expert_only()
+        _expert_only(state)
         ui.space()
         if len(state.variable_rows) > 1:
             ui.button(icon="close", on_click=lambda: _remove(state.variable_rows, i, redraw,
@@ -507,7 +528,7 @@ def _sources(state: UIState) -> None:
         ui.label("Sources").classes("font-medium")
         with ui.row().classes("items-center gap-2"):
             ui.label(", ".join(names)).classes("ab-mono text-sm").mark("json-sources")
-            _expert_only()
+            _expert_only(state)
         ui.label("abbot chooses where each run happens, weighing cost against what it "
                  "learns. Enter each run's cost when you record it, if you know it.").classes(
             "ab-sub text-sm")

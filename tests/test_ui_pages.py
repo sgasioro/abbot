@@ -286,9 +286,9 @@ async def test_editing_campaign_json_fills_the_steps(ui_states):
     async with user_simulation(root=app._build_page) as user:
         await user.open("/")
         state = ui_states[-1]
-        user.find(marker="expert").click()
-        user.find("campaign.json").click()
+        user.find(marker="write-json").click()  # from the first step: the editor
         await user.should_see(marker="config-editor")
+        assert state.expert and state.expert_tab == "campaign.json"
         config = state.campaign_config()
         config["spec"]["domain"][0].update(name="temp", upper=90.0)
         config["spec"]["domain"].append({"kind": "integer", "name": "n", "lower": 1,
@@ -300,7 +300,7 @@ async def test_editing_campaign_json_fills_the_steps(ui_states):
         assert state.variable_rows[0]["name"] == "temp"
         assert state.campaign_config() == config
         await user.should_see(marker="knob-1-json")  # shown on the step, marked
-        await user.should_see("set in the expert panel")
+        await user.should_see("set in campaign.json")
         await user.should_see("1 linear constraint")
 
         await _edit_json(user, json.dumps(config)[:-2])

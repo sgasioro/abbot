@@ -18,8 +18,9 @@
   pause in typing checks it; a valid edit fills the steps, an invalid one says why
   and changes nothing. What the steps can't show (whole-number and simplex knobs,
   linear constraints, boxes, several sources, a list of starting designs,
-  `max_retries`) is kept and marked "set in the expert panel" on the steps.
-  "Load a spec or campaign.json" takes either file.
+  `max_retries`) is kept and tagged "set in campaign.json" on the steps (the tag
+  opens the editor). The first step offers the other ways in: open a saved
+  campaign, load a spec or campaign.json, or write campaign.json.
 - **Campaigns shared with the agent:** the UI saves each campaign it starts in
   `~/abbot-campaigns` (`--dir` or `ABBOT_UI_DIR` to choose), the folder
   `abbot-mcp` uses, and "Open a saved campaign" carries on any of them, whichever
