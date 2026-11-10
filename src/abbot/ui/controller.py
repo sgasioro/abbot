@@ -59,10 +59,11 @@ class RunController:
 
     # -- manual mode: caller supplies measurements --
 
-    def suggest(self, n: int = 1) -> list[dict]:
+    def suggest(self, n: int = 1, *, fixed: dict | None = None) -> list[dict]:
+        """``n`` designs to run; ``fixed`` holds some variables at a value."""
         self._guard()
         self.status = RunStatus.RUNNING
-        return self.campaign.suggest(n)
+        return self.campaign.suggest(n, fixed=fixed or None)
 
     def submit(
         self,

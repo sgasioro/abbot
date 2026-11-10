@@ -12,7 +12,6 @@ import pytest
 
 pytest.importorskip("nicegui")
 
-from nicegui import ui
 from nicegui.testing import user_simulation
 
 from abbot.ui import app
@@ -20,13 +19,8 @@ from abbot.ui import app
 pytestmark = pytest.mark.slow
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
-
 @pytest.mark.anyio
-async def test_auto_run_does_not_block_event_loop(monkeypatch):
+async def test_auto_run_does_not_block_event_loop(monkeypatch, ui_states):
     orig = app.MockAnalyticExperiment.run
 
     def slow_run(self, candidate):
@@ -36,9 +30,14 @@ async def test_auto_run_does_not_block_event_loop(monkeypatch):
     monkeypatch.setattr(app.MockAnalyticExperiment, "run", slow_run)
     async with user_simulation(root=app._build_page) as user:
         await user.open("/")
-        user.find("Mock mode").click()
-        user.find("Create campaign").click()
-        await user.should_see("Pause")
+        state = ui_states[-1]
+        state.mock = True
+        state.step = state.reached = 4
+        with user.client:
+            state.refresh()
+        await user.should_see(marker="create")
+        user.find(marker="create").click()
+        await user.should_see("Simulated experiment")
         user.find("Run").click()
 
         worst = 0.0
@@ -50,6 +49,5 @@ async def test_auto_run_does_not_block_event_loop(monkeypatch):
         user.find("Pause").click()
         await asyncio.sleep(2.0)  # let the in-flight step finish
 
-        steps = [e.text for e in user.find(kind=ui.label).elements if "experiment(s)" in e.text]
-        assert steps and not steps[0].startswith("0 ")  # steps actually ran
+        assert len(state.controller.campaign.history) > 0  # steps actually ran
         assert worst < 1.0, f"event loop stalled {worst:.2f}s during a step"

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Guided UI:** `python -m abbot.ui` now asks five short questions (what can be
+  set, what each run measures, the goal, extras, who runs the experiments) and
+  says in plain words what abbot will do. Running, it shows the next design with
+  boxes for what was measured (the one after is suggested as soon as you record),
+  how it's going in plain language, and the model with the goal marked (its band
+  or threshold, the region the model puts in it, the next design). Finish with the
+  current best when you're done.
+- **Expert panel:** `{ } Expert` opens every field beside the steps: the spec as
+  tables, `campaign.json` (the format `abbot-mcp` saves) and the policy and model,
+  following the steps as you edit; once running, every run (suggest several,
+  hold variables fixed, CSV in and out, click a run to correct a value), the
+  plots, and `check()`.
+
 ## 0.2.1
 
 - **Setup assistant:** the MCP server's `plan_campaign` prompt has the agent talk

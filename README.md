@@ -107,7 +107,8 @@ model_constructor)` to choose your own. A few variations:
   check like `Supervisor(faults=[per_shot(is_dark, bad_region="dark")])` marks a
   region as unusable, and proposals steer away from it.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
-  `Campaign`.
+  `Campaign`: a guided setup in plain questions, then what to run next and how
+  it's going, with an expert panel for every field.
 - **From an AI agent** — `abbot-mcp --dir ~/abbot-campaigns` (with the `mcp` extra)
   serves named, saved campaigns over MCP; in Claude Code, `abbot-mcp start` sets
   it up and opens a session. The agent first talks the campaign
@@ -170,11 +171,11 @@ python -m abbot.ui --no-show       # headless (e.g. on a cluster) — tunnel the
 ```
 Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`.
 
-**Mock mode:** on the Define tab, toggle *Mock mode* before creating the campaign
-to attach a spec-adaptive `MockAnalyticExperiment` (smooth, seeded landscape over
-whatever variables/objectives you defined). This enables **auto-run**
-(run / pause / step / stop) on the Run tab, so a whole campaign drives itself
-with no typed measurements — the quickest way to see the loop and plots working.
+**Try it on a simulation:** on the last setup step, pick *A simulation* as who
+runs the experiments. A spec-adaptive `MockAnalyticExperiment` (a smooth, seeded
+landscape over whatever you defined) then runs each design, with run / pause /
+step / stop, so a whole campaign drives itself: the quickest way to see the loop
+and plots working.
 
 ## Develop
 
@@ -209,16 +210,16 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   classifier, stopping rules, and `campaign.check()` diagnostics.
 - Xopt interop both ways: abbot as an Xopt generator, and Xopt generators (TuRBO,
   Nelder-Mead, ...) in abbot's loop.
-- The NiceGUI lab frontend (`python -m abbot.ui`), with output ranges, travel
-  limits, sources, a model choice and `check()`.
+- The NiceGUI lab frontend (`python -m abbot.ui`): a guided setup, a run view in
+  plain language, and an expert panel (spec tables, `campaign.json`, every run,
+  plots, `check()`).
 - An MCP server (`abbot-mcp`) for agents, over named campaigns saved on disk, with
   a setup assistant: the agent asks what it needs before writing the spec
   (`plan_campaign`, and a Claude Code skill).
 
 **Next:**
-1. **A guided UI:** step-by-step setup and plain-language progress, with an
-   expert panel that shows (and edits) the whole spec, in the same
-   `campaign.json` format the agent server writes.
+1. **Editing in the expert panel:** the spec tables and `campaign.json` (the
+   format the agent server writes) editable, kept in sync with the guided steps.
 2. **Your own experiment in the UI:** `python -m abbot.ui --experiment
    module:Class`, then a command adapter (`./measure.sh {temp} {conc}` printing
    JSON) so a script can run the experiment without writing Python.

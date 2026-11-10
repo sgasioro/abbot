@@ -34,7 +34,14 @@ src/abbot/
   ui/             # NiceGUI web client [extra: ui] — thin over Campaign
     controller.py # RunController: auto/manual run-state machine (framework-free, testable)
     builder.py    # form rows <-> ProblemSpec (sources, ranges, travel limits), goals, model
-    app.py        # single-dashboard: Define / Run / Progress; `python -m abbot.ui`
+    state.py      # UIState: the setup rows, the step, campaign.json, starting a campaign
+    summary.py    # plain-language text: what abbot will do, how it's going (pure)
+    figures.py    # plotly figure builders (model with the goal, progress, parity)
+    theme.py      # colors, type and the small shared components
+    setup.py      # the guided steps: knobs, measurements, goal, extras, start
+    running.py    # the run view: run this next, halts, how it's going, finishing
+    expert.py     # the expert panel: spec tables, campaign.json, runs, plots, check
+    app.py        # the page: header, main column, expert panel; `python -m abbot.ui`
   agent/          # agent access [extra: mcp]
     workspace.py  # Workspace: named campaigns saved on disk, JSON in and out
     server.py     # MCP server over a Workspace; `abbot-mcp`
@@ -71,11 +78,15 @@ total, so rerunning the same call after a halt finishes the remainder. Only a sp
 or `Campaign(spec)`; the policy, model, and space-filling seed designs default from
 the spec (`default_policy` / `default_constructor` / `default_initial_designs`), and
 each is an overridable keyword. The **NiceGUI** web client (`abbot[ui]`, `python -m abbot.ui`) is a thin
-layer over `Campaign`, laid out as a **single dashboard**: left column = a
-**type-polymorphic variable editor** (Continuous | Enumerated) + run controls; right column = live visualization. Two run modes
-share one `RunController`: **manual** (suggest → enter measurement → ingest) and
-**mock auto-run** (a `MockAnalyticExperiment` drives `Campaign.step` on a timer with
-run/pause/step/stop). Manual vs. auto is a UI-driver concern, kept out of the core.
+layer over `Campaign` with two faces. The **guided** one asks five short questions
+(what can be set, what each run measures, the goal, extras, who runs the
+experiments) and, once started, shows what to run next, how it's going in plain
+words and the model's picture. The **expert panel** beside it shows every field:
+the spec as tables, `campaign.json` (the format the MCP server saves), and while
+running every run, the plots and `check()`. Two run modes share one
+`RunController`: **manual** (the next design is suggested as soon as the last is
+recorded) and **simulated** (a `MockAnalyticExperiment` drives `Campaign.step` on a
+timer with run/pause/step/stop). Manual vs. auto is a UI-driver concern, kept out of the core.
 
 Live visualization (via `abbot/analysis.py`, computed from history + the fitted
 model): an **adaptive model view** — 1-D posterior mean ± uncertainty band, 2-D
