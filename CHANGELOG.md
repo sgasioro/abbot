@@ -14,6 +14,22 @@
   following the steps as you edit; once running, every run (suggest several,
   hold variables fixed, CSV in and out, click a run to correct a value), the
   plots, and `check()`.
+- **Editing campaign.json:** the expert panel's `campaign.json` is editable. Each
+  pause in typing checks it; a valid edit fills the steps, an invalid one says why
+  and changes nothing. What the steps can't show (whole-number and simplex knobs,
+  linear constraints, boxes, several sources, a list of starting designs,
+  `max_retries`) is kept and marked "set in the expert panel" on the steps.
+  "Load a spec or campaign.json" takes either file.
+- **Campaigns shared with the agent:** the UI saves each campaign it starts in
+  `~/abbot-campaigns` (`--dir` or `ABBOT_UI_DIR` to choose), the folder
+  `abbot-mcp` uses, and "Open a saved campaign" carries on any of them, whichever
+  started it. A process holds a campaign while it has it open (a `.lock` with its
+  process id), so the UI and the agent's server never write the same one at once;
+  `Workspace.open` / `close` / `config` / `free_name` are new, and the MCP
+  server's `close_campaign` hands a campaign over to the UI. Simulations aren't
+  saved.
+- Fixed: the `campaign.json` the expert panel showed left out each variable's
+  `kind`, so it didn't load back.
 
 ## 0.2.1
 

@@ -75,6 +75,14 @@ def build_server(root: str | Path) -> MCPServer:
         return ws.campaigns()
 
     @_tool(server)
+    def close_campaign(name: str) -> str:
+        """Let go of a campaign so the person can carry it on in the abbot UI
+        (python -m abbot.ui, "Open a saved campaign"). While this server has a
+        campaign open, the UI can't open it. Any later call here reopens it."""
+        ws.close(name)
+        return f"Closed {name}; the UI can open it now."
+
+    @_tool(server)
     def suggest(name: str, n: int = 1, fixed: dict | None = None) -> list[dict]:
         """The next n designs to run, each with an id to report its result under.
         fixed: {variable: value} to hold some variables at a setting."""

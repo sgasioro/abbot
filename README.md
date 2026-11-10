@@ -108,7 +108,9 @@ model_constructor)` to choose your own. A few variations:
   region as unusable, and proposals steer away from it.
 - **No code** — `python -m abbot.ui` launches the lab web frontend over the same
   `Campaign`: a guided setup in plain questions, then what to run next and how
-  it's going, with an expert panel for every field.
+  it's going, with an expert panel for every field and an editable
+  `campaign.json`. Campaigns are saved where the agent saves them, so either can
+  carry one on.
 - **From an AI agent** — `abbot-mcp --dir ~/abbot-campaigns` (with the `mcp` extra)
   serves named, saved campaigns over MCP; in Claude Code, `abbot-mcp start` sets
   it up and opens a session. The agent first talks the campaign
@@ -168,8 +170,16 @@ python -m abbot.ui                 # http://127.0.0.1:8080, opens a browser tab
 python -m abbot.ui --port 9000     # pick a port (auto-picks a free one if taken)
 python -m abbot.ui --no-show       # headless (e.g. on a cluster) — tunnel the port:
                                    #   ssh -L 8080:localhost:8080 <cluster>
+python -m abbot.ui --dir ./runs    # where campaigns are saved (default ~/abbot-campaigns)
 ```
-Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`.
+Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`,
+`ABBOT_UI_DIR`.
+
+Each campaign you start is saved in `~/abbot-campaigns/<name>/`, the folder the
+agent's server (`abbot-mcp`) uses: *Open a saved campaign* on the first step
+carries on any of them, wherever it was started. One process at a time holds a
+campaign: to take one over from the agent, ask it to close the campaign (its
+`close_campaign` tool) or end that session.
 
 **Try it on a simulation:** on the last setup step, pick *A simulation* as who
 runs the experiments. A spec-adaptive `MockAnalyticExperiment` (a smooth, seeded
@@ -211,19 +221,18 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 - Xopt interop both ways: abbot as an Xopt generator, and Xopt generators (TuRBO,
   Nelder-Mead, ...) in abbot's loop.
 - The NiceGUI lab frontend (`python -m abbot.ui`): a guided setup, a run view in
-  plain language, and an expert panel (spec tables, `campaign.json`, every run,
-  plots, `check()`).
+  plain language, and an expert panel (spec tables, an editable `campaign.json`
+  kept in sync with the steps, every run, plots, `check()`). Campaigns are saved
+  in the folder the agent uses, so the UI and the agent can each carry one on.
 - An MCP server (`abbot-mcp`) for agents, over named campaigns saved on disk, with
   a setup assistant: the agent asks what it needs before writing the spec
   (`plan_campaign`, and a Claude Code skill).
 
 **Next:**
-1. **Editing in the expert panel:** the spec tables and `campaign.json` (the
-   format the agent server writes) editable, kept in sync with the guided steps.
-2. **Your own experiment in the UI:** `python -m abbot.ui --experiment
+1. **Your own experiment in the UI:** `python -m abbot.ui --experiment
    module:Class`, then a command adapter (`./measure.sh {temp} {conc}` printing
    JSON) so a script can run the experiment without writing Python.
-3. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
+2. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
    and runs policies on the GPU, while the history, saved files, experiments and
    the UI stay on the CPU. The default stays CPU, since lab-scale GPs are usually
    faster there. CUDA only: abbot fits in float64, which Apple's MPS doesn't

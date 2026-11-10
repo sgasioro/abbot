@@ -157,6 +157,8 @@ def test_the_mcp_server_serves_the_workspace(tmp_path):
             assert r.content[0].text.endswith("model-001runs.png")
             r = await client.call_tool("spec_guide", {})
             assert "Who runs each experiment" in r.content[0].text
+            r = await client.call_tool("close_campaign", {"name": "opt"})
+            assert not r.is_error and not (tmp_path / "opt" / ".lock").exists()
 
             prompts = {p.name for p in (await client.list_prompts()).prompts}
             assert "plan_campaign" in prompts
@@ -165,3 +167,26 @@ def test_the_mcp_server_serves_the_workspace(tmp_path):
             assert "The task: anneal films" in text and "spec_guide" in text
 
     asyncio.run(session())
+
+
+def test_one_process_at_a_time_holds_a_campaign(tmp_path):
+    ws = Workspace(tmp_path)
+    ws.create("opt", SPEC)
+    folder = tmp_path / "opt"
+    assert (folder / ".lock").exists()
+    (folder / ".lock").write_text("1")  # pid 1 is always running: another holder
+    ws.close("opt")
+    assert (folder / ".lock").read_text() == "1"  # not ours to remove
+    with pytest.raises(ValueError, match="open in another process"):
+        Workspace(tmp_path).open("opt")
+    assert Workspace(tmp_path).campaigns()[0]["open_elsewhere"] == 1  # listed, not opened
+    (folder / ".lock").write_text("999999999")  # a process that has exited
+    assert len(Workspace(tmp_path).open("opt").history) == 0
+
+
+def test_free_names(tmp_path):
+    ws = Workspace(tmp_path)
+    assert ws.free_name("My campaign!") == "My-campaign"
+    ws.create("My-campaign", SPEC)
+    assert ws.free_name("My campaign") == "My-campaign-2"
+    assert ws.free_name("  ") == "campaign"

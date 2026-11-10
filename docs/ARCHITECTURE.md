@@ -83,7 +83,12 @@ layer over `Campaign` with two faces. The **guided** one asks five short questio
 experiments) and, once started, shows what to run next, how it's going in plain
 words and the model's picture. The **expert panel** beside it shows every field:
 the spec as tables, `campaign.json` (the format the MCP server saves), and while
-running every run, the plots and `check()`. Two run modes share one
+running every run, the plots and `check()`. `campaign.json` is editable while
+setting up: `UIState.apply_config` checks an edit and fills the steps, and what the
+steps can't show (`"json"` knob rows and `UIState.extra`) is carried through
+unchanged. Campaigns start and resume through the agent's `Workspace`, so the UI
+and `abbot-mcp` share one folder (`~/abbot-campaigns`); a `.lock` per campaign keeps
+two processes from writing the same one. Two run modes share one
 `RunController`: **manual** (the next design is suggested as soon as the last is
 recorded) and **simulated** (a `MockAnalyticExperiment` drives `Campaign.step` on a
 timer with run/pause/step/stop). Manual vs. auto is a UI-driver concern, kept out of the core.

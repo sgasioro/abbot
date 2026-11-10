@@ -7,12 +7,13 @@ the wording is testable without a page.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import torch
 
 from abbot import analysis
 from abbot.policy import BAXPolicy
-from abbot.problem import EnumeratedDomain, IntegerDomain, ProblemSpec
+from abbot.problem import EnumeratedDomain, IntegerDomain, ProblemSpec, StructuredDomain
 from abbot.ui.builder import BAX_STRATEGY_LABELS, build_start
 
 DIRECTION_WORDS = {"MAXIMIZE": "highest", "MINIMIZE": "lowest"}
@@ -28,6 +29,8 @@ def fmt(value) -> str:
 
 
 def _knob(d) -> str:
+    if isinstance(d, StructuredDomain):
+        return f"{d.name} ({d.dim} fractions summing to 1)"
     if isinstance(d, EnumeratedDomain):
         values = [fmt(v) for v in d.values]
         return f"{d.name} ({_or(values)})"
@@ -122,23 +125,45 @@ def plan_lines(state) -> list[str]:
     for d in spec.domain:
         if getattr(d, "max_step", None) is not None:
             lines.append(f"Move {d.name} at most {fmt(d.max_step)} between runs.")
-    if spec.sources:
+    n_constraints = len(spec.domain_constraints or []) + len(spec.output_constraints or [])
+    if n_constraints:
+        lines.append(f"Keep to {n_constraints} linear constraint"
+                     f"{'s' if n_constraints > 1 else ''}.")
+    if spec.sources and len(spec.sources) == 1:
         s = spec.sources[0]
         what = (_or([str(v) for v in s.domain.values])
                 if isinstance(s.domain, EnumeratedDomain)
                 else f"{s.name} from {fmt(s.domain.lower)} to {fmt(s.domain.upper)}")
         lines.append(f"Choose where each run happens ({what}), weighing what it costs, "
                      f"and recommend at {s.target}.")
+    elif spec.sources:
+        targets = _and([f"{s.name} {s.target}" for s in spec.sources])
+        lines.append(f"Choose {_and([s.name for s in spec.sources])} for each run, "
+                     f"weighing what it costs, and recommend at {targets}.")
+    designs = state.extra.get("initial_designs")
     try:
         start = build_start(spec, state.variable_rows)
     except Exception:  # noqa: BLE001 - reported on the Knobs step
         start = None
-    if start is not None:
+    if designs:
+        n = len(designs)
+        lines.append(f"Start with the {n} design{'s' if n > 1 else ''} in campaign.json, "
+                     "then follow the model." if n > 1 or start is None
+                     else "Start from your current settings.")
+    elif start is not None:
         lines.append("Start from your current settings.")
     else:
         lines.append("Start with a few runs spread over the space, then follow the model.")
     lines.append("A simulated experiment runs each design, so you can watch how it works."
                  if state.mock else "You run each design and enter what you measured.")
+    where = state.save_path()
+    if where:
+        home = str(Path.home())
+        if where.startswith(home + "/"):
+            where = "~" + where[len(home):]
+        lines.append(f"Save it in `{where}`, where the abbot agent can open it too.")
+    elif state.mock:
+        lines.append("A simulation isn't saved.")
     return lines
 
 
