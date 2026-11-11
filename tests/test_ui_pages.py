@@ -81,6 +81,33 @@ async def test_the_expert_panel_follows_the_steps(ui_states):
 
 
 @pytest.mark.anyio
+async def test_an_output_can_aim_at_a_value(ui_states):
+    async with user_simulation(root=app._build_page) as user:
+        await user.open("/")
+        state = ui_states[-1]
+        state.step = state.reached = 2
+        with user.client:
+            state.refresh()
+        await user.should_see("What are you after?")
+        await user.should_not_see("Just watch")  # one measurement: it's the objective
+        state.objective_rows[0]["direction"] = "TARGET"  # as picking Near does
+        with user.client:
+            state.refresh()
+        await user.should_see(marker="output-0-target")
+        user.find(marker="output-0-target").type("1.5")
+        assert state.objective_rows[0]["target"] == 1.5
+        with user.client:
+            state.refresh()
+        await user.should_see("The y nearest 1.5.")
+        assert state.campaign_config()["spec"]["outputs"][0] == {
+            "name": "y", "direction": "TARGET", "target": 1.5}
+        state.objective_rows.append({"name": "t", "direction": "OBSERVE"})
+        with user.client:
+            state.refresh()
+        await user.should_see("Just watch")
+
+
+@pytest.mark.anyio
 async def test_a_source_campaign_records_the_cost_entered(ui_states):
     async with user_simulation(root=app._build_page) as user:
         state = await _start(user, ui_states, lambda s: setattr(s, "source_on", True))

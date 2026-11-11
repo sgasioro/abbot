@@ -95,3 +95,24 @@ def test_how_it_is_going_for_a_target():
     lines = summary.progress_lines(c)
     assert "of the settings it considers in the target" in lines[1]
     assert lines[2].endswith("usable runs landed in it.")
+
+
+def test_the_plan_and_progress_for_an_output_aimed_at_a_value():
+    import torch
+
+    from abbot import Campaign
+
+    s = _state()
+    s.objective_rows[0].update(direction="TARGET", target=None)
+    (line,) = summary.plan_lines(s)
+    assert line == "Not ready yet: Give the value to bring yield near."
+    s.objective_rows[0]["target"] = 0.5
+    assert "Look for the yield nearest 0.5, keeping purity at least 0.9." in summary.plan_lines(s)
+
+    spec = s.build_spec()
+    campaign = Campaign(spec, initial_designs=torch.empty(0, 3))
+    for temp, v in zip((20.0, 40.0, 60.0, 80.0), (0.1, 0.9, 0.7, 0.55)):
+        campaign.record({"temp": temp, "conc": 0.1, "solvent": "water"}, [v, 0.95])
+    text = "\n".join(summary.progress_lines(campaign))
+    assert "Best so far: **yield 0.55** (target 0.5)" in text
+    assert "Still improving: 0.35 closer over the last 3 runs." in text

@@ -224,7 +224,7 @@ class UIState:
         trial.build_policy(trial.build_spec())
         if trial.method != "bax" and not trial.build_spec().n_objectives:
             raise ValueError("Nothing to optimize: give an output a direction "
-                             "(MAXIMIZE or MINIMIZE), or add a goal.")
+                             "(MAXIMIZE, MINIMIZE or TARGET), or add a goal.")
         build_constructor(trial.build_spec(), model)
         for key, value in fields.items():
             setattr(self, key, value)

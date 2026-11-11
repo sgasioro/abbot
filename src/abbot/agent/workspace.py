@@ -86,8 +86,10 @@ Spec (JSON):
    "sources": [{"domain": {"kind": "enumerated", "name": "code",
                            "values": ["sim", "experiment"]},
                 "target": "experiment"}]}
-- direction: MAXIMIZE or MINIMIZE (optimized), or OBSERVE (modeled, not optimized).
-  Report raw values; never negate a minimized output.
+- direction: MAXIMIZE or MINIMIZE (optimized), TARGET with "target": <value> (as
+  close to the value as possible), or OBSERVE (modeled, not optimized). Report raw
+  values; never negate a minimized output. TARGET finds the one best setting; to
+  map every setting within a range of a value, use a band goal instead.
 - min_val / max_val on an output keep it in range (a constraint).
 - log: true for quantities spanning orders of magnitude.
 - max_step: a travel limit between consecutive runs; pass initial_designs with the
@@ -95,7 +97,7 @@ Spec (JSON):
 - sources (optional): runs at different fidelities or from different codes; abbot
   chooses which to run and recommends at the target. Report each run's cost if known.
 
-Goal (optional; without one, abbot optimizes the MAXIMIZE/MINIMIZE outputs). Mark
+Goal (optional; without one, abbot optimizes the MAXIMIZE/MINIMIZE/TARGET outputs). Mark
 the outputs the goal reads OBSERVE. Goal kinds:
   {"kind": "band", "bounds": {"yield": [0.4, 0.6]}}   every setting within the bands
   {"kind": "level", "output": "yield", "threshold": 0.8, "upper": false}

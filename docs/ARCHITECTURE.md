@@ -116,7 +116,9 @@ rebuilt only on create/reset/selector-change, so auto-run stays smooth.
 A `ProblemSpec` declares **outputs** (`OutputSpec(name, direction)`): the surrogate
 models every output (one column per output, in `spec.outputs` order — the
 `evaluate`/history contract). `direction` is `MAXIMIZE`/`MINIMIZE` for an *optimized
-objective*, or `OBSERVE` for a **modeled-but-not-optimized** output (a feature a BAX
+objective*, `TARGET` for one scored by its distance from `target` (modeled unflipped;
+`spec.objective_scores` turns model outputs into scores, an MC objective in the
+policies), or `OBSERVE` for a **modeled-but-not-optimized** output (a feature a BAX
 `Goal` consumes, or an output that only has to stay within bounds). Any output can
 carry bounds, `OutputSpec(name, direction, min_val=, max_val=)`, which make it a
 constraint; `output_constraints=` and `domain_constraints=` take

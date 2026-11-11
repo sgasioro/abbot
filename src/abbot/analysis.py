@@ -37,23 +37,22 @@ def convergence(history: History, spec: ProblemSpec) -> list[float]:
     """Running best objective value vs. step, in RAW units (single-objective only).
 
     Element ``i`` is the best clean observed objective among the first ``i+1``
-    records, respecting direction (max of raw for MAXIMIZE, min for MINIMIZE).
+    records, respecting direction (max of raw for MAXIMIZE, min for MINIMIZE, the
+    value nearest the target for TARGET).
     Faulted records carry forward the previous best, and so do records that break
     an output constraint (NaN until one satisfies them).
     """
     if spec.n_objectives != 1:
         raise ValueError("convergence is single-objective; use hypervolume for MO.")
     col = spec.objective_indices()[0]  # objective may not be column 0 (OBSERVE outputs)
-    maximize = spec.objectives[0].direction == "MAXIMIZE"
+    score = spec.objectives[0].score
     best = None
     out: list[float] = []
     for r in history.records:
         if _counts(r, spec):
             v = float(r.outputs.reshape(-1)[col])
-            if best is None:
+            if best is None or score(v) > score(best):
                 best = v
-            else:
-                best = max(best, v) if maximize else min(best, v)
         out.append(best if best is not None else float("nan"))
     return out
 

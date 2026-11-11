@@ -187,7 +187,8 @@ def _spec_tables(state: UIState, spec, variable_rows: list[dict] | None) -> None
         theme.table(["name", "kind", "low", "high", "log", "max step", "start"], rows)
         theme.section("Outputs")
         theme.table(["name", "direction", "min", "max"], [
-            {"name": o.name, "direction": o.direction, "min": _dash(o.min_val),
+            {"name": o.name, "direction": o.direction if o.target is None
+             else f"{o.direction} {summary.fmt(o.target)}", "min": _dash(o.min_val),
              "max": _dash(o.max_val)} for o in spec.outputs])
         if spec.sources:
             theme.section("Sources")

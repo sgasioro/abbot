@@ -303,7 +303,7 @@ class Source(BaseModel):
 # --- Objectives / constraints ------------------------------------------------
 
 
-Direction = Literal["MINIMIZE", "MAXIMIZE", "OBSERVE"]
+Direction = Literal["MINIMIZE", "MAXIMIZE", "TARGET", "OBSERVE"]
 
 
 class OutputSpec(BaseModel):
@@ -311,6 +311,10 @@ class OutputSpec(BaseModel):
 
     ``direction``:
       - ``MAXIMIZE`` / ``MINIMIZE`` — an optimized *objective* (BO/MO).
+      - ``TARGET`` — an objective to bring as close as possible to ``target``: the
+        surrogate models the output itself, and the policies score a value by its
+        distance ``|y - target|`` (smaller is better). Giving ``target`` alone
+        implies it.
       - ``OBSERVE``  — modeled but NOT optimized: a feature a BAX ``Goal``
         consumes, or an output that only has to stay within bounds. OBSERVE outputs
         are fit by the surrogate like any other column; they are simply excluded
@@ -325,13 +329,36 @@ class OutputSpec(BaseModel):
 
     name: str
     direction: Direction = "MAXIMIZE"
+    target: float | None = None
     min_val: float | None = None
     max_val: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _target_implies_direction(cls, data):
+        if isinstance(data, dict) and data.get("target") is not None and "direction" not in data:
+            data = {**data, "direction": "TARGET"}
+        return data
 
     @model_validator(mode="after")
     def _check_bounds(self) -> OutputSpec:
         _check_range(f"OutputSpec {self.name!r}", self.min_val, self.max_val)
+        if self.direction == "TARGET" and self.target is None:
+            raise ValueError(f"output {self.name!r} is TARGET: give the value to aim for, "
+                             "e.g. \"target\": 1.5")
+        if self.direction != "TARGET" and self.target is not None:
+            raise ValueError(f"output {self.name!r} has a target but is {self.direction}; "
+                             "use direction TARGET, or leave the direction out")
         return self
+
+    def score(self, y):
+        """How good the RAW value ``y`` is, bigger being better: ``y`` to maximize,
+        ``-y`` to minimize, ``-|y - target|`` for a target (``y`` when observed)."""
+        if self.direction == "MINIMIZE":
+            return -y
+        if self.direction == "TARGET":
+            return -abs(y - self.target)
+        return y
 
     @property
     def is_constrained(self) -> bool:
@@ -764,19 +791,40 @@ class ProblemSpec(BaseModel):
         signs = [-1.0 if o.direction == "MINIMIZE" else 1.0 for o in self.objectives]
         return torch.tensor(signs, dtype=dtype or torch.double, device=device)
 
+    @property
+    def has_target(self) -> bool:
+        """Whether an objective aims at a value (``TARGET``), so its score is not
+        the model's output itself but the distance from it."""
+        return any(o.direction == "TARGET" for o in self.outputs)
+
     def objective_view(self, Y):
-        """Select the objective columns of raw outputs and flip to canonical space.
+        """Select the objective columns of raw outputs and score them in canonical
+        (bigger is better) space.
 
         ``Y`` is ``(n, n_outputs)`` of RAW physical values (``spec.outputs`` order);
-        the result is ``(n, n_objectives)`` in maximize-canonical space — the
-        objective subset, signs applied. This concentrates the load-bearing
-        ``Y[:, objective_indices()] * objective_signs()`` pairing (the index set and
-        the sign set must agree) in one place instead of at every BO/analysis site.
+        the result is ``(n, n_objectives)``: the objective subset, signs applied, and
+        a ``TARGET`` column as ``-|y - target|``. This concentrates the load-bearing
+        index set and scoring in one place instead of at every BO/analysis site.
         """
         Y = Y.double()
-        return Y[:, self.objective_indices()] * self.objective_signs(
-            dtype=Y.dtype, device=Y.device
-        )
+        return self.objective_scores(Y * self.output_signs(dtype=Y.dtype, device=Y.device))
+
+    def objective_scores(self, Z):
+        """The objectives of CANONICAL model outputs ``Z`` (``(..., n_outputs)``, as
+        the surrogate fits them), as ``(..., n_objectives)``, bigger being better.
+
+        The columns to maximize or minimize are already scored (the sign flip); a
+        ``TARGET`` column is modeled unflipped, so it becomes ``-|z - target|``.
+        Acquisitions apply this to posterior samples (an MC objective).
+        """
+        out = Z[..., self.objective_indices()]
+        if not self.has_target:
+            return out
+        import torch
+
+        cols = [-(out[..., k] - o.target).abs() if o.direction == "TARGET" else out[..., k]
+                for k, o in enumerate(self.objectives)]
+        return torch.stack(cols, dim=-1)
 
     def to_raw(self, canonical):
         """Flip a canonical-space quantity back to RAW physical units (per output).

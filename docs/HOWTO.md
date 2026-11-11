@@ -13,6 +13,7 @@ is shown.
 | use categories (solvents, materials) | `EnumeratedDomain(name="solvent", values=["water", "ethanol"])`. Designs carry the labels. [Categories](API.md#categories-labeled-values) |
 | search a knob over decades | `ContinuousDomain(..., log=True)`. [Names, not positions](API.md#names-not-positions) |
 | record something without optimizing it | `OutputSpec(name=, direction="OBSERVE")`. |
+| bring an output as close as possible to a value | `OutputSpec(name="size", target=40)`: the setting nearest it. To map every setting near it instead, use a band goal. [Aiming at a value](API.md#aiming-at-a-value) |
 | require an output to stay in a range | `OutputSpec(..., min_val=, max_val=)`; for a combination of outputs, `output_constraints=[LinearConstraint({...}, min_val=)]`. [Constraints](API.md#constraints) |
 | limit how far a knob moves per run | `ContinuousDomain(..., max_step=0.5)`, in the knob's units; start the campaign at the current settings with `initial_designs=[{...}]`. [Travel limits](API.md#travel-limits) |
 | forbid some combinations of settings | `domain_constraints=[LinearConstraint({"temp": 1, "conc": 2}, max_val=100)]`. [Constraints](API.md#constraints) |
