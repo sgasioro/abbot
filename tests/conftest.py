@@ -8,6 +8,12 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _campaigns_dir(tmp_path, monkeypatch):
+    """The UI saves campaigns here, never in the real ~/abbot-campaigns."""
+    monkeypatch.setenv("ABBOT_UI_DIR", str(tmp_path / "campaigns"))
+
+
 @pytest.fixture
 def ui_states(monkeypatch):
     """Every ``UIState`` the UI pages make in this test, newest last (needs nicegui)."""

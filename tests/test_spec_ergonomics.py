@@ -338,3 +338,18 @@ def test_multi_fidelity_model_with_a_log_design_variable():
     model = MultiFidelityGPConstructor(spec).build(X, X[:, :1].log10())
     with torch.no_grad():
         assert torch.isfinite(model.posterior(X).mean).all()
+
+
+def test_a_plain_kind_can_be_left_out_of_json():
+    spec = ProblemSpec.model_validate({
+        "domain": [{"name": "a", "lower": 0, "upper": 1},
+                   {"name": "b", "values": ["x", "y"]},
+                   {"name": "mix", "dim": 3},
+                   {"kind": "integer", "name": "n", "lower": 1, "upper": 4}],
+        "outputs": [{"name": "y"}],
+        "sources": [{"domain": {"name": "code", "values": ["sim", "lab"]}, "target": "lab"}],
+    })
+    assert [d.kind for d in spec.domain] == ["continuous", "enumerated", "structured", "integer"]
+    assert spec.sources[0].domain.kind == "enumerated"
+    with pytest.raises(ValueError, match='add "kind"'):
+        ProblemSpec.model_validate({"domain": [{"name": "n"}], "outputs": [{"name": "y"}]})

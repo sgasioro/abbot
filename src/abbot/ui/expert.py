@@ -2,22 +2,25 @@
 
 While setting up: the spec as tables, ``campaign.json`` (the format ``abbot-mcp``
 saves), and the policy and model abbot will build, all following the steps as they
-are edited. While running: every run (with suggesting several at once, holding
+are edited. ``campaign.json`` is editable too: a valid edit fills the steps, and
+what the steps can't show (whole-number knobs, constraints, several sources) is
+kept and marked there as set here. While running: every run (with suggesting several at once, holding
 variables fixed, CSV in and out, and correcting a value), the plots, the model
 check, and the spec.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
 from nicegui import ui
 
-from abbot.problem import EnumeratedDomain, IntegerDomain
+from abbot.problem import EnumeratedDomain, IntegerDomain, StructuredDomain
 from abbot.ui import figures, running, summary, theme
 from abbot.ui.builder import MODEL_LABELS, build_constructor, build_start
-from abbot.ui.state import UIState
+from abbot.ui.state import STEPS, UIState, _message
 
 logger = logging.getLogger(__name__)
 
@@ -51,21 +54,115 @@ def _tabs(state: UIState, names: list[str], note: str = ""):
 
 def _setup(state: UIState) -> None:
     tabs, (t_spec, t_json, t_policy), _, shown = _tabs(
-        state, ["Spec", "spec.json", "Policy & model"], "follows the steps as you edit them")
-    spec, error = state.preview()
+        state, ["Spec", "campaign.json", "Policy & model"],
+        "follows the steps; edit the JSON to change them")
+
+    @ui.refreshable
+    def spec_part() -> None:
+        spec, error = state.preview()
+        if spec is None:
+            ui.label(f"Not a complete spec yet: {error}").classes("ab-error")
+        else:
+            _spec_tables(state, spec, state.variable_rows)
+
+    @ui.refreshable
+    def policy_part() -> None:
+        spec, error = state.preview()
+        if spec is None:
+            ui.label(f"Not a complete spec yet: {error}").classes("ab-error")
+        else:
+            _policy_and_model(state, spec)
+
+    state._expert_parts = [spec_part, policy_part]
     with ui.tab_panels(tabs, value=shown).classes("w-full bg-transparent"):
         with ui.tab_panel(t_spec).classes("p-4"):
-            if spec is None:
-                ui.label(f"Not a complete spec yet: {error}").classes("ab-error")
-            else:
-                _spec_tables(state, spec, state.variable_rows)
+            spec_part()
         with ui.tab_panel(t_json).classes("p-4"):
-            _config_json(state)
+            _config_editor(state)
         with ui.tab_panel(t_policy).classes("p-4"):
-            if spec is None:
-                ui.label(f"Not a complete spec yet: {error}").classes("ab-error")
-            else:
-                _policy_and_model(state, spec)
+            policy_part()
+
+
+def _config_editor(state: UIState) -> None:
+    """``campaign.json``, editable. Each pause in typing checks it; a valid one
+    fills the steps, an invalid one says why and changes nothing."""
+    try:
+        state._editor_config = state.campaign_config()
+        text = json.dumps(state._editor_config, indent=1)
+        problem = None
+    except Exception as exc:  # noqa: BLE001 - shown; the steps aren't complete
+        state._editor_config = None
+        text, problem = "", _message(exc)
+    if problem:
+        ui.label(f"The steps aren't a complete campaign yet: {problem}").classes(
+            "ab-error pb-2")
+    editor = ui.codemirror(text, language="JSON", line_wrapping=True).classes(
+        "w-full text-xs border rounded").style("height: 60vh").mark("config-editor")
+    with ui.row().classes("items-center justify-between w-full no-wrap gap-3"):
+        status = ui.label("").classes("text-xs pt-1").mark("config-status")
+        go = theme.link("Review and start →", lambda: _to_start(state),
+                        marker="json-to-start").classes("text-sm font-medium shrink-0")
+    go.set_visibility(problem is None and state.step != len(STEPS) - 1)
+    edits = {"n": 0, "good": text, "go": go}
+
+    async def changed(e) -> None:
+        edits["n"] += 1
+        mine = edits["n"]
+        await asyncio.sleep(0.6)  # wait for a pause in typing
+        if mine != edits["n"]:
+            return
+        if e.value == edits["good"]:  # back to what the steps hold: nothing to apply
+            status.set_text("")
+            _show_go(edits, state.step != len(STEPS) - 1)
+            return
+        apply_config_text(state, e.value, status, edits)
+
+    editor.on_value_change(changed)
+    with ui.row().classes("items-center gap-4 pt-2 text-sm"):
+        theme.link("Download campaign.json", lambda: ui.download.content(
+            editor.value.encode(), "campaign.json"))
+        ui.label("The same format abbot-mcp saves. Fields the steps can't show stay "
+                 "here.").classes("ab-sub text-xs")
+
+
+def apply_config_text(state: UIState, text: str, status, edits: dict | None = None) -> bool:
+    """Apply edited ``campaign.json`` text to the setup; show what happened in
+    ``status``. Returns whether it was applied."""
+    try:
+        config = json.loads(text)
+    except json.JSONDecodeError as exc:
+        status.set_text(f"Not valid JSON (line {exc.lineno}): {exc.msg}. "
+                        "The steps keep the last valid setup.")
+        status.classes(replace="text-xs pt-1 ab-error")
+        _show_go(edits, False)
+        return False
+    try:
+        state.apply_config(config)
+    except Exception as exc:  # noqa: BLE001 - shown to the person as is
+        status.set_text(f"{_message(exc)} The steps keep the last valid setup.")
+        status.classes(replace="text-xs pt-1 ab-error")
+        _show_go(edits, False)
+        return False
+    if edits is not None:
+        edits["good"] = text
+    state._editor_config = state.campaign_config()
+    state.reached = len(STEPS) - 1  # a complete setup: every step can be visited
+    status.set_text("Applied to the steps.")
+    status.classes(replace="text-xs pt-1 ab-sub")
+    _show_go(edits, state.step != len(STEPS) - 1)
+    state.refresh_setup()
+    return True
+
+
+def _show_go(edits: dict | None, show: bool) -> None:
+    if edits is not None and "go" in edits:
+        edits["go"].set_visibility(show)
+
+
+def _to_start(state: UIState) -> None:
+    """A complete campaign.json: skip the questions, to the Start step's summary."""
+    state.step = state.reached = len(STEPS) - 1
+    state.refresh()
 
 
 def _spec_tables(state: UIState, spec, variable_rows: list[dict] | None) -> None:
@@ -74,7 +171,10 @@ def _spec_tables(state: UIState, spec, variable_rows: list[dict] | None) -> None
         theme.section("Inputs")
         rows = []
         for d in spec.domain:
-            if isinstance(d, EnumeratedDomain):
+            if isinstance(d, StructuredDomain):
+                rows.append({"name": d.name, "kind": "simplex", "low": f"{d.dim} parts",
+                             "high": "sum 1", "log": "", "max step": "–", "start": "–"})
+            elif isinstance(d, EnumeratedDomain):
                 rows.append({"name": d.name, "kind": "choices",
                              "low": ", ".join(str(v) for v in d.values), "high": "", "log": "",
                              "max step": _dash(d.max_step), "start": _dash(starts.get(d.name))})
@@ -99,10 +199,29 @@ def _spec_tables(state: UIState, spec, variable_rows: list[dict] | None) -> None
                 rows.append({"name": s.name, "values": values, "target": str(s.target),
                              "cost": "reported per run"})
             theme.table(["name", "values", "target", "cost"], rows)
+        constraints = [*(spec.domain_constraints or []), *(spec.output_constraints or [])]
+        if constraints or spec.boxes:
+            theme.section("Constraints")
+            for c in constraints:
+                ui.label(_constraint_words(c)).classes("ab-mono text-sm")
+            for box in spec.boxes or []:
+                ui.label(f"box: {box.model_dump(exclude_defaults=True)}").classes(
+                    "ab-mono text-sm")
         goal = state.goal_json() if state.controller is None else _running_goal(state)
         if goal is not None:
             theme.section("Goal")
             ui.label(summary.goal_words(goal)).classes("ab-mono text-sm")
+
+
+def _constraint_words(c) -> str:
+    """A linear constraint as ``0.8 ≤ 1·a + 2·b ≤ 3``."""
+    coeffs = getattr(c, "coeffs", None)
+    if isinstance(coeffs, dict):
+        terms = " + ".join(f"{summary.fmt(v)}·{k}" for k, v in coeffs.items())
+        lo, hi = c.min_val, c.max_val
+        return ((f"{summary.fmt(lo)} ≤ " if lo is not None else "") + terms
+                + (f" ≤ {summary.fmt(hi)}" if hi is not None else ""))
+    return str(c.model_dump())
 
 
 def _running_goal(state: UIState) -> dict | None:
@@ -127,7 +246,9 @@ def _config_json(state: UIState) -> None:
     with ui.row().classes("items-center gap-4 pt-2 text-sm"):
         theme.link("Download campaign.json", lambda: ui.download.content(
             text.encode(), "campaign.json"))
-        ui.label("The same format abbot-mcp saves.").classes("ab-sub text-xs")
+        if state.saved_as is not None and state.workspace is not None:
+            ui.label(f"Saved in {state.workspace.root / state.saved_as}").classes(
+                "ab-sub text-xs ab-mono")
 
 
 def _policy_and_model(state: UIState, spec) -> None:
@@ -186,6 +307,8 @@ def _running(state: UIState) -> None:
             _spec_tables(state, state.spec, state.variable_rows)
             ui.element("div").classes("h-4")
             _config_json(state)
+            ui.label("Fixed once the campaign starts. To change it, choose New campaign, "
+                     "then Start from this setup.").classes("text-xs ab-sub pt-1")
 
     def data() -> dict:  # no page access: runs on the auto-run's worker thread
         campaign = state.controller.campaign

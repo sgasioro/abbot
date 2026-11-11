@@ -231,14 +231,24 @@ def test_spec_to_rows_round_trips_the_editor_fields():
     assert again == spec
 
 
-def test_spec_to_rows_refuses_what_the_editor_cant_show():
-    from abbot.problem import LinearConstraint
-    from abbot.ui.builder import spec_to_rows
+def test_spec_to_rows_keeps_what_the_steps_cant_show():
+    from abbot.problem import ProblemSpec
+    from abbot.ui.builder import spec_json, spec_to_rows
 
-    spec = build_spec(
-        [{"kind": "continuous", "name": "a", "lower": 0, "upper": 1},
-         {"kind": "continuous", "name": "b", "lower": 0, "upper": 1}],
-        [{"name": "f", "direction": "MAXIMIZE"}],
-    ).model_copy(update={"domain_constraints": [LinearConstraint({"a": 1, "b": 1}, max_val=1)]})
-    with pytest.raises(ValueError, match="linear constraints"):
-        spec_to_rows(spec)
+    spec = ProblemSpec.model_validate({
+        "domain": [{"kind": "continuous", "name": "a", "lower": 0, "upper": 1},
+                   {"kind": "integer", "name": "n", "lower": 1, "upper": 5, "max_step": 1},
+                   {"kind": "structured", "name": "mix", "dim": 3},
+                   {"kind": "enumerated", "name": "e", "values": [1, 2, 3], "max_step": 1}],
+        "outputs": [{"name": "y"}],
+        "domain_constraints": [{"coeffs": {"a": 1, "n": 0.1}, "max_val": 0.8}],
+        "sources": [
+            {"domain": {"kind": "enumerated", "name": "code", "values": ["s", "x"]},
+             "target": "x"},
+            {"domain": {"kind": "integer", "name": "lvl", "lower": 1, "upper": 3},
+             "target": 3}]})
+    variables, outputs, source, extra = spec_to_rows(spec)
+    assert [r["kind"] for r in variables] == ["continuous", "json", "json", "json"]
+    assert source is None and set(extra) == {"domain_constraints", "sources"}
+    assert build_spec(variables, outputs, source, extra) == spec
+    assert ProblemSpec.model_validate(spec_json(spec)) == spec  # kinds kept

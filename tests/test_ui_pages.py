@@ -76,8 +76,8 @@ async def test_the_expert_panel_follows_the_steps(ui_states):
         user.find(marker="knob-0-name").clear().type("temp")
         await user.should_see("temp")
         assert state.campaign_config()["spec"]["domain"][0]["name"] == "temp"
-        user.find("spec.json").click()
-        await user.should_see(marker="spec-json")
+        user.find("campaign.json").click()
+        await user.should_see(marker="config-editor")
 
 
 @pytest.mark.anyio
@@ -270,3 +270,69 @@ async def test_an_auto_run_updates_in_place_without_rebuilding(ui_states):
             state.refresh()  # a full redraw (recording a run, say) keeps the tab
         await user.should_see(marker="runs-note")
         assert state.expert_tab == "Plots"
+
+
+async def _edit_json(user, text):
+    editor = user.find(marker="config-editor").elements.pop()
+    with user.client:
+        editor.set_value(text)
+    await asyncio.sleep(0.8)  # past the pause the editor waits for
+
+
+@pytest.mark.anyio
+async def test_editing_campaign_json_fills_the_steps(ui_states):
+    import json
+
+    async with user_simulation(root=app._build_page) as user:
+        await user.open("/")
+        state = ui_states[-1]
+        user.find(marker="write-json").click()  # from the first step: the editor
+        await user.should_see(marker="config-editor")
+        assert state.expert and state.expert_tab == "campaign.json"
+        config = state.campaign_config()
+        config["spec"]["domain"][0].update(name="temp", upper=90.0)
+        config["spec"]["domain"].append({"kind": "integer", "name": "n", "lower": 1,
+                                         "upper": 4})
+        config["spec"]["domain_constraints"] = [{"coeffs": {"temp": 1, "n": 10},
+                                                 "max_val": 60}]
+        await _edit_json(user, json.dumps(config))
+        await user.should_see("Applied to the steps.")
+        assert state.variable_rows[0]["name"] == "temp"
+        assert state.campaign_config() == config
+        await user.should_see(marker="knob-1-json")  # shown on the step, marked
+        await user.should_see("set in campaign.json")
+        await user.should_see("1 linear constraint")
+
+        await _edit_json(user, json.dumps(config)[:-2])
+        await user.should_see("Not valid JSON")
+        await _edit_json(user, json.dumps({**config, "model": "huge"}))
+        await user.should_see("model must be one of")
+        assert state.campaign_config() == config  # the last valid setup stays
+
+        await _edit_json(user, json.dumps(config))
+        user.find(marker="json-to-start").click()  # no need to walk the steps
+        await user.should_see("Ready to start")
+        await user.should_see("Keep to 1 linear constraint.")
+
+
+@pytest.mark.anyio
+async def test_a_saved_campaign_opens_where_it_stopped(ui_states):
+    async with user_simulation(root=app._build_page) as user:
+        state = await _start(user, ui_states, lambda s: setattr(s, "name", "Day one"))
+        assert state.saved_as == "Day-one"
+        (cand,) = await _wait_outstanding(user, state.controller.campaign)
+        user.find(marker=f"{cand.id}-y").type("0.5")
+        user.find(marker=f"{cand.id}-submit").click()
+        await user.should_see(f"Recorded {cand.id}.")
+        await _wait_outstanding(user, state.controller.campaign)
+        user.find(marker="new").click()
+        await user.should_see("stays saved as Day-one")
+        user.find(marker="new-scratch").click()
+        await user.should_see(marker="open-saved")
+        user.find(marker="open-saved").click()
+        await user.should_see("1 run · 1 out")
+        user.find(marker="saved-Day-one").click()
+        await user.should_see("Run this next")
+        campaign = state.controller.campaign
+        assert len(campaign.history) == 1 and len(campaign.outstanding()) == 1
+        assert state.variable_rows[0]["name"] == "x1"

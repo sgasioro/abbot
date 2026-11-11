@@ -433,7 +433,10 @@ call each on a `Workspace`, which can also be used directly from Python:
   initial_designs=, max_retries=)` saves `<dir>/<name>/campaign.json` (how to
   rebuild it) and a `DataStore` beside it. Every later call reopens the campaign by
   name, so a restarted server, or another session, carries on where it stopped,
-  outstanding designs and halts included. `list_campaigns` shows them.
+  outstanding designs and halts included. `list_campaigns` shows them. The UI
+  (`python -m abbot.ui`) saves in and opens from the same folder. A process holds a
+  campaign while it has it open (`<name>/.lock`, its process id): another server or
+  UI is told who has it, and `Workspace.close(name)` lets go.
 - **The spec and goal are JSON.** The spec is a `ProblemSpec` as JSON
   (`spec_guide` has examples; `spec_schema` the full schema). A goal is one of
   `band`, `level`, `topk` or `percentile` (the UI's goal kinds), and makes the

@@ -6,13 +6,17 @@ once started), and an optional expert panel (:mod:`abbot.ui.expert`) beside it.
 
 All optimization logic is in the core (``Campaign``, ``RunController``, ``builder``,
 ``analysis``); these modules build widgets and wire events. Per-client state lives
-on a ``UIState`` made inside the page function, with no module-global state. Run
-with ``python -m abbot.ui``.
+on a ``UIState`` made inside the page function. Campaigns are saved in a directory
+shared with the agent (``~/abbot-campaigns`` unless ``--dir`` or ``ABBOT_UI_DIR``
+says otherwise), through one :class:`~abbot.agent.workspace.Workspace` per process.
+Run with ``python -m abbot.ui``.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
 from nicegui import ui
 
@@ -24,9 +28,24 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["UIState", "main"]
 
+_workspaces: dict = {}
+
+
+def workspace():
+    """The workspace for ``ABBOT_UI_DIR`` (default ``~/abbot-campaigns``), shared by
+    every page this process serves, so two tabs on one campaign share it."""
+    from abbot.agent.launch import DEFAULT_DIR
+    from abbot.agent.workspace import Workspace
+
+    root = Path(os.environ.get("ABBOT_UI_DIR") or DEFAULT_DIR).expanduser().resolve()
+    if root not in _workspaces:
+        _workspaces[root] = Workspace(root)
+    return _workspaces[root]
+
 
 def _build_page() -> None:
     state = UIState()
+    state.workspace = workspace()
     theme.apply()
 
     @ui.refreshable
@@ -60,15 +79,20 @@ def _build_page() -> None:
         expert.render(state)
 
     @ui.refreshable
+    def column() -> None:
+        if state.controller is None:
+            setup.render(state)
+        else:
+            running.render(state)
+
+    @ui.refreshable
     def body() -> None:
         state._live = state._live_data = None
+        state._expert_parts, state._editor_config = [], None  # set if the panel shows
         with ui.row().classes("w-full no-wrap items-stretch gap-0 max-md:flex-col"):
             width = "max-w-3xl mx-auto" if not state.expert else "max-w-2xl"
             with ui.column().classes(f"grow w-full {width} px-8 py-8 max-sm:px-4 gap-4"):
-                if state.controller is None:
-                    setup.render(state)
-                else:
-                    running.render(state)
+                column()
             if state.expert:
                 with ui.element("div").classes(
                     "ab-expert w-[48%] shrink-0 max-md:w-full min-h-[calc(100vh-4rem)]"
@@ -80,6 +104,7 @@ def _build_page() -> None:
     body()
     state._header = header
     state._main = body
+    state._column = column
     state._expert = expert_panel
 
     # One auto-run timer, made once; it reads stable state, so redrawing a panel
@@ -96,8 +121,12 @@ def _new_campaign(state: UIState) -> None:
     with ui.dialog() as dialog, ui.element("div").classes("ab-card p-6 bg-white"), \
             ui.column().classes("gap-3"):
         ui.label("Start a new campaign?").classes("text-lg font-semibold")
-        ui.label("This one's runs are lost unless you download them first (expert "
-                 "panel, Runs, export csv).").classes("ab-sub max-w-md")
+        if state.saved_as is not None:
+            ui.label(f"This one stays saved as {state.saved_as}. Open it again from the "
+                     "first step, or from the abbot agent.").classes("ab-sub max-w-md")
+        else:
+            ui.label("This one isn't saved: its runs are lost unless you download them "
+                     "first (expert panel, Runs, export csv).").classes("ab-sub max-w-md")
 
         def go(keep_setup: bool) -> None:
             dialog.close()
@@ -119,7 +148,9 @@ def main(argv: list[str] | None = None) -> None:
       --host (ABBOT_UI_HOST, default 127.0.0.1)
       --port (ABBOT_UI_PORT, default 8080) — auto-picks a free port if taken
       --strict-port — fail instead of auto-picking
-      --show / --no-show (ABBOT_UI_SHOW=1/0) — open a browser tab on start.
+      --show / --no-show (ABBOT_UI_SHOW=1/0) — open a browser tab on start
+      --dir (ABBOT_UI_DIR, default ~/abbot-campaigns) — where campaigns are saved;
+        the abbot agent (``abbot-mcp``) saves there too.
     """
     import argparse
     import os
@@ -139,7 +170,12 @@ def main(argv: list[str] | None = None) -> None:
                             help="do not open a browser (use on a headless/cluster host)")
     parser.add_argument("--strict-port", action="store_true",
                         help="fail if the requested port is taken instead of auto-picking a free one")
+    parser.add_argument("--dir", default=os.environ.get("ABBOT_UI_DIR"),
+                        help="where campaigns are saved, shared with the abbot agent "
+                        "(default: ~/abbot-campaigns)")
     args = parser.parse_args(argv)
+    if args.dir:
+        os.environ["ABBOT_UI_DIR"] = args.dir
 
     port = args.port
     if not args.strict_port:

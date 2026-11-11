@@ -8,11 +8,17 @@ Each campaign lives in ``<root>/<name>/``: ``campaign.json`` holds how to rebuil
 (the spec, the goal, the strategy and model choice, the starting designs), and
 ``store/`` is the campaign's own :class:`~abbot.history.DataStore`, so every result,
 outstanding design and halt is saved as it happens. Reopening a name resumes it.
+
+The agent's server and the UI (``python -m abbot.ui``) share the same directory by
+default (``~/abbot-campaigns``). A process that opens a campaign holds it (a
+``.lock`` file with its process id) until it closes it or exits, so two processes
+never write the same campaign; the other one is told who has it.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -105,7 +111,9 @@ reported wrong is fixed with correct_result (by the run's id); plot draws the
 model, the progress or predicted-vs-measured for the person. A failed design
 is retried; after repeated failures the campaign halts until resolve_halt is called
 with "retry", "exclude" or "bad_region" (the design itself gives nothing usable).
-A campaign's spec is fixed once created. To change it (narrow a range the apparatus
+The person can also follow a campaign in the abbot UI (python -m abbot.ui, which
+saves in the same folder): call close_campaign first, since one process at a time
+holds a campaign. A campaign's spec is fixed once created. To change it (narrow a range the apparatus
 can't reach, add an output), create a new campaign with results_from=<old name>:
 the runs that fit the new spec are copied in.
 """
@@ -164,6 +172,7 @@ class Workspace:
         campaign = self._build(folder, config)  # validates goal, model, designs
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "campaign.json").write_text(json.dumps(config, indent=1))
+        _lock(folder)
         self._open[name] = campaign
         extra: dict[str, Any] = {"policy": type(campaign.policy).__name__}
         if source is not None:
@@ -172,23 +181,56 @@ class Workspace:
         return {**self._brief(name), **extra}
 
     def campaigns(self) -> list[dict]:
-        """Every saved campaign, with its size and whether it needs attention."""
+        """Every saved campaign, with its size and whether it needs attention.
+        Listing doesn't open them: one another process has open is listed with
+        ``"open_elsewhere"`` (its process id)."""
         out = []
         for path in sorted(self.root.glob("*/campaign.json")):
             name = path.parent.name
             try:
-                c = self._campaign(name)
+                c = self._open.get(name) or self._build(
+                    path.parent, json.loads(path.read_text()))
             except Exception as exc:  # noqa: BLE001 - list the rest, name the broken one
                 out.append({"name": name, "error": str(exc)})
                 continue
-            out.append({
+            item = {
                 "name": name,
                 "runs": len(c.history),
                 "outstanding": len(c.outstanding()),
                 "halted": c.halted,
                 "stopped": c.stopped,
-            })
+            }
+            holder = _holder(path.parent)
+            if holder is not None:
+                item["open_elsewhere"] = holder
+            out.append(item)
         return out
+
+    def open(self, name: str) -> Campaign:
+        """The campaign named ``name``, resumed from its folder, and held by this
+        process until :meth:`close`. Raises if another process holds it."""
+        return self._campaign(name)
+
+    def config(self, name: str) -> dict:
+        """The campaign's ``campaign.json``: how it was set up."""
+        self._campaign(name)
+        return json.loads((self.root / name / "campaign.json").read_text())
+
+    def close(self, name: str) -> None:
+        """Let go of a campaign, so another process (the UI, the agent) can open it."""
+        if self._open.pop(name, None) is not None:
+            _unlock(self.root / name)
+
+    def free_name(self, wanted: str) -> str:
+        """A campaign name from free text that isn't taken yet: ``"My campaign"``
+        becomes ``"My-campaign"``, then ``"My-campaign-2"``."""
+        base = re.sub(r"[^A-Za-z0-9_.-]+", "-", wanted.strip()).strip("-._")[:56]
+        base = base or "campaign"
+        name, n = base, 1
+        while (self.root / name / "campaign.json").exists():
+            n += 1
+            name = f"{base}-{n}"
+        return name
 
     # -- the loop --
 
@@ -363,7 +405,12 @@ class Workspace:
         if not _NAME.match(name) or not path.exists():
             names = [p.parent.name for p in sorted(self.root.glob("*/campaign.json"))]
             raise ValueError(f"No campaign named {name!r}. Campaigns: {names}.")
-        campaign = self._build(path.parent, json.loads(path.read_text()))
+        _lock(path.parent)
+        try:
+            campaign = self._build(path.parent, json.loads(path.read_text()))
+        except BaseException:
+            _unlock(path.parent)
+            raise
         self._open[name] = campaign
         return campaign
 
@@ -382,6 +429,43 @@ class Workspace:
             initial_designs=config.get("initial_designs"),
             max_retries=config.get("max_retries", 1),
         )
+
+
+def _holder(folder: Path) -> int | None:
+    """The id of another running process holding the campaign, or None."""
+    try:
+        pid = int((folder / ".lock").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None  # it exited without letting go
+    except PermissionError:
+        return pid  # alive, someone else's
+    except OSError:
+        return None
+    return pid
+
+
+def _lock(folder: Path) -> None:
+    holder = _holder(folder)
+    if holder is not None:
+        raise ValueError(
+            f"Campaign {folder.name!r} is open in another process (id {holder}): the "
+            "abbot agent's server or another abbot UI. Close it there first (ask the "
+            "agent to close_campaign, end that session, or stop that UI), then try "
+            "again."
+        )
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ".lock").write_text(str(os.getpid()))
+
+
+def _unlock(folder: Path) -> None:
+    if _holder(folder) is None:
+        (folder / ".lock").unlink(missing_ok=True)
 
 
 def _copy_results(source: Campaign, target: Campaign) -> tuple[int, dict[str, int]]:

@@ -3,7 +3,10 @@
 Knobs (what can be set), Measurements (what each run gives), Goal (the best setting,
 or every setting that hits a target), Extras (sources, the model, a name), and
 Start (who runs the experiments, and what abbot will do). The rows these edit are
-the same ones the expert panel shows.
+the same ones the expert panel shows. What only the expert panel's JSON can set
+(whole-number knobs, constraints, several sources) shows here, tagged as such. The
+first step also offers the other ways in: a saved campaign, a file, or writing
+campaign.json in the expert panel.
 """
 
 from __future__ import annotations
@@ -11,8 +14,8 @@ from __future__ import annotations
 from nicegui import ui
 
 from abbot.ui import summary, theme
-from abbot.ui.builder import BAX_STRATEGY_LABELS, parse_values, spec_to_rows
-from abbot.ui.state import STEPS, UIState
+from abbot.ui.builder import BAX_STRATEGY_LABELS, domain_words, parse_values
+from abbot.ui.state import STEPS, UIState, _message
 
 
 def render(state: UIState) -> None:
@@ -93,6 +96,7 @@ def _knobs(state: UIState) -> None:
     theme.title("What can you set?",
                 "Each knob abbot may change between runs, and the range it can reach. "
                 "Use Choices for settings that aren't numbers, like a material.")
+    _other_starts(state)
     box = ui.column().classes("w-full gap-3")
 
     def redraw() -> None:
@@ -110,12 +114,59 @@ def _knobs(state: UIState) -> None:
         _changed(state)
 
     redraw()
-    with ui.row().classes("items-center gap-6"):
-        theme.link("+ Add a knob", add, marker="add-knob")
+    extra = _extra_words(state)
+    if extra:
+        with ui.row().classes("items-center gap-2"):
+            ui.label(extra).classes("ab-sub text-sm").mark("extra-note")
+            _expert_only(state)
+    theme.link("+ Add a knob", add, marker="add-knob")
+
+
+def _other_starts(state: UIState) -> None:
+    """Ways in besides answering the steps: carry on a saved campaign, load a file,
+    or write campaign.json by hand."""
+    with ui.row().classes("items-center gap-x-5 gap-y-1 flex-wrap text-sm px-4 py-2 "
+                          "rounded-lg").style("background: var(--ab-panel)").mark(
+            "other-starts"):
+        ui.label("Or:").classes("ab-sub")
+        if state.workspace is not None:
+            theme.link("Open a saved campaign", lambda: _open_saved(state), marker="open-saved")
         _import_spec(state)
+        theme.link("Write campaign.json", lambda: open_json(state), marker="write-json")
+
+
+def open_json(state: UIState) -> None:
+    """Open the expert panel on the campaign.json editor."""
+    state.expert = True
+    state.expert_tab = "campaign.json"
+    state.refresh()
+
+
+def _extra_words(state: UIState) -> str:
+    """The constraints and boxes only the JSON sets, in a few words."""
+    n = len(state.extra.get("domain_constraints") or []) + len(
+        state.extra.get("output_constraints") or [])
+    parts = []
+    if n:
+        parts.append(f"{n} linear constraint{'s' if n > 1 else ''}")
+    if state.extra.get("boxes"):
+        k = len(state.extra["boxes"])
+        parts.append(f"{k} box{'es' if k > 1 else ''}")
+    return " and ".join(parts)
+
+
+def _expert_only(state: UIState) -> None:
+    """The mark on what's set in the expert panel's JSON, not in the steps; it
+    opens the editor."""
+    tag = ui.label("set in campaign.json").classes("ab-status grey text-xs cursor-pointer")
+    tag.tooltip("Edit it in the expert panel")
+    tag.on("click", lambda _: open_json(state))
 
 
 def _knob_row(state: UIState, row: dict, i: int, redraw) -> None:
+    if row["kind"] == "json":
+        _json_knob(state, row, i, redraw)
+        return
     with ui.element("div").classes("ab-card w-full p-4"), ui.column().classes("gap-2 w-full"):
         with ui.row().classes("items-center gap-3 w-full no-wrap"):
             ui.input("name", on_change=lambda _: _changed(state)).bind_value(row, "name").props(
@@ -148,6 +199,21 @@ def _knob_row(state: UIState, row: dict, i: int, redraw) -> None:
                      on_change=lambda _: _changed(state)).bind_value(row, "values").props(
                 "outlined dense"
             ).classes("w-full").mark(f"knob-{i}-values")
+
+
+def _json_knob(state: UIState, row: dict, i: int, redraw) -> None:
+    """A knob the steps can't edit (whole numbers, a simplex): shown, and removable."""
+    with ui.element("div").classes("ab-card w-full p-4"), \
+            ui.row().classes("items-center gap-3 w-full no-wrap"):
+        ui.label(row.get("name") or "?").classes("font-medium w-40 truncate")
+        ui.label(domain_words(row.get("raw") or {})).classes("ab-sub text-sm").mark(
+            f"knob-{i}-json")
+        _expert_only(state)
+        ui.space()
+        if len(state.variable_rows) > 1:
+            ui.button(icon="close", on_click=lambda: _remove(state.variable_rows, i, redraw,
+                                                              state)).props(
+                "flat dense round color=grey-6").tooltip("Remove this knob")
 
 
 def _knob_options(state: UIState, row: dict) -> None:
@@ -203,29 +269,70 @@ def _remove(rows: list, i: int, redraw, state: UIState) -> None:
 
 
 def _import_spec(state: UIState) -> None:
-    """Fill the steps from a saved spec (JSON)."""
-    from abbot import io as abbot_io
+    """Fill the steps from a saved spec or campaign.json."""
+    import json
 
     def on_upload(e) -> None:
         try:
-            spec = abbot_io.spec_from_json(e.content.read().decode())
-            variables, outputs, source = spec_to_rows(spec)
+            state.apply_config(json.loads(e.content.read().decode()))
         except Exception as exc:  # noqa: BLE001
-            ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
+            ui.notify(_message(exc), type="negative", multi_line=True, close_button=True)
             return
-        state.variable_rows = variables or state.variable_rows
-        state.objective_rows = outputs
-        state.method = "optimize"
-        state.source_on = source is not None
-        if source is not None:
-            state.source_row = source
-        state.reached = len(STEPS) - 1
-        ui.notify("Loaded the spec into the steps.", type="positive")
+        state.step = state.reached = len(STEPS) - 1  # complete: straight to Start
+        ui.notify("Loaded. Check what abbot will do, or go back to any step.",
+                  type="positive")
         state.refresh()
 
     upload = ui.upload(on_upload=on_upload, auto_upload=True).props(
         "accept=.json flat bordered").classes("hidden")
-    theme.link("Start from a saved spec", lambda: upload.run_method("pickFiles"))
+    theme.link("Load a spec or campaign.json", lambda: upload.run_method("pickFiles"))
+
+
+def _open_saved(state: UIState) -> None:
+    """Pick a campaign saved in the workspace (by this UI or the agent) to carry on."""
+    ws = state.workspace
+    saved = ws.campaigns()
+    with ui.dialog() as dialog, ui.element("div").classes("ab-card p-6 bg-white"), \
+            ui.column().classes("gap-3 min-w-[22rem]"):
+        ui.label("Open a saved campaign").classes("text-lg font-semibold")
+        ui.label(f"In {ws.root}, shared with the abbot agent.").classes("ab-sub text-sm")
+        if not saved:
+            ui.label("Nothing saved yet.").classes("ab-sub")
+
+        async def go(name: str) -> None:
+            from abbot.ui import running
+
+            try:
+                state.open_saved(name)
+            except Exception as exc:  # noqa: BLE001
+                ui.notify(_message(exc), type="negative", multi_line=True, close_button=True)
+                return
+            dialog.close()
+            await running.started(state)
+
+        for item in saved:
+            with ui.row().classes("items-center gap-3 w-full no-wrap"):
+                if "error" in item:
+                    ui.label(item["name"]).classes("ab-mono w-48 truncate")
+                    ui.label(f"can't open: {item['error']}").classes("ab-error text-xs")
+                    continue
+                theme.link(item["name"], lambda n=item["name"]: go(n),
+                           marker=f"saved-{item['name']}").classes("ab-mono w-48 truncate")
+                ui.label(_saved_words(item)).classes("ab-sub text-sm")
+        with ui.row().classes("gap-3 pt-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat no-caps")
+    dialog.open()
+
+
+def _saved_words(item: dict) -> str:
+    words = [f"{item['runs']} run{'s' if item['runs'] != 1 else ''}"]
+    if item["outstanding"]:
+        words.append(f"{item['outstanding']} out")
+    if item.get("halted"):
+        words.append("halted")
+    if item.get("open_elsewhere"):
+        words.append("open elsewhere")
+    return " · ".join(words)
 
 
 # -- 2. measurements ------------------------------------------------------
@@ -417,6 +524,16 @@ def _extras(state: UIState) -> None:
 
 
 def _sources(state: UIState) -> None:
+    if state.extra.get("sources"):
+        names = [src.get("domain", {}).get("name", "?") for src in state.extra["sources"]]
+        ui.label("Sources").classes("font-medium")
+        with ui.row().classes("items-center gap-2"):
+            ui.label(", ".join(names)).classes("ab-mono text-sm").mark("json-sources")
+            _expert_only(state)
+        ui.label("abbot chooses where each run happens, weighing cost against what it "
+                 "learns. Enter each run's cost when you record it, if you know it.").classes(
+            "ab-sub text-sm")
+        return
     row = state.source_row
     box = ui.column().classes("w-full gap-2")
 

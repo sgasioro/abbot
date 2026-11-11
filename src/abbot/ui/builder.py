@@ -6,15 +6,24 @@ UI collects plain dict rows from its variable/objective editors and calls these.
 
 from __future__ import annotations
 
+from pydantic import TypeAdapter
+
 from abbot.goal import BandIntersection, Goal, LevelSet, PercentileSet, TopK
 from abbot.model import ModelConstructor, default_constructor
 from abbot.problem import (
     ContinuousDomain,
+    Domain,
     EnumeratedDomain,
+    IntegerDomain,
     OutputSpec,
     ProblemSpec,
     Source,
+    infer_kind,
 )
+
+# Spec fields the guided steps don't edit. A spec that has them keeps them in an
+# ``extra`` dict (as JSON) next to the rows; they're edited in the expert panel.
+EXTRA_SPEC_FIELDS = ("sources", "boxes", "domain_constraints", "output_constraints")
 
 # BAX strategy labels: plain-language first, the real name kept in parentheses so
 # an expert still recognizes it. Keys are the engine strategy identifiers.
@@ -33,7 +42,10 @@ MODEL_LABELS: dict[str, str] = {
 
 
 def build_spec(
-    variable_rows: list[dict], output_rows: list[dict], source_row: dict | None = None
+    variable_rows: list[dict],
+    output_rows: list[dict],
+    source_row: dict | None = None,
+    extra: dict | None = None,
 ) -> ProblemSpec:
     """Build a ``ProblemSpec`` from UI rows.
 
@@ -49,6 +61,10 @@ def build_spec(
     ``source_row``: an optional source variable, ``{"kind", "name", "target"}`` plus
     ``values`` (enumerated) or ``lower`` / ``upper`` / ``log`` / ``accurate``
     (continuous). ``None`` or a blank name means no source.
+    A variable row ``{"kind": "json", "raw": {...}}`` is a domain entry as JSON (one
+    the steps don't edit, like whole numbers). ``extra`` holds the spec's other
+    fields as JSON (:data:`EXTRA_SPEC_FIELDS`); its ``sources`` replace
+    ``source_row``.
     Pydantic validation raises with field-level messages the UI surfaces inline.
     """
     domain = [_domain(row) for row in variable_rows]
@@ -64,7 +80,10 @@ def build_spec(
     sources = None
     if source_row and (source_row.get("name") or "").strip():
         sources = [_source(source_row)]
-    return ProblemSpec(domain=domain, outputs=outputs, sources=sources)
+    fields = {k: v for k, v in (extra or {}).items() if k in EXTRA_SPEC_FIELDS and v}
+    if "sources" in fields:
+        sources = fields.pop("sources")
+    return ProblemSpec(domain=domain, outputs=outputs, sources=sources, **fields)
 
 
 def build_constructor(spec: ProblemSpec, model: str = "default") -> ModelConstructor | None:
@@ -94,45 +113,52 @@ def build_start(spec: ProblemSpec, variable_rows: list[dict]) -> list[dict] | No
         return None
     start: dict = {}
     for row, d in zip(variable_rows, spec.domain):
-        value = _number(row.get("start"))
+        raw = row.get("start")
+        if isinstance(d, ContinuousDomain):
+            value = _number(raw)
+        else:  # a label, or a number from JSON
+            value = None if raw is None or raw == "" else raw
         if value is None and getattr(d, "max_step", None) is not None:
             raise ValueError(
                 f"Variable {d.name!r} has a travel limit: enter where it starts "
                 "(its current setting)."
             )
         if value is None:
-            if isinstance(d, ContinuousDomain):
-                value = (d.lower + d.upper) / 2
-            else:
-                value = d.values[0]
+            value = default_start(d)
+            if value is None:
+                raise ValueError(
+                    f"Variable {d.name!r}: with travel limits, give the starting design "
+                    "in campaign.json (initial_designs)."
+                )
         start[d.name] = value
     for s in spec.sources or []:
         start[s.name] = s.target
     return [start]
 
 
-def spec_to_rows(spec: ProblemSpec) -> tuple[list[dict], list[dict], dict | None]:
-    """The editor rows for a ``spec``: the inverse of :func:`build_spec`.
+def default_start(d):
+    """Where a variable without a travel limit starts when a campaign with travel
+    limits doesn't say: mid-range, or the first choice (None for a simplex)."""
+    if isinstance(d, ContinuousDomain):
+        return (d.lower + d.upper) / 2
+    if isinstance(d, EnumeratedDomain):
+        return d.values[0]
+    if isinstance(d, IntegerDomain):
+        return (d.lower + d.upper) // 2
+    return None
 
-    Raises ``ValueError`` naming what the editor can't show (integer or structured
-    variables, more than one source, linear constraints), so an import refuses
-    rather than silently dropping part of the problem.
+
+def spec_to_rows(
+    spec: ProblemSpec,
+) -> tuple[list[dict], list[dict], dict | None, dict]:
+    """The editor rows for a ``spec``: the inverse of :func:`build_spec`, so
+    ``build_spec(*spec_to_rows(spec)) == spec``.
+
+    What the steps don't edit is kept rather than dropped: a variable they can't
+    show (whole numbers, a simplex, choices with a travel limit) becomes a
+    ``"json"`` row, and constraints, boxes and sources beyond one plain source go
+    in the returned ``extra`` dict.
     """
-    unsupported = [
-        d.name for d in spec.domain if not isinstance(d, (ContinuousDomain, EnumeratedDomain))
-    ]
-    sources = spec.sources or []
-    if len(sources) > 1:
-        unsupported.append(f"{len(sources)} sources")
-    if sources and not isinstance(sources[0].domain, (ContinuousDomain, EnumeratedDomain)):
-        unsupported.append(sources[0].name)
-    if spec.domain_constraints or spec.output_constraints:
-        unsupported.append("linear constraints")
-    if unsupported:
-        raise ValueError(
-            f"The editor can't show {unsupported} yet; run this spec through the "
-            "Python API."
-        )
     variable_rows = []
     for d in spec.domain:
         if isinstance(d, ContinuousDomain):
@@ -140,17 +166,24 @@ def spec_to_rows(spec: ProblemSpec) -> tuple[list[dict], list[dict], dict | None
                 "kind": "continuous", "name": d.name, "lower": d.lower, "upper": d.upper,
                 "log": d.log, "max_step": d.max_step, "start": None,
             })
-        else:
+        elif isinstance(d, EnumeratedDomain) and d.max_step is None:
             variable_rows.append({
                 "kind": "enumerated", "name": d.name,
                 "values": ", ".join(str(v) for v in d.values),
             })
+        else:
+            variable_rows.append({"kind": "json", "name": d.name, "start": None,
+                                  "raw": {"kind": d.kind, **d.model_dump(
+                                      mode="json", exclude_defaults=True)}})
     output_rows = [
         {"name": o.name, "direction": o.direction, "min_val": o.min_val, "max_val": o.max_val}
         for o in spec.outputs
     ]
+    dumped = spec_json(spec)
+    extra = {k: dumped[k] for k in EXTRA_SPEC_FIELDS if k != "sources" and dumped.get(k)}
+    sources = spec.sources or []
     source_row = None
-    if sources:
+    if len(sources) == 1 and _plain_source(sources[0]):
         src = sources[0]
         d = src.domain
         source_row = {"name": d.name, "target": str(src.target), "log": src.is_log,
@@ -160,7 +193,48 @@ def spec_to_rows(spec: ProblemSpec) -> tuple[list[dict], list[dict], dict | None
             source_row.update(kind="enumerated", values=", ".join(str(v) for v in d.values))
         else:
             source_row.update(kind="continuous", lower=d.lower, upper=d.upper)
-    return variable_rows, output_rows, source_row
+    elif sources:
+        extra["sources"] = dumped["sources"]
+    return variable_rows, output_rows, source_row, extra
+
+
+def spec_json(spec: ProblemSpec) -> dict:
+    """The spec as compact JSON: defaults left out, except each domain's ``kind``,
+    which reading it back needs."""
+    out = spec.model_dump(mode="json", exclude_defaults=True)
+    out["domain"] = [{"kind": d.kind, **item} for d, item in zip(spec.domain, out["domain"])]
+    for s, item in zip(spec.sources or [], out.get("sources") or []):
+        item["domain"] = {"kind": s.domain.kind, **item["domain"]}
+    return out
+
+
+def _plain_source(src: Source) -> bool:
+    """Whether the Extras step can show this source: one named list or one range,
+    with nothing set that the step has no field for."""
+    d = src.domain
+    if isinstance(d, EnumeratedDomain):
+        return (d.max_step is None and src.ordered is None and not src.is_log
+                and src.accurate == "high")
+    return (isinstance(d, ContinuousDomain) and src.ordered is None and not d.log
+            and d.max_step is None)
+
+
+def domain_words(raw: dict) -> str:
+    """A ``"json"`` row's domain in a few words, for the steps."""
+    kind = raw.get("kind")
+    if kind == "integer":
+        text = f"whole numbers {raw.get('lower')}–{raw.get('upper')}"
+    elif kind == "structured":
+        text = f"{raw.get('dim')} fractions summing to 1"
+    elif kind == "enumerated":
+        text = "choices " + ", ".join(str(v) for v in raw.get("values", []))
+    else:
+        text = f"{raw.get('lower')}–{raw.get('upper')}"
+    if raw.get("log"):
+        text += ", log scale"
+    if raw.get("max_step") is not None:
+        text += f", moves ≤ {raw['max_step']}"
+    return text
 
 
 def _number(value) -> float | None:
@@ -183,9 +257,14 @@ def parse_values(values) -> list:
         return [str(tok) for tok in tokens]  # labels: categories
 
 
+_DOMAIN = TypeAdapter(Domain)
+
+
 def _domain(row: dict, what: str = "Variable"):
     kind = row.get("kind", "continuous")
     name = row.get("name") or "(unnamed)"
+    if kind == "json":
+        return _DOMAIN.validate_python(infer_kind(row.get("raw") or {}))
     if kind == "continuous":
         lower, upper = row.get("lower"), row.get("upper")
         if lower is None or upper is None:

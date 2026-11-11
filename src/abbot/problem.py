@@ -183,6 +183,26 @@ Domain = Annotated[
     Field(discriminator="kind"),
 ]
 
+def infer_kind(item, where: str = "domain"):
+    """A domain entry as JSON with its ``kind`` filled in when it's missing and
+    plain from the fields: ``values`` makes it enumerated, ``dim`` structured,
+    ``lower``/``upper`` continuous. Whole numbers still need ``"kind": "integer"``.
+    Anything else is returned as is."""
+    if not isinstance(item, dict) or "kind" in item:
+        return item
+    if "values" in item:
+        return {"kind": "enumerated", **item}
+    if "dim" in item:
+        return {"kind": "structured", **item}
+    if "lower" in item or "upper" in item:
+        return {"kind": "continuous", **item}
+    name = item.get("name", "?")
+    raise ValueError(
+        f"{where} entry {name!r}: add \"kind\": \"continuous\" (lower, upper), "
+        "\"integer\" (lower, upper), \"enumerated\" (values) or \"structured\" (dim)."
+    )
+
+
 SourceDomain = Annotated[
     ContinuousDomain | IntegerDomain | EnumeratedDomain,
     Field(discriminator="kind"),
@@ -492,7 +512,8 @@ class ProblemSpec(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _accept_objectives_alias(cls, data):
-        """Accept a legacy ``objectives=[...]`` kwarg as an alias for ``outputs``.
+        """Accept a legacy ``objectives=[...]`` kwarg as an alias for ``outputs``,
+        and fill in a domain entry's ``kind`` where it's plain (:func:`infer_kind`).
 
         Keeps every existing BO call site (and old JSON written with
         ``"objectives"``) working: a legacy objectives list is all-directional and
@@ -511,6 +532,12 @@ class ProblemSpec(BaseModel):
                 )
             data = {**data, "domain_constraints": data["constraints"]}
             data.pop("constraints", None)
+        if isinstance(data, dict) and isinstance(data.get("domain"), list):
+            data = {**data, "domain": [infer_kind(d) for d in data["domain"]]}
+        if isinstance(data, dict) and isinstance(data.get("sources"), list):
+            data = {**data, "sources": [
+                {**src, "domain": infer_kind(src.get("domain"), "source")}
+                if isinstance(src, dict) else src for src in data["sources"]]}
         return data
 
     @model_validator(mode="after")
