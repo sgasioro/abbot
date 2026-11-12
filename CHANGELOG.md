@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Your own experiment in the UI:** `python -m abbot.ui --experiment rig:Rig`
+  (or `rig.py:Rig`) offers your experiment on the Start step as who runs the
+  experiments; the run view drives it with run / pause / step / stop, and the
+  results are saved as any campaign's are. `Rig` is an object with `run(design)`
+  (or `run_batch(designs)`), or a class or function that makes one, given the
+  spec if it takes an argument. `abbot.ui.serve(campaign, experiment)` opens the
+  UI from Python on a campaign built in code, with any policy or model, shared by
+  every tab.
 - **Aim an output at a value:** `OutputSpec(name="size", target=40)` (direction
   `TARGET`) finds the setting nearest the value. The model fits the output as
   measured and the policies score its distance from the target, so it works with

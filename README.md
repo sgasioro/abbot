@@ -173,6 +173,7 @@ python -m abbot.ui --port 9000     # pick a port (auto-picks a free one if taken
 python -m abbot.ui --no-show       # headless (e.g. on a cluster) — tunnel the port:
                                    #   ssh -L 8080:localhost:8080 <cluster>
 python -m abbot.ui --dir ./runs    # where campaigns are saved (default ~/abbot-campaigns)
+python -m abbot.ui --experiment rig:Rig   # your experiment runs each design
 ```
 Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`,
 `ABBOT_UI_DIR`.
@@ -188,6 +189,26 @@ runs the experiments. A spec-adaptive `MockAnalyticExperiment` (a smooth, seeded
 landscape over whatever you defined) then runs each design, with run / pause /
 step / stop, so a whole campaign drives itself: the quickest way to see the loop
 and plots working.
+
+**Your own experiment:** `--experiment rig:Rig` (a module on the path, or
+`rig.py:Rig`) names an object with `run(design)` returning the outputs (a
+`{"yield": ...}` dict or a list), or a class or function that makes one; a maker
+that takes an argument gets the campaign's spec. The Start step then offers it as
+who runs the experiments, and the run view drives it with run / pause / step /
+stop, saving every result as it comes. From Python, `abbot.ui.serve(campaign,
+experiment)` opens the UI on a campaign you built in code (any policy or model),
+shared by every tab:
+
+```python
+from abbot import Campaign
+from abbot.ui import serve
+
+class Rig:
+    def run(self, design):          # {"temp": 54.2, "conc": 0.1}
+        return {"yield": measure(design["temp"], design["conc"])}
+
+serve(Campaign(spec), Rig())         # or serve(experiment=Rig) to set up in the UI
+```
 
 ## Develop
 
@@ -226,14 +247,16 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   plain language, and an expert panel (spec tables, an editable `campaign.json`
   kept in sync with the steps, every run, plots, `check()`). Campaigns are saved
   in the folder the agent uses, so the UI and the agent can each carry one on.
+  Your own experiment can run each design (`--experiment module:Class`, or
+  `abbot.ui.serve(campaign, experiment)` from code).
 - An MCP server (`abbot-mcp`) for agents, over named campaigns saved on disk, with
   a setup assistant: the agent asks what it needs before writing the spec
   (`plan_campaign`, and a Claude Code skill).
 
 **Next:**
-1. **Your own experiment in the UI:** `python -m abbot.ui --experiment
-   module:Class`, then a command adapter (`./measure.sh {temp} {conc}` printing
-   JSON) so a script can run the experiment without writing Python.
+1. **A command as the experiment:** a command adapter (`./measure.sh {temp}
+   {conc}` printing JSON) so a script can run the experiment without writing
+   Python, in the UI and in code.
 2. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
    and runs policies on the GPU, while the history, saved files, experiments and
    the UI stay on the CPU. The default stays CPU, since lab-scale GPs are usually

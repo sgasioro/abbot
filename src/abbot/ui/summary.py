@@ -158,8 +158,13 @@ def plan_lines(state) -> list[str]:
         lines.append("Start from your current settings.")
     else:
         lines.append("Start with a few runs spread over the space, then follow the model.")
-    lines.append("A simulated experiment runs each design, so you can watch how it works."
-                 if state.mock else "You run each design and enter what you measured.")
+    if state.mock:
+        lines.append("A simulated experiment runs each design, so you can watch how it works.")
+    elif state.own and state.yours is not None:
+        lines.append(f"{state.yours.name} runs each design when you press Run, and abbot "
+                     "records what it returns.")
+    else:
+        lines.append("You run each design and enter what you measured.")
     where = state.save_path()
     if where:
         home = str(Path.home())

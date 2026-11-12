@@ -41,7 +41,9 @@ src/abbot/
     setup.py      # the guided steps: knobs, measurements, goal, extras, start
     running.py    # the run view: run this next, halts, how it's going, finishing
     expert.py     # the expert panel: spec tables, campaign.json, runs, plots, check
-    app.py        # the page: header, main column, expert panel; `python -m abbot.ui`
+    yours.py      # your experiment: --experiment module:Name, made per campaign
+    app.py        # the page: header, main column, expert panel; `python -m abbot.ui`,
+                  #   serve()
   agent/          # agent access [extra: mcp]
     workspace.py  # Workspace: named campaigns saved on disk, JSON in and out
     server.py     # MCP server over a Workspace; `abbot-mcp`
@@ -90,8 +92,10 @@ unchanged. Campaigns start and resume through the agent's `Workspace`, so the UI
 and `abbot-mcp` share one folder (`~/abbot-campaigns`); a `.lock` per campaign keeps
 two processes from writing the same one. Two run modes share one
 `RunController`: **manual** (the next design is suggested as soon as the last is
-recorded) and **simulated** (a `MockAnalyticExperiment` drives `Campaign.step` on a
-timer with run/pause/step/stop). Manual vs. auto is a UI-driver concern, kept out of the core.
+recorded) and **auto** (an experiment drives `Campaign.step` on a timer with
+run/pause/step/stop, on a worker thread so slow hardware doesn't block the page):
+the built-in `MockAnalyticExperiment`, or yours (`--experiment module:Name`, made
+for each campaign by `abbot.ui.yours`, or `abbot.ui.serve(campaign, experiment)`). Manual vs. auto is a UI-driver concern, kept out of the core.
 
 Live visualization (via `abbot/analysis.py`, computed from history + the fitted
 model): an **adaptive model view** — 1-D posterior mean ± uncertainty band, 2-D

@@ -628,13 +628,21 @@ def _ranged_source(state: UIState, row: dict) -> None:
 def _start(state: UIState) -> None:
     theme.title("Ready to start", "Who runs the experiments?")
 
-    def who(mock: bool) -> None:
-        state.mock = mock
+    def who(mock: bool, own: bool = False) -> None:
+        state.mock, state.own = mock, own
         state.refresh()
 
+    own = state.own and state.yours is not None
     with ui.column().classes("w-full gap-3"):
+        if state.yours is not None:
+            where = f" ({state.yours.source})" if state.yours.source else ""
+            theme.option(f"Your experiment: {state.yours.name}",
+                         f"abbot runs each design through it{where} and records what it "
+                         "returns.", own and not state.mock, lambda: who(False, True),
+                         marker="who-yours")
         theme.option("I do", "abbot suggests a design; you run it and enter what you "
-                     "measured.", not state.mock, lambda: who(False), marker="who-me")
+                     "measured.", not state.mock and not own, lambda: who(False),
+                     marker="who-me")
         theme.option("A simulation", "Try abbot on a made-up experiment and watch it "
                      "work.", state.mock, lambda: who(True), marker="who-sim")
     with ui.element("div").classes("ab-card w-full p-5"), ui.column().classes("gap-1"):
