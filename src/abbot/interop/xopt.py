@@ -97,6 +97,11 @@ def spec_to_vocs(spec: ProblemSpec):
                 f"spec_to_vocs does not support {type(d).__name__} ({d.name!r})."
             )
     # Directional outputs -> gest objectives; OBSERVE outputs -> gest observables.
+    aimed = [o.name for o in spec.outputs if o.direction == "TARGET"]
+    if aimed:
+        raise NotImplementedError(
+            f"spec_to_vocs: Xopt has no objective aimed at a value ({aimed} are TARGET)."
+        )
     objectives = {
         o.name: (MinimizeObjective() if o.direction == "MINIMIZE" else MaximizeObjective())
         for o in spec.outputs
@@ -388,8 +393,8 @@ class GestGeneratorPolicy:
         if spec.n_objectives != 1:
             return rows
         (j,) = spec.objective_indices()
-        name, sign = spec.output_names[j], float(spec.output_signs()[j])
-        return sorted(rows, key=lambda row: sign * row[name])
+        name, score = spec.output_names[j], spec.outputs[j].score
+        return sorted(rows, key=lambda row: score(row[name]))
 
     def suggest(self, history, spec: ProblemSpec, model=None, n: int = 1, *, pending=None):
         self.last_warning = None

@@ -41,6 +41,15 @@ MODEL_LABELS: dict[str, str] = {
 }
 
 
+def _output(row: dict) -> OutputSpec:
+    direction = row.get("direction", "MAXIMIZE")
+    target = _number(row.get("target")) if direction == "TARGET" else None
+    if direction == "TARGET" and target is None:
+        raise ValueError(f"Give the value to bring {row['name']} near.")
+    return OutputSpec(name=row["name"], direction=direction, target=target,
+                      min_val=_number(row.get("min_val")), max_val=_number(row.get("max_val")))
+
+
 def build_spec(
     variable_rows: list[dict],
     output_rows: list[dict],
@@ -55,9 +64,10 @@ def build_spec(
     separated by commas, or by spaces when there are no commas. A continuous row
     may add ``log`` (model on a log scale) and ``max_step`` (a travel limit; blank
     for none).
-    ``output_rows``: each ``{"name", "direction": "MINIMIZE"|"MAXIMIZE"|"OBSERVE"}``,
-    optionally with ``min_val`` / ``max_val`` (keep the output in range; blank for
-    no bound).
+    ``output_rows``: each ``{"name", "direction":
+    "MINIMIZE"|"MAXIMIZE"|"TARGET"|"OBSERVE"}``, with ``target`` (the value to come
+    near) for TARGET, optionally with ``min_val`` / ``max_val`` (keep the output in
+    range; blank for no bound).
     ``source_row``: an optional source variable, ``{"kind", "name", "target"}`` plus
     ``values`` (enumerated) or ``lower`` / ``upper`` / ``log`` / ``accurate``
     (continuous). ``None`` or a blank name means no source.
@@ -68,15 +78,7 @@ def build_spec(
     Pydantic validation raises with field-level messages the UI surfaces inline.
     """
     domain = [_domain(row) for row in variable_rows]
-    outputs = [
-        OutputSpec(
-            name=o["name"],
-            direction=o.get("direction", "MAXIMIZE"),
-            min_val=_number(o.get("min_val")),
-            max_val=_number(o.get("max_val")),
-        )
-        for o in output_rows
-    ]
+    outputs = [_output(o) for o in output_rows]
     sources = None
     if source_row and (source_row.get("name") or "").strip():
         sources = [_source(source_row)]
@@ -176,7 +178,8 @@ def spec_to_rows(
                                   "raw": {"kind": d.kind, **d.model_dump(
                                       mode="json", exclude_defaults=True)}})
     output_rows = [
-        {"name": o.name, "direction": o.direction, "min_val": o.min_val, "max_val": o.max_val}
+        {"name": o.name, "direction": o.direction, "min_val": o.min_val, "max_val": o.max_val,
+         **({"target": o.target} if o.target is not None else {})}
         for o in spec.outputs
     ]
     dumped = spec_json(spec)

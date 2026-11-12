@@ -453,7 +453,8 @@ def _fmt(v) -> str:
 
 
 def progress(campaign: Campaign, title: str | None = None) -> Figure:
-    """How the campaign is going: the best so far (one objective), the dominated
+    """How the campaign is going: the best so far (one objective; for a target, the
+    nearest value so far, with the target dashed), the dominated
     hypervolume (several), or each run's goal outputs against the goal (a goal
     without objectives)."""
     plt = _plt()
@@ -469,6 +470,8 @@ def progress(campaign: Campaign, title: str | None = None) -> Figure:
                     else math.nan for r in history.records]
             ax.plot(steps, each, "o", color=RUN, ms=5, alpha=0.6, label="each run")
             ax.step(steps, best, where="post", color=MEAN, lw=2, label="best so far")
+            if spec.outputs[k].direction == "TARGET":
+                ax.axhline(spec.outputs[k].target, color=MEAN, ls="--", lw=1, label="target")
             ax.set_ylabel(spec.outputs[k].name)
         else:
             ax.plot(steps, analysis.hypervolume(history, spec), color=MEAN, lw=2,

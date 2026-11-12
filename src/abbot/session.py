@@ -274,9 +274,9 @@ def recommend(
     if use_model:
         X = spec.at_target(torch.stack([history.records[i].candidate for i in keep]).double())
         with torch.no_grad():
-            # Model is full-width & canonical; select objective columns (already
-            # canonical, so no sign flip — unlike raw observed values).
-            Y = model.posterior(X).mean.reshape(len(keep), -1)[:, idx]
+            # Model is full-width & canonical: select and score the objective
+            # columns (no sign flip, unlike raw observed values).
+            Y = spec.objective_scores(model.posterior(X).mean.reshape(len(keep), -1))
     else:
         raw = torch.stack([history.records[i].outputs.reshape(-1) for i in keep]).double()
         Y = spec.objective_view(raw)

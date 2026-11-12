@@ -192,13 +192,21 @@ def _objective_kwargs(spec: ProblemSpec, history: History) -> dict:
     """How a single-objective MC acquisition reads the model: through
     ``_objective_transform``, or with output constraints, an MC objective selecting
     the objective column plus the constraints (BoTorch applies constraints to the
-    model's outputs, which a posterior transform would already have reduced)."""
-    if not spec.has_output_constraints:
+    model's outputs, which a posterior transform would already have reduced). A
+    ``TARGET`` objective is always an MC objective: the distance from the target,
+    per sample."""
+    if not spec.has_output_constraints and not spec.has_target:
         return {"posterior_transform": _objective_transform(spec)}
     from botorch.acquisition.objective import GenericMCObjective
 
-    kwargs = {"constraints": mc_constraints(spec, row_scale(history, spec))}
-    if spec.n_outputs > 1:
+    kwargs = {}
+    if spec.has_output_constraints:
+        kwargs["constraints"] = mc_constraints(spec, row_scale(history, spec))
+    if spec.has_target:
+        # The model fits the output; the objective is its distance from the target.
+        kwargs["objective"] = GenericMCObjective(
+            lambda Z, X=None: spec.objective_scores(Z)[..., 0])
+    elif spec.n_outputs > 1:
         j = spec.objective_indices()[0]
         kwargs["objective"] = GenericMCObjective(lambda Z, X=None: Z[..., j])
     return kwargs
@@ -327,7 +335,8 @@ class SimpleBO:
     improvement per unit cost, refitted to the recorded costs each step.
     Always maximizes: the loop fits the model in maximize-canonical space (it
     applies ``spec.output_signs``), so a MINIMIZE objective is handled upstream and
-    the caller never pre-negates. When the model has extra OBSERVE outputs, a
+    the caller never pre-negates. A ``TARGET`` objective is modeled as measured, and
+    the improvement is in ``-|y - target|`` (an MC objective on the samples). When the model has extra OBSERVE outputs, a
     ``ScalarizedPosteriorTransform`` selects the single objective column. Refuses a
     multi-objective spec (use ParetoBO).
 
@@ -388,6 +397,12 @@ class SimpleBO:
         if spec.has_output_constraints and not any_feasible(history, spec):
             return _find_feasible(self, history, spec, model, n, pending, fixed, within, usability)
         if spec.sources and self.choose_sources:
+            if spec.has_target:
+                raise ValueError(
+                    "Choosing sources (entropy search) needs an objective to maximize "
+                    "or minimize, not a TARGET; use SimpleBO(choose_sources=False) to "
+                    "run every proposal at the target source."
+                )
             return self._suggest_with_sources(
                 history, spec, model, n, pending, fixed, within, usability
             )
@@ -625,7 +640,14 @@ class ParetoBO:
         # Model is full-width over all outputs; select the objective columns so
         # NEHVI's hypervolume is over objectives only (OBSERVE columns ignored).
         objective = None
-        if spec.n_outputs != spec.n_objectives:
+        if spec.has_target:
+            from botorch.acquisition.multi_objective.objective import (
+                GenericMCMultiOutputObjective,
+            )
+
+            objective = GenericMCMultiOutputObjective(
+                lambda Z, X=None: spec.objective_scores(Z))
+        elif spec.n_outputs != spec.n_objectives:
             from botorch.acquisition.multi_objective.objective import (
                 IdentityMCMultiOutputObjective,
             )

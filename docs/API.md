@@ -106,15 +106,33 @@ surrogate models (one GP column each, in `spec.outputs` order). Use:
 ProblemSpec(domain=[...], outputs=[OutputSpec(name="yield", direction="MAXIMIZE")])
 ```
 
-`direction` is `"MAXIMIZE"` / `"MINIMIZE"` for an **optimized objective**, or
+`direction` is `"MAXIMIZE"` / `"MINIMIZE"` for an **optimized objective**,
+`"TARGET"` for an objective to bring **as close as possible to a value**, or
 `"OBSERVE"` for a **modeled-but-not-optimized** output (a feature a BAX `Goal`
 consumes, or an output that only has to stay within bounds).
+
+### Aiming at a value
+
+`OutputSpec(name="size", target=40)` (giving `target` implies
+`direction="TARGET"`) asks for the setting whose `size` is nearest 40. The
+surrogate models `size` itself, and the policies score a value by its distance:
+`spec.objective_view` gives `-|size - 40|`, and `SimpleBO` / `ParetoBO` apply the
+same scoring to posterior samples (an MC objective), so the improvement is in how
+much nearer a design gets. A target combines with bounds, output constraints and
+other objectives (`ParetoBO` maps the trade-off between nearness and, say, cost).
+The best so far (`analysis.convergence`) and the recommendation are the runs
+nearest the target, and `target_reached(0.5)` reads its value as a tolerance
+(within 0.5 of the target). Two things don't take one: choosing sources (entropy
+search needs an objective to maximize; `SimpleBO(choose_sources=False)` runs every
+proposal at the target source), and the Xopt export. To map *every* setting near
+a value rather than find the one nearest, use a band goal (`BAXPolicy`).
 
 - `ObjectiveSpec` and the `objectives=` constructor keyword are **soft-deprecated
   aliases**, kept for backward compatibility. They still work and will not be
   removed in 0.1.x, but new code and docs should use `OutputSpec` / `outputs=`.
 - **Outputs vs. objectives are distinct, not aliases.** The *objectives* are the
-  subset of outputs with a non-`OBSERVE` direction — the ones BO/MO optimize. So
+  subset of outputs with a non-`OBSERVE` direction — the ones BO/MO optimize
+  (a `TARGET` output is one, modeled unflipped). So
   `spec.n_outputs` ≥ `spec.n_objectives`, and the derived members come in matching
   pairs: `output_names` / `objective_indices()`, `n_outputs` / `n_objectives`,
   `output_signs()` (all columns) / `objective_signs()` (the optimized subset). A
@@ -736,7 +754,8 @@ is `(n, n_outputs)` in the same order.
 
 The two load-bearing conversions live on the spec so callers never re-assemble the
 index/sign rule: `spec.objective_view(Y_raw)` selects the objective columns and
-flips them to canonical; `spec.to_raw(canonical)` flips a canonical quantity back to
+flips them to canonical (a `TARGET` column becomes `-|y - target|`;
+`spec.objective_scores` does the same for canonical model outputs); `spec.to_raw(canonical)` flips a canonical quantity back to
 physical units (per output). Prefer these over hand-writing
 `Y[:, objective_indices()] * objective_signs()`.
 

@@ -111,12 +111,16 @@ def plan_lines(state) -> list[str]:
         objectives = [o for o in spec.outputs if o.direction != "OBSERVE"]
         watched = [o.name for o in spec.outputs if o.direction == "OBSERVE"]
         if not objectives:
-            lines.append("Nothing to optimize yet: pick Higher or Lower for an output.")
+            lines.append("Nothing to optimize yet: pick Higher, Lower or Near for an output.")
         elif len(objectives) == 1:
             o = objectives[0]
-            lines.append(f"Look for the {DIRECTION_WORDS[o.direction]} {o.name}{keeping}.")
+            if o.direction == "TARGET":
+                lines.append(f"Look for the {o.name} nearest {fmt(o.target)}{keeping}.")
+            else:
+                lines.append(f"Look for the {DIRECTION_WORDS[o.direction]} {o.name}{keeping}.")
         else:
-            wants = [f"{o.name} {'higher' if o.direction == 'MAXIMIZE' else 'lower'}"
+            wants = [f"{o.name} near {fmt(o.target)}" if o.direction == "TARGET"
+                     else f"{o.name} {'higher' if o.direction == 'MAXIMIZE' else 'lower'}"
                      for o in objectives]
             lines.append(f"Map the trade-off between {_and(wants)}{keeping}.")
         if watched:
@@ -213,7 +217,8 @@ def _best_lines(campaign) -> list[str]:
         others = [f"{o.name} {fmt(float(r.outputs.reshape(-1)[j]))}"
                   for j, o in enumerate(spec.outputs) if j != k]
         extra = f" ({', '.join(others)})" if others else ""
-        line = (f"Best so far: **{name} {fmt(float(r.outputs.reshape(-1)[k]))}** at "
+        aim = f" (target {fmt(spec.outputs[k].target)})" if spec.outputs[k].target is not None else ""
+        line = (f"Best so far: **{name} {fmt(float(r.outputs.reshape(-1)[k]))}**{aim} at "
                 f"{_setting(spec, r)}{extra}.")
         if result.p_feasible:
             line += f" **{result.p_feasible[0]:.0%} likely** to meet the limits."
@@ -221,11 +226,12 @@ def _best_lines(campaign) -> list[str]:
     best = analysis.convergence(campaign.history, spec)
     known = [b for b in best if not math.isnan(b)]
     if len(known) >= 4:
-        sign = 1 if spec.outputs[k].direction == "MAXIMIZE" else -1
-        gain = sign * (best[-1] - best[-4])
+        output = spec.outputs[k]
+        gain = output.score(best[-1]) - output.score(best[-4])
         if gain > 0:
-            lines.append(f"Still improving: {'+' if sign > 0 else '−'}{fmt(gain)} over "
-                         "the last 3 runs.")
+            change = (f"{fmt(gain)} closer" if output.direction == "TARGET"
+                      else f"{'+' if output.direction == 'MAXIMIZE' else '−'}{fmt(gain)}")
+            lines.append(f"Still improving: {change} over the last 3 runs.")
         else:
             since = next(i for i in range(len(best) - 1, -1, -1)
                          if i == 0 or best[i] != best[i - 1])

@@ -86,6 +86,8 @@ model_constructor)` to choose your own. A few variations:
   a `Goal` (e.g. `BandIntersection({"yield": (0.4, 0.6)})`,
   `LevelSet(0.9, output="purity")`), and pass it in: `Campaign(spec,
   BAXPolicy(goal))`.
+- **Hit a value** — `OutputSpec(name="size", target=40)`: the setting whose
+  `size` is nearest 40.
 - **Keep an output in range** — `OutputSpec(name="purity", direction="OBSERVE",
   min_val=0.9)`: proposals and the recommendation favor designs likely to meet it.
 - **Cheap and accurate runs** — add `sources=[Source(domain=EnumeratedDomain(

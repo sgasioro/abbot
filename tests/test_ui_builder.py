@@ -223,12 +223,24 @@ def test_spec_to_rows_round_trips_the_editor_fields():
           "max_step": 0.2},
          {"kind": "enumerated", "name": "solvent", "values": "water, ethanol"}],
         [{"name": "yield", "direction": "MAXIMIZE"},
-         {"name": "purity", "direction": "OBSERVE", "min_val": 0.9}],
+         {"name": "purity", "direction": "OBSERVE", "min_val": 0.9},
+         {"name": "size", "direction": "TARGET", "target": "40", "max_val": 60}],
         {"kind": "continuous", "name": "mesh", "lower": 0.1, "upper": 1.0, "target": "0.1",
          "log": True, "accurate": "low"},
     )
     again = build_spec(*spec_to_rows(spec))
     assert again == spec
+    assert spec.outputs[2].target == 40.0
+
+
+def test_build_spec_keeps_a_target_only_while_aiming():
+    rows = [{"kind": "continuous", "name": "x", "lower": 0, "upper": 1}]
+    aimed = {"name": "y", "direction": "TARGET", "target": None}
+    with pytest.raises(ValueError, match="Give the value to bring y near"):
+        build_spec(rows, [aimed])
+    # Switching back to Higher leaves the old value in the row, unused.
+    spec = build_spec(rows, [{**aimed, "direction": "MAXIMIZE", "target": 3}])
+    assert spec.outputs[0].target is None
 
 
 def test_spec_to_rows_keeps_what_the_steps_cant_show():

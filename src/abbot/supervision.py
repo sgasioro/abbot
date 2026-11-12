@@ -474,19 +474,20 @@ def _runs(history: History, spec: ProblemSpec) -> list[tuple[int, torch.Tensor, 
     return out
 
 
-def _directed(spec: ProblemSpec, name: str, caller: str) -> tuple[int, float]:
-    """Column and sign (+1 maximize, -1 minimize) of the output ``name``."""
+def _directed(spec: ProblemSpec, name: str, caller: str):
+    """Column and score (bigger is better: :meth:`OutputSpec.score`) of the output
+    ``name``."""
     names = spec.output_names
     if name not in names:
         raise ValueError(f"{caller}: no output named {name!r}; the outputs are {names}.")
     j = names.index(name)
-    direction = spec.outputs[j].direction
-    if direction not in ("MAXIMIZE", "MINIMIZE"):
+    output = spec.outputs[j]
+    if output.direction == "OBSERVE":
         raise ValueError(
-            f"{caller}: output {name!r} is {direction}, so it has no better or worse; "
-            "name an output you maximize or minimize."
+            f"{caller}: output {name!r} is OBSERVE, so it has no better or worse; "
+            "name an output you maximize, minimize or aim at a target."
         )
-    return j, 1.0 if direction == "MAXIMIZE" else -1.0
+    return j, output.score
 
 
 def _the_objective(spec: ProblemSpec, caller: str, hint: str) -> str:
@@ -497,7 +498,8 @@ def _the_objective(spec: ProblemSpec, caller: str, hint: str) -> str:
 
 def target_reached(target: float | Mapping[str, float]) -> Rule:
     """Stop once a run reaches ``target``: at or above it for an output you
-    maximize, at or below for one you minimize.
+    maximize, at or below for one you minimize. For an output aimed at a target
+    (``TARGET``), the value is a tolerance: within it of the target.
 
     ``target`` is a number for a spec with one objective, or ``{name: value}``: one
     run must then reach every named value. Only clean runs count, and with output
@@ -523,18 +525,30 @@ def target_reached(target: float | Mapping[str, float]) -> Rule:
             goals = {name: wanted[None]}
         else:
             goals = wanted
-        cols = {name: (*_directed(spec, name, "target_reached"), value)
-                for name, value in goals.items()}
+        cols = {}
+        for name, value in goals.items():
+            j, score = _directed(spec, name, "target_reached")
+            output = spec.outputs[j]
+            if output.direction == "TARGET":
+                # The value is a tolerance: within it of the output's target.
+                if value < 0:
+                    raise ValueError(f"target_reached: {name!r} aims at {output.target:.4g}, "
+                                     "so its value is how near is near enough; got "
+                                     f"{value:.4g}.")
+                cols[name] = (j, score, -value,
+                              f"within {value:.4g} of {output.target:.4g}")
+            else:
+                cols[name] = (j, score, score(value), f"target {value:.4g}")
 
         def meets(y: torch.Tensor) -> bool:
-            return all(sign * (float(y[j]) - value) >= 0 for j, sign, value in cols.values())
+            return all(score(float(y[j])) >= bar for j, score, bar, _ in cols.values())
 
         def supervisor(history: History) -> Verdict:
             for step, y, ok in _runs(history, spec):
                 if ok and meets(y):
                     got = ", ".join(
-                        f"{name} = {float(y[j]):.4g} (target {value:.4g})"
-                        for name, (j, _, value) in cols.items()
+                        f"{name} = {float(y[j]):.4g} ({wanted})"
+                        for name, (j, _, _, wanted) in cols.items()
                     )
                     return Verdict(stop=f"target reached (target_reached): run {step} has {got}.")
             return Verdict()
@@ -567,24 +581,24 @@ def no_improvement(patience: int, min_delta: float = 0.0) -> Rule:
             spec, "no_improvement",
             "it watches one, so use acquisition_monitor for several.",
         )
-        j, sign = _directed(spec, name, "no_improvement")
+        j, score = _directed(spec, name, "no_improvement")
 
         def best(runs) -> float | None:
-            values = [sign * float(y[j]) for _, y, ok in runs if ok]
-            return max(values) if values else None
+            values = [float(y[j]) for _, y, ok in runs if ok]
+            return max(values, key=score) if values else None
 
         def supervisor(history: History) -> Verdict:
             runs = _runs(history, spec)
             if len(runs) <= patience:
                 return Verdict()
             before, now = best(runs[:-patience]), best(runs)
-            if before is None or now - before > min_delta:
+            if before is None or score(now) - score(before) > min_delta:
                 return Verdict()
             return Verdict(
                 stop=(
                     f"no improvement (no_improvement): the best {name} is "
-                    f"{sign * now:.4g}, and the last {patience} runs improved it by "
-                    f"{now - before:.4g} (min_delta {min_delta:.4g})."
+                    f"{now:.4g}, and the last {patience} runs improved it by "
+                    f"{score(now) - score(before):.4g} (min_delta {min_delta:.4g})."
                 )
             )
 

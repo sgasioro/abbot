@@ -391,38 +391,58 @@ def _goal(state: UIState) -> None:
 
 
 def _best_blurb(state: UIState) -> str:
-    wants = [r for r in state.objective_rows if r.get("direction") in ("MAXIMIZE", "MINIMIZE")]
+    wants = [r for r in state.objective_rows if r.get("direction") in ("MAXIMIZE", "MINIMIZE", "TARGET")]
     if not wants:
-        return "Push a measurement up or down, keeping others in range."
-    words = [f"{'highest' if r['direction'] == 'MAXIMIZE' else 'lowest'} {r['name']}"
-             for r in wants]
+        return "Push a measurement up, down or toward a value, keeping others in range."
+    words = [_want(r) for r in wants]
     text = ("The " + " and ".join(words)) if len(words) <= 2 else "A trade-off between them"
     return text + "."
 
 
+def _want(row: dict) -> str:
+    if row["direction"] == "TARGET":
+        value = row.get("target")
+        return f"{row['name']} nearest {summary.fmt(value) if value is not None else 'a value'}"
+    return f"{summary.DIRECTION_WORDS[row['direction']]} {row['name']}"
+
+
 def _directions(state: UIState) -> None:
+    options = {"MAXIMIZE": "Higher", "MINIMIZE": "Lower", "TARGET": "Near",
+               "OBSERVE": "Just watch"}
+    alone = len(state.objective_rows) == 1
+    if alone:  # the only measurement is the one to optimize: nothing to just watch
+        options.pop("OBSERVE")
     with ui.column().classes("w-full gap-3"):
         for i, row in enumerate(state.objective_rows):
             row.setdefault("min_val", None)
             row.setdefault("max_val", None)
-            with ui.row().classes("items-center gap-3 w-full no-wrap max-sm:flex-wrap"):
-                ui.label(row.get("name") or "?").classes("w-24 font-medium truncate")
+            if alone and row.get("direction", "OBSERVE") == "OBSERVE":
+                row["direction"] = "MAXIMIZE"
+            with ui.row().classes("items-center gap-2 w-full no-wrap max-sm:flex-wrap"):
+                ui.label(row.get("name") or "?").classes("w-20 font-medium truncate")
 
                 def direction(value: str, row=row) -> None:
                     row["direction"] = value
                     state.refresh()
 
-                theme.segmented({"MAXIMIZE": "Higher", "MINIMIZE": "Lower",
-                                 "OBSERVE": "Just watch"}, row.get("direction", "OBSERVE"),
-                                direction, marker=f"direction-{i}")
+                theme.segmented(options, row.get("direction", "OBSERVE"), direction,
+                                marker=f"direction-{i}").classes("shrink-0")
+                # The value slot stays when empty, so the limits line up row to row.
+                if row.get("direction") == "TARGET":
+                    ui.number("value", on_change=lambda _: _changed(state)).bind_value(
+                        row, "target").props("outlined dense").classes("w-20 shrink-0").mark(
+                        f"output-{i}-target")
+                else:
+                    ui.element("div").classes("w-20 shrink-0 max-sm:hidden")
                 ui.number("at least", on_change=lambda _: _changed(state)).bind_value(
-                    row, "min_val").props("outlined dense").classes("w-24").mark(
+                    row, "min_val").props("outlined dense").classes("w-20 shrink-0").mark(
                     f"output-{i}-min")
                 ui.number("at most", on_change=lambda _: _changed(state)).bind_value(
-                    row, "max_val").props("outlined dense").classes("w-24").mark(
+                    row, "max_val").props("outlined dense").classes("w-20 shrink-0").mark(
                     f"output-{i}-max")
-    ui.label("At least / at most keep a measurement within limits; leave them blank "
-             "for none.").classes("text-xs ab-sub pt-2")
+    ui.label("Near brings a measurement as close to its value as it can go. At least / "
+             "at most keep a measurement within limits; leave them blank for "
+             "none.").classes("text-xs ab-sub pt-2")
 
 
 GOAL_KINDS = {"band": "A band", "level": "A threshold", "topk": "The top few",

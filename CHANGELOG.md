@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Aim an output at a value:** `OutputSpec(name="size", target=40)` (direction
+  `TARGET`) finds the setting nearest the value. The model fits the output as
+  measured and the policies score its distance from the target, so it works with
+  limits, output constraints and a second objective (`ParetoBO`). The best so far,
+  the recommendation, the progress plot and the stopping rules follow it
+  (`target_reached` reads its value as a tolerance). In the UI, "Near" beside
+  Higher and Lower, with the value to aim for; the CSV header and the agent's spec
+  guide carry it too.
 - **Guided UI:** `python -m abbot.ui` now asks five short questions (what can be
   set, what each run measures, the goal, extras, who runs the experiments) and
   says in plain words what abbot will do. Running, it shows the next design with

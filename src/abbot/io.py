@@ -104,9 +104,9 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 #   # integer,<name>,<lower>,<upper>[,log][,max_step=<step>]
 #   # enumerated,<name>,<v1>,<v2>,...[,max_step=<step>]
 #                                     (numbers, or labels if any isn't a number)
-#   # output,<name>,MINIMIZE|MAXIMIZE|OBSERVE[,<min_val>,<max_val>]
+#   # output,<name>,MINIMIZE|MAXIMIZE|TARGET|OBSERVE[,<min_val>,<max_val>][,target=<value>]
 #                                     (OBSERVE = modeled, not optimized; a bound
-#                                     left empty is absent)
+#                                     left empty is absent; TARGET needs target=)
 #   # box,<lo1>,<lo2>,...,|,<hi1>,<hi2>,...     (lower vector | upper vector)
 # Legacy ``# objective,<name>,<DIR>`` rows are still READ (mapped to an output).
 # NOT representable here (raises on write): StructuredDomain, domain constraints,
@@ -160,7 +160,8 @@ def spec_history_to_csv(spec: ProblemSpec, history: History | None = None) -> st
         bounds = [] if not o.is_constrained else [
             "" if v is None else v for v in (o.min_val, o.max_val)
         ]
-        w.writerow(["# output", o.name, o.direction, *bounds])
+        target = [] if o.target is None else [f"target={o.target}"]
+        w.writerow(["# output", o.name, o.direction, *bounds, *target])
     for box in spec.boxes or []:
         # Named boxes are written positionally, an unbanded output as (-inf, inf).
         bands = box.band_dict(spec.output_names)
@@ -256,9 +257,12 @@ def spec_history_from_csv(text: str) -> tuple[ProblemSpec, History]:
             ))
         elif key in ("output", "objective"):  # "objective" = legacy read-compat
             direction = cells[2].upper() if len(cells) > 2 else "MAXIMIZE"
-            bounds = [float(v) if v else None for v in (cells[3:5] + ["", ""])[:2]]
+            target = [float(v.split("=", 1)[1]) for v in cells[3:] if v.startswith("target=")]
+            rest = [v for v in cells[3:] if not v.startswith("target=")]
+            bounds = [float(v) if v else None for v in (rest[:2] + ["", ""])[:2]]
             outputs.append(OutputSpec(
-                name=cells[1], direction=direction, min_val=bounds[0], max_val=bounds[1]
+                name=cells[1], direction=direction, min_val=bounds[0], max_val=bounds[1],
+                target=target[0] if target else None,
             ))
         elif key == "box":
             if "|" not in cells:
