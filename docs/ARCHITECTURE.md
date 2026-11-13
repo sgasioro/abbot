@@ -41,7 +41,8 @@ src/abbot/
     setup.py      # the guided steps: knobs, measurements, goal, extras, start
     running.py    # the run view: run this next, halts, how it's going, finishing
     expert.py     # the expert panel: spec tables, campaign.json, runs, plots, check
-    yours.py      # your experiment: --experiment module:Name, made per campaign
+    yours.py      # your experiment: --experiment module:Name, made per campaign;
+                  #   its declared spec bounds the setup (within)
     app.py        # the page: header, main column, expert panel; `python -m abbot.ui`,
                   #   serve()
   agent/          # agent access [extra: mcp]

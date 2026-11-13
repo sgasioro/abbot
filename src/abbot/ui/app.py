@@ -54,6 +54,8 @@ def _build_page() -> None:
     state.own = state.yours is not None
     if _served["controller"] is not None:
         _show_served(state, _served["controller"], _served["name"])
+    else:
+        state.from_declared()  # the knobs and measurements your experiment declares
     theme.apply()
 
     @ui.refreshable
@@ -177,6 +179,8 @@ def main(argv: list[str] | None = None) -> None:
         the abbot agent (``abbot-mcp``) saves there too.
       --experiment module:Name (or file.py:Name) — your experiment, offered on the
         Start step to run each design (see :mod:`abbot.ui.yours`).
+      --spec spec.json (or module:NAME) — the spec it works with, if it has no
+        ``spec`` attribute: the setup starts from it and stays within it.
     """
     import argparse
 
@@ -202,16 +206,24 @@ def main(argv: list[str] | None = None) -> None:
                         help="your experiment (an object with run(design), or a class or "
                         "function making one; module:Name or file.py:Name), offered to "
                         "run each design")
+    parser.add_argument("--spec", metavar="FILE.json|MODULE:NAME",
+                        help="the spec your experiment works with (a spec or campaign.json, "
+                        "or module:NAME), if it has no spec attribute: the setup starts "
+                        "from it and stays within its knobs, ranges and measurements")
     args = parser.parse_args(argv)
+    if args.spec and not args.experiment:
+        parser.error("--spec goes with --experiment (it's the spec your experiment "
+                     "works with)")
     if args.dir:
         os.environ["ABBOT_UI_DIR"] = args.dir
     if args.experiment:
         from abbot.ui import yours
 
         try:
-            _served["yours"] = yours.load(args.experiment)
+            _served["yours"] = yours.load(args.experiment, spec=args.spec)
         except Exception as exc:  # noqa: BLE001 - a bad reference: say why and stop
-            parser.error(f"--experiment {args.experiment}: {exc}")
+            flags = f"--experiment {args.experiment}" + (f" --spec {args.spec}" if args.spec else "")
+            parser.error(f"{flags}: {exc}")
     _launch(args.host, args.port, args.show, args.strict_port)
 
 
@@ -219,6 +231,7 @@ def serve(
     campaign=None,
     experiment=None,
     *,
+    spec=None,
     evaluate=None,
     name: str | None = None,
     host: str = "127.0.0.1",
@@ -236,6 +249,10 @@ def serve(
     an experiment, the page starts at the first step. Without one, you enter each
     result. ``name`` titles the campaign.
 
+    ``spec`` is the spec the experiment works with (by default its ``spec``
+    attribute, if any): a new campaign's setup starts from it and stays within its
+    knobs, ranges and measurements, and ``campaign``'s spec must stay within it too.
+
     Call it from a script (it blocks, as ``ui.run`` does)::
 
         from abbot.ui import serve
@@ -244,7 +261,11 @@ def serve(
     from abbot.ui.controller import RunController
     from abbot.ui.yours import YourExperiment
 
-    yours = None if experiment is None else YourExperiment(experiment, evaluate=evaluate)
+    if spec is not None and experiment is None:
+        raise ValueError("serve(spec=...) is the spec your experiment works with; pass "
+                         "the experiment too.")
+    yours = None if experiment is None else YourExperiment(experiment, spec=spec,
+                                                           evaluate=evaluate)
     _served["yours"] = yours
     _served["name"] = name
     _served["controller"] = None
@@ -252,7 +273,7 @@ def serve(
         made = None if yours is None else yours.make(campaign.spec)
         _served["controller"] = RunController(
             campaign, experiment=made,
-            evaluate=None if made is None else (evaluate or (lambda o: o)))
+            evaluate=None if made is None else yours.outputs(campaign.spec))
     _launch(host, port, show, strict=False)
 
 

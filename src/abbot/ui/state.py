@@ -261,15 +261,46 @@ class UIState:
     # Kept for callers of the old name.
     _normalized_goal_row = normalized_goal_row
 
+    @property
+    def limits(self) -> ProblemSpec | None:
+        """The spec your experiment declares, when it's the one to run the designs:
+        the setup must stay within it (:func:`abbot.ui.yours.within`)."""
+        if self.yours is None or not self.own or self.mock:
+            return None
+        return self.yours.spec
+
+    def from_declared(self) -> None:
+        """Fill the steps from the spec your experiment declares, if it does."""
+        if self.yours is None or self.yours.spec is None:
+            return
+        # The rows alone, not apply_config: what the spec leaves to the person (where
+        # a travel-limited knob starts, the goal) is asked for on its step.
+        variables, outputs, source_row, extra = spec_to_rows(self.yours.spec)
+        for row in variables:  # a travel limit needs where it is now: ask up front
+            row["_open"] = row.get("max_step") is not None
+        self.variable_rows, self.objective_rows, self.extra = variables, outputs, extra
+        self.source_on = source_row is not None
+        if source_row is not None:
+            self.source_row = source_row
+        self.method = "optimize"
+
     def check_step(self, step: int) -> str | None:
         """Why the person can't leave ``step`` yet, or None. Each step checks what
-        it sets: the knobs, the measurements' names, the goal, the extras."""
+        it sets: the knobs, the measurements' names, the goal, the extras; with your
+        experiment's spec, that they stay within it."""
+        from abbot.ui.yours import listed, within
+
+        limits = self.limits
         try:
             if step == 0:
                 if not self.variable_rows:
                     return "Add at least one knob."
                 spec = build_spec(self.variable_rows, [{"name": "_", "direction": "MAXIMIZE"}])
                 build_start(spec, self.variable_rows)
+                if limits is not None:
+                    knobs = limits.model_copy(update={
+                        "outputs": spec.outputs, "sources": None, "domain_constraints": None})
+                    return within(knobs, spec, self.yours.name)
             elif step == 1:
                 names = [(r.get("name") or "").strip() for r in self.objective_rows]
                 if not names:
@@ -281,6 +312,9 @@ class UIState:
                 knobs = {r.get("name") for r in self.variable_rows}
                 if knobs & set(names):
                     return f"{min(knobs & set(names))!r} is both a knob and a measurement."
+                if limits is not None and set(names) != set(limits.output_names):
+                    return (f"{self.yours.name} measures {listed(limits.output_names)}; "
+                            "keep those names.")
             elif step == 2:
                 spec = self.build_spec()
                 if self.method == "bax":
@@ -289,6 +323,8 @@ class UIState:
                     return "Pick Higher or Lower for at least one measurement."
             elif step == 3:
                 build_constructor(self.build_spec(), self.model)
+            if step >= 3 and limits is not None:
+                return within(limits, self.build_spec(), self.yours.name)
         except Exception as exc:  # noqa: BLE001 - shown to the person as is
             return _message(exc)
         return None
@@ -376,8 +412,7 @@ class UIState:
             self.controller = RunController(campaign, experiment=exp, evaluate=lambda o: o)
         elif experiment is not None:
             self.controller = RunController(
-                campaign, experiment=experiment,
-                evaluate=self.yours.evaluate or (lambda o: o))
+                campaign, experiment=experiment, evaluate=self.yours.outputs(spec))
         else:
             self.controller = RunController(campaign)
 
@@ -406,6 +441,8 @@ class UIState:
             UIState.__init__(fresh)
             for field in self.SETUP_FIELDS:
                 setattr(self, field, getattr(fresh, field))
+            self.own = self.yours is not None
+            self.from_declared()
 
     # -- redrawing --
 

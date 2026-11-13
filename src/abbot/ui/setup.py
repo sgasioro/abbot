@@ -93,9 +93,15 @@ def _changed(state: UIState) -> None:
 
 
 def _knobs(state: UIState) -> None:
-    theme.title("What can you set?",
-                "Each knob abbot may change between runs, and the range it can reach. "
-                "Use Choices for settings that aren't numbers, like a material.")
+    limits = state.limits
+    if limits is None:
+        theme.title("What can you set?",
+                    "Each knob abbot may change between runs, and the range it can reach. "
+                    "Use Choices for settings that aren't numbers, like a material.")
+    else:
+        theme.title("What can you set?",
+                    f"{state.yours.name} sets these knobs. Narrow a range or drop a choice "
+                    "to search less of it; it can't go further than it says.")
     _other_starts(state)
     box = ui.column().classes("w-full gap-3")
 
@@ -119,7 +125,8 @@ def _knobs(state: UIState) -> None:
         with ui.row().classes("items-center gap-2"):
             ui.label(extra).classes("ab-sub text-sm").mark("extra-note")
             _expert_only(state)
-    theme.link("+ Add a knob", add, marker="add-knob")
+    if limits is None:
+        theme.link("+ Add a knob", add, marker="add-knob")
 
 
 def _other_starts(state: UIState) -> None:
@@ -163,24 +170,56 @@ def _expert_only(state: UIState) -> None:
     tag.on("click", lambda _: open_json(state))
 
 
+def _declared(state: UIState, name: str):
+    """Your experiment's declaration of the knob ``name``, when the setup is held to
+    it."""
+    limits = state.limits
+    if limits is None:
+        return None
+    return next((d for d in limits.domain if d.name == name), None)
+
+
+def _limit_words(d) -> str:
+    """What your experiment allows for a knob, in a few words."""
+    if getattr(d, "values", None) is not None:
+        words = "choices " + ", ".join(str(v) for v in d.values)
+    elif d.kind == "structured":
+        words = domain_words({"kind": d.kind, "dim": d.dim})
+    else:
+        words = f"{summary.fmt(d.lower)} to {summary.fmt(d.upper)}"
+    if getattr(d, "max_step", None) is not None:
+        words += f", moves ≤ {summary.fmt(d.max_step)} per run"
+    return words
+
+
 def _knob_row(state: UIState, row: dict, i: int, redraw) -> None:
     if row["kind"] == "json":
         _json_knob(state, row, i, redraw)
         return
+    locked = state.limits is not None
     with ui.element("div").classes("ab-card w-full p-4"), ui.column().classes("gap-2 w-full"):
         with ui.row().classes("items-center gap-3 w-full no-wrap"):
-            ui.input("name", on_change=lambda _: _changed(state)).bind_value(row, "name").props(
-                "outlined dense"
-            ).classes("w-40").mark(f"knob-{i}-name")
+            if locked:  # your experiment reads it by this name
+                ui.label(row.get("name") or "?").classes("font-medium w-40 truncate").mark(
+                    f"knob-{i}-name")
+            else:
+                ui.input("name", on_change=lambda _: _changed(state)).bind_value(
+                    row, "name").props("outlined dense").classes("w-40").mark(f"knob-{i}-name")
 
             def kind(value: str, row=row) -> None:
                 row["kind"] = value
                 redraw()
                 _changed(state)
 
-            theme.segmented({"continuous": "Range", "enumerated": "Choices"}, row["kind"], kind)
+            if not locked:
+                theme.segmented({"continuous": "Range", "enumerated": "Choices"}, row["kind"],
+                                kind)
+            declared = _declared(state, row.get("name"))
+            if declared is not None:
+                ui.label(f"{state.yours.name}: {_limit_words(declared)}").classes(
+                    "ab-sub text-sm").mark(f"knob-{i}-limit")
             ui.space()
-            if len(state.variable_rows) > 1:
+            if len(state.variable_rows) > 1 and not locked:
                 ui.button(icon="close", on_click=lambda: _remove(state.variable_rows, i, redraw,
                                                                   state)).props(
                     "flat dense round color=grey-6"
@@ -210,7 +249,7 @@ def _json_knob(state: UIState, row: dict, i: int, redraw) -> None:
             f"knob-{i}-json")
         _expert_only(state)
         ui.space()
-        if len(state.variable_rows) > 1:
+        if len(state.variable_rows) > 1 and state.limits is None:
             ui.button(icon="close", on_click=lambda: _remove(state.variable_rows, i, redraw,
                                                               state)).props(
                 "flat dense round color=grey-6").tooltip("Remove this knob")
@@ -339,6 +378,15 @@ def _saved_words(item: dict) -> str:
 
 
 def _measurements(state: UIState) -> None:
+    if state.limits is not None:
+        theme.title("What does each run measure?",
+                    f"{state.yours.name} returns these. The next step says which to push "
+                    "up or down.")
+        with ui.column().classes("w-full gap-2"):
+            for i, row in enumerate(state.objective_rows):
+                ui.label(row.get("name") or "?").classes(
+                    "ab-card px-4 py-2 font-medium w-64").mark(f"output-{i}-name")
+        return
     theme.title("What does each run measure?",
                 "Name every value you'll record. The next step says which to push up "
                 "or down.")
@@ -645,7 +693,28 @@ def _start(state: UIState) -> None:
                      marker="who-me")
         theme.option("A simulation", "Try abbot on a made-up experiment and watch it "
                      "work.", state.mock, lambda: who(True), marker="who-sim")
+    if own and not state.mock:
+        _fit_note(state)
     with ui.element("div").classes("ab-card w-full p-5"), ui.column().classes("gap-1"):
         theme.section("What abbot will do")
         ui.markdown("\n".join(f"- {line}" for line in summary.plan_lines(state))).classes(
             "text-[0.95rem]").mark("plan")
+
+
+def _fit_note(state: UIState) -> None:
+    """Under your experiment: what doesn't fit its spec, or, if it declares none,
+    a reminder to check the names against its code."""
+    if state.yours.spec is not None:
+        problem = state.check_step(3)
+        if problem:
+            ui.label(problem).classes("ab-error").mark("fit-problem")
+        return
+    try:
+        spec = state.build_spec()
+    except Exception:  # noqa: BLE001 - the steps say what's missing
+        return
+    from abbot.ui.yours import listed
+
+    ui.label(f"{state.yours.name} doesn't say which knobs it reads or what it returns. "
+             f"Check it reads {listed(spec.variable_names)} and returns "
+             f"{listed(spec.output_names)}.").classes("ab-sub text-sm").mark("fit-unchecked")

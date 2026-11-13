@@ -174,6 +174,7 @@ python -m abbot.ui --no-show       # headless (e.g. on a cluster) — tunnel the
                                    #   ssh -L 8080:localhost:8080 <cluster>
 python -m abbot.ui --dir ./runs    # where campaigns are saved (default ~/abbot-campaigns)
 python -m abbot.ui --experiment rig:Rig   # your experiment runs each design
+python -m abbot.ui --experiment rig:Rig --spec rig.json   # ... within this spec
 ```
 Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`,
 `ABBOT_UI_DIR`.
@@ -195,19 +196,31 @@ and plots working.
 `{"yield": ...}` dict or a list), or a class or function that makes one; a maker
 that takes an argument gets the campaign's spec. The Start step then offers it as
 who runs the experiments, and the run view drives it with run / pause / step /
-stop, saving every result as it comes. From Python, `abbot.ui.serve(campaign,
-experiment)` opens the UI on a campaign you built in code (any policy or model),
-shared by every tab:
+stop, saving every result as it comes.
+
+Give it the spec it works with (a `spec` attribute, or `--spec rig.json`) and the
+setup starts from it and stays within it: its knobs and measurements by name, each
+range or list of choices only narrowed, its travel limits and constraints kept.
+The goal is yours to choose. That keeps a campaign from asking the hardware for a
+setting it shouldn't reach, or for a knob it doesn't read. Without one, any setup
+goes, and the Start step reminds you to check the names.
+
+From Python, `abbot.ui.serve(campaign, experiment)` opens the UI on a campaign you
+built in code (any policy or model), shared by every tab:
 
 ```python
-from abbot import Campaign
+from abbot import Campaign, ContinuousDomain, OutputSpec, ProblemSpec
 from abbot.ui import serve
 
 class Rig:
+    spec = ProblemSpec(domain=[ContinuousDomain(name="temp", lower=20, upper=80),
+                               ContinuousDomain(name="conc", lower=0, upper=0.5)],
+                       outputs=[OutputSpec(name="yield")])
+
     def run(self, design):          # {"temp": 54.2, "conc": 0.1}
         return {"yield": measure(design["temp"], design["conc"])}
 
-serve(Campaign(spec), Rig())         # or serve(experiment=Rig) to set up in the UI
+serve(Campaign(Rig.spec), Rig())     # or serve(experiment=Rig) to set up in the UI
 ```
 
 ## Develop
@@ -256,7 +269,8 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 **Next:**
 1. **A command as the experiment:** a command adapter (`./measure.sh {temp}
    {conc}` printing JSON) so a script can run the experiment without writing
-   Python, in the UI and in code.
+   Python, in the UI and in code; and an Xopt evaluator as the experiment, its
+   VOCS as the declared spec.
 2. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
    and runs policies on the GPU, while the history, saved files, experiments and
    the UI stay on the CPU. The default stays CPU, since lab-scale GPs are usually
