@@ -31,6 +31,7 @@ from abbot.ui.builder import (
     default_start,
     spec_json,
     spec_to_rows,
+    too_many_settings,
 )
 from abbot.ui.controller import RunController
 
@@ -270,8 +271,19 @@ class UIState:
         return self.yours.spec
 
     def from_declared(self) -> None:
-        """Fill the steps from the spec your experiment declares, if it does."""
-        if self.yours is None or self.yours.spec is None:
+        """Fill the steps from the spec your experiment declares, if it does; else
+        name the knobs after what it reads (a command's ``{names}``), for the
+        person to set: ranges, or whole-number steps for a ``{n:d}``."""
+        if self.yours is None:
+            return
+        if self.yours.spec is None:
+            if self.yours.reads:
+                self.variable_rows = [
+                    {"kind": "steps", "name": name, "lower": 0, "upper": 10, "step": 1}
+                    if name in self.yours.whole else
+                    {"kind": "continuous", "name": name, "lower": 0.0, "upper": 1.0}
+                    for name in self.yours.reads
+                ]
             return
         # The rows alone, not apply_config: what the spec leaves to the person (where
         # a travel-limited knob starts, the goal) is asked for on its step.
@@ -297,6 +309,9 @@ class UIState:
                     return "Add at least one knob."
                 spec = build_spec(self.variable_rows, [{"name": "_", "direction": "MAXIMIZE"}])
                 build_start(spec, self.variable_rows)
+                crowded = too_many_settings(spec)
+                if crowded:
+                    return crowded
                 if limits is not None:
                     knobs = limits.model_copy(update={
                         "outputs": spec.outputs, "sources": None, "domain_constraints": None})

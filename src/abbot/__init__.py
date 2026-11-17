@@ -22,6 +22,7 @@ from abbot.cost import (
 )
 from abbot.experiment import (
     BatchExperiment,
+    CommandExperiment,
     Experiment,
     ManualExperiment,
     MockAnalyticExperiment,
@@ -97,6 +98,7 @@ __all__ = [
     "CampaignResult",
     "CampaignState",
     "Candidate",
+    "CommandExperiment",
     "ContinuousDomain",
     "CostModel",
     "DataStore",

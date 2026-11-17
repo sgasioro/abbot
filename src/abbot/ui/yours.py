@@ -46,7 +46,8 @@ class YourExperiment:
     A campaign's spec must then stay within it (see :func:`within`)."""
 
     def __init__(self, target, *, spec=None, evaluate: Callable | None = None,
-                 name: str | None = None, source: str | None = None) -> None:
+                 name: str | None = None, source: str | None = None,
+                 reads: list[str] | None = None, whole: list[str] | None = None) -> None:
         if not _is_experiment(target) and not callable(target):
             raise TypeError(
                 f"{source or target!r} is neither an experiment (an object with run(design) "
@@ -60,9 +61,17 @@ class YourExperiment:
         if spec is None and not isinstance(declared, ProblemSpec):
             declared = None  # an attribute named spec that isn't one: not a declaration
         self.spec: ProblemSpec | None = None if declared is None else as_spec(declared)
+        # The variables it's known to read (a command's {names}), when it says.
+        self.reads = list(reads or [])
+        self.whole = list(whole or [])  # of those, the ones it takes as whole numbers
 
     def problem(self, spec: ProblemSpec) -> str | None:
         """Why a campaign on ``spec`` can't run on this experiment, or None."""
+        missing = [n for n in self.reads if n not in spec.variable_names]
+        if missing:
+            return (f"{self.name} reads {listed(missing)}, which "
+                    f"{'is' if len(missing) == 1 else 'are'}n't a knob here; the knobs are "
+                    f"{listed(spec.variable_names)}.")
         return None if self.spec is None else within(self.spec, spec, self.name)
 
     def make(self, spec: ProblemSpec):
@@ -150,9 +159,22 @@ def within(declared: ProblemSpec, spec: ProblemSpec, who: str = "The experiment"
 
 def _domain_within(mine, theirs, who: str) -> str | None:
     name = mine.name
-    if type(theirs) is not type(mine):
+    numbers = isinstance(theirs, EnumeratedDomain) and not theirs.is_categorical
+    # Narrower kinds: whole numbers within a range, steps within a range or whole
+    # numbers (whole steps only), each setting inside the declared ends.
+    if isinstance(mine, (ContinuousDomain, IntegerDomain)) and (
+            numbers or (isinstance(mine, ContinuousDomain)
+                        and isinstance(theirs, IntegerDomain))):
+        values = theirs.values if numbers else [theirs.lower, theirs.upper]
+        if isinstance(mine, IntegerDomain) and not all(
+                float(v).is_integer() for v in values):
+            return f"{name}: {who} takes whole numbers; use a whole step."
+        if min(values) < mine.lower or max(values) > mine.upper:
+            return (f"{name}: {who} goes from {mine.lower:g} to {mine.upper:g}; keep the "
+                    "range inside that.")
+    elif type(theirs) is not type(mine):
         return f"{name}: {who} takes {_kind(mine)}, not {_kind(theirs)}."
-    if isinstance(mine, (ContinuousDomain, IntegerDomain)):
+    elif isinstance(mine, (ContinuousDomain, IntegerDomain)):
         if theirs.lower < mine.lower or theirs.upper > mine.upper:
             return (f"{name}: {who} goes from {mine.lower:g} to {mine.upper:g}; keep the "
                     "range inside that.")
@@ -212,16 +234,38 @@ def load(ref: str, spec: str | None = None) -> YourExperiment:
     without it, the experiment's own ``spec`` attribute, if any. Raises with a
     message naming what's missing."""
     target, shown = _resolve(ref, "--experiment")
+    declared = None if spec is None else load_spec(spec)
+    return YourExperiment(target, spec=declared, source=shown)
+
+
+def command(cmd: str, spec: str | None = None, timeout: float | None = None) -> YourExperiment:
+    """``--command "./measure.sh {temp} {conc}"`` → a :class:`YourExperiment` that
+    runs it for each design (:class:`abbot.experiment.CommandExperiment`), made
+    for each campaign's spec. ``spec`` as for :func:`load`."""
+    from abbot.experiment import CommandExperiment
+
+    probe = CommandExperiment(cmd, timeout=timeout)  # a bad command fails here
     declared = None
     if spec is not None:
-        if spec.endswith(".json"):
-            path = Path(spec).expanduser()
-            if not path.is_file():
-                raise FileNotFoundError(f"--spec: no file {path.resolve()}")
-            declared = as_spec(path)
-        else:
-            declared = as_spec(_resolve(spec, "--spec")[0])
-    return YourExperiment(target, spec=declared, source=shown)
+        declared = load_spec(spec)
+        probe = CommandExperiment(cmd, spec=declared, timeout=timeout)
+
+    def make(campaign_spec: ProblemSpec) -> CommandExperiment:
+        return CommandExperiment(cmd, spec=campaign_spec, timeout=timeout)
+
+    return YourExperiment(make, spec=declared, name=probe.name, source=cmd,
+                          reads=probe.fields, whole=probe.whole)
+
+
+def load_spec(ref: str) -> ProblemSpec:
+    """``--spec``: a JSON file (a spec or campaign.json), or ``module:NAME`` /
+    ``file.py:NAME`` naming one."""
+    if ref.endswith(".json"):
+        path = Path(ref).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"--spec: no file {path.resolve()}")
+        return as_spec(path)
+    return as_spec(_resolve(ref, "--spec")[0])
 
 
 def _resolve(ref: str, flag: str):
@@ -250,4 +294,4 @@ def _resolve(ref: str, flag: str):
     return target, shown
 
 
-__all__ = ["YourExperiment", "as_spec", "listed", "load", "within"]
+__all__ = ["YourExperiment", "as_spec", "command", "listed", "load", "load_spec", "within"]

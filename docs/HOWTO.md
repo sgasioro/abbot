@@ -9,7 +9,7 @@ is shown.
 | How do I… | |
 | --- | --- |
 | describe knobs and measurements | `ProblemSpec(domain=[ContinuousDomain(name="temp", lower=20, upper=80)], outputs=[OutputSpec(name="yield", direction="MAXIMIZE")])`. See the [README quickstart](../README.md#quickstart). |
-| use whole numbers, or a fixed list of values | `IntegerDomain(name=, lower=, upper=)`; `EnumeratedDomain(name=, values=[0.1, 0.5, 1.0])` (an ordered grid). |
+| use whole numbers, or a fixed list of values | `IntegerDomain(name=, lower=, upper=)`; `EnumeratedDomain(name=, values=[0.1, 0.5, 1.0])` (an ordered grid). In the UI, a knob's Steps (from, to, step). |
 | use categories (solvents, materials) | `EnumeratedDomain(name="solvent", values=["water", "ethanol"])`. Designs carry the labels. [Categories](API.md#categories-labeled-values) |
 | search a knob over decades | `ContinuousDomain(..., log=True)`. [Names, not positions](API.md#names-not-positions) |
 | record something without optimizing it | `OutputSpec(name=, direction="OBSERVE")`. |
@@ -43,6 +43,8 @@ is shown.
 | catch bad shots and a drifting instrument | `supervisor=standard_supervisor(spec.bounds_tensor(), detector)` from `abbot.supervision`; for your own mix, `Supervisor(faults=[per_shot(detector), ...])`. [Supervisors](API.md#supervisors-faults-and-stops) |
 | use the web interface | `python -m abbot.ui`. [README](../README.md#run-the-frontend) |
 | let the web interface run my experiment | `python -m abbot.ui --experiment rig:Rig`, or `abbot.ui.serve(campaign, Rig())` from Python. [README](../README.md#run-the-frontend) |
+| run a script or program as the experiment | `CommandExperiment("./measure.sh {temp} {conc}")`, printing JSON on its last line; in the UI, `--command "./measure.sh {temp} {conc}"`. [A command as the experiment](API.md#a-command-as-the-experiment) |
+| run my Xopt evaluator under abbot | `EvaluatorExperiment(evaluator, vocs)` from `abbot.interop.xopt`. [An Xopt evaluator](API.md#an-xopt-evaluator-as-the-experiment) |
 | keep the web interface within what my hardware allows | Give the experiment a `spec` attribute (or `--spec rig.json`): the setup keeps its knobs and measurements, and ranges can only narrow. [README](../README.md#run-the-frontend) |
 | let an AI agent run the campaign | `pip install "abbot[mcp]"`; in Claude Code, `abbot-mcp start` sets up and opens a session that plans the campaign with you. Other clients: add `abbot-mcp --dir ~/abbot-campaigns` as an MCP server. [Agent access](API.md#agent-access-mcp) |
 

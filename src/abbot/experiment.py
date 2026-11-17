@@ -11,6 +11,11 @@ it. This is the headless-first property — the loop never knows which it is.
 
 from __future__ import annotations
 
+import json
+import os
+import shlex
+import string
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -169,6 +174,174 @@ class ManualExperiment:
             raw = input(f"  measured {name}: ")
             measured.append(float(raw))
         return torch.tensor(measured, dtype=torch.double)
+
+
+class CommandExperiment:
+    """Run a command for each design; it prints what it measured as JSON.
+
+    ``command`` names the design's values in braces, as ``str.format`` does::
+
+        CommandExperiment("./measure.sh {temp} {conc}")
+        CommandExperiment("python rig.py --temp {temp:.1f} --solvent {solvent}")
+
+    Each brace is filled in with the value (a format spec like ``:.1f`` is honored),
+    one argument per word of ``command``, so a value is never split or read by a
+    shell. Write a literal brace as ``{{`` or ``}}``. ``shell=True`` runs the command through the shell instead (pipes,
+    ``&&``), each value quoted. The design is also written to the command's stdin
+    as JSON (``{"temp": 54.2, "conc": 0.1}``), for a script that would rather read
+    that.
+
+    The **last line** the command prints is read as JSON (lines before it are
+    free for logging): a ``{output name: value}`` object, a list in
+    ``spec.outputs`` order, or a number for a single output. In an object,
+    ``"cost"`` (unless an output has that name) is recorded as what the run cost;
+    with ``spec``, keys that aren't outputs are kept with the run instead of
+    refused. A command that exits non-zero, prints no JSON or runs past
+    ``timeout`` seconds fails the run, with the reason and the end of its stderr
+    recorded; the campaign retries it, as it would any failed run.
+
+    ``spec`` is the spec the command works with: its names are checked against
+    the braces up front, and the UI holds a setup to it (as for any experiment
+    with a ``spec``). ``cwd`` and ``env`` (added to the current environment) are
+    passed to the command.
+    """
+
+    def __init__(
+        self,
+        command: str,
+        *,
+        spec: Any = None,
+        timeout: float | None = None,
+        cwd: str | os.PathLike | None = None,
+        env: Mapping[str, str] | None = None,
+        shell: bool = False,
+    ) -> None:
+        self.command = command
+        self.spec = spec
+        self.timeout = timeout
+        self.cwd = cwd
+        self.env = None if env is None else {**os.environ, **{k: str(v) for k, v in env.items()}}
+        self.shell = shell
+        self.words = None if shell else shlex.split(command)
+        if not shell and not self.words:
+            raise ValueError("CommandExperiment: the command is empty.")
+        # The variables it reads, in the order the command names them, and those
+        # it formats as whole numbers ({n:d}).
+        parsed = [(field.split(".")[0].split("[")[0], fmt or "")
+                  for _, field, fmt, _ in string.Formatter().parse(command) if field]
+        self.fields = list(dict.fromkeys(name for name, _ in parsed))
+        self.whole = list(dict.fromkeys(name for name, fmt in parsed if fmt.endswith("d")))
+        if spec is not None:
+            unknown = [f for f in self.fields if f not in spec.variable_names]
+            if unknown:
+                raise ValueError(
+                    f"{self.name}: {{{unknown[0]}}} isn't a variable; the variables are "
+                    f"{', '.join(spec.variable_names)}."
+                )
+        self._costs: dict[tuple, float] = {}
+
+    @property
+    def name(self) -> str:
+        """The program, for messages and the UI: ``measure.sh``."""
+        first = shlex.split(self.command)[0] if self.command.strip() else "command"
+        return os.path.basename(first)
+
+    def __repr__(self) -> str:
+        return f"CommandExperiment({self.command!r})"
+
+    def args(self, design: Design) -> list[str] | str:
+        """The command for ``design``: a list of arguments, or (``shell=True``) a
+        string with each value quoted. A whole number held as a float (``3.0``)
+        fills a ``{n:d}`` as ``3``."""
+        values = dict(design)
+        for name in self.whole:
+            value = _plain(values.get(name))
+            if isinstance(value, float) and value.is_integer():
+                values[name] = int(value)
+        try:
+            if self.shell:
+                quoted = {k: _Quoted(v) for k, v in values.items()}
+                return self.command.format_map(quoted)
+            return [word.format_map(values) for word in self.words]
+        except KeyError as exc:
+            raise KeyError(
+                f"{self.name}: {{{exc.args[0]}}} isn't a variable; the design has "
+                f"{', '.join(values)}"
+            ) from None
+
+    def run(self, design: Design) -> Any:
+        args = self.args(design)
+        payload = json.dumps({k: _plain(v) for k, v in dict(design).items()})
+        try:
+            done = subprocess.run(
+                args, input=payload, capture_output=True, text=True, shell=self.shell,
+                timeout=self.timeout, cwd=self.cwd, env=self.env, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{self.name} ran past {self.timeout:g} s") from None
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"{self.name}: no such program (from {self.command!r}"
+                + (f", in {self.cwd}" if self.cwd else "") + ")"
+            ) from None
+        except PermissionError:
+            raise RuntimeError(f"{self.name} isn't executable (chmod +x?)") from None
+        if done.returncode != 0:
+            raise RuntimeError(
+                f"{self.name} exited with code {done.returncode}" + _tail(done.stderr))
+        lines = [line for line in done.stdout.splitlines() if line.strip()]
+        if not lines:
+            raise RuntimeError(f"{self.name} printed nothing" + _tail(done.stderr))
+        try:
+            result = json.loads(lines[-1])
+        except json.JSONDecodeError:
+            raise RuntimeError(
+                f"{self.name}'s last line isn't JSON: {lines[-1][:200]!r}") from None
+        return self._split(result, design)
+
+    def _split(self, result: Any, design: Design) -> Any:
+        """Outputs, with ``"cost"`` set aside and (given ``spec``) other keys kept as
+        the run's extras: ``(outputs, extras)``."""
+        if not isinstance(result, dict):
+            return result
+        outputs = set(self.spec.output_names) if self.spec is not None else None
+        if "cost" in result and (outputs is None or "cost" not in outputs):
+            cost = result.pop("cost")
+            if cost is not None:
+                self._costs[_key(design)] = float(cost)
+        if outputs is None:
+            return result
+        extras = {k: v for k, v in result.items() if k not in outputs}
+        values = {k: v for k, v in result.items() if k in outputs}
+        return (values, extras) if extras else values
+
+    def cost(self, design: Design) -> float | None:
+        """What the command said the run cost (``"cost"`` in its JSON), if it did."""
+        return self._costs.pop(_key(design), None)
+
+
+class _Quoted:
+    """A value for ``shell=True``: formatted as asked, then shell-quoted."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def __format__(self, spec: str) -> str:
+        return shlex.quote(format(self.value, spec))
+
+
+def _plain(value: Any) -> Any:
+    return value.item() if isinstance(value, torch.Tensor) else value
+
+
+def _key(design: Design) -> tuple:
+    return tuple(sorted((k, str(_plain(v))) for k, v in dict(design).items()))
+
+
+def _tail(stderr: str, lines: int = 10) -> str:
+    """The end of a command's stderr, to say why it failed."""
+    text = "\n".join((stderr or "").strip().splitlines()[-lines:])
+    return f": {text[-1500:]}" if text else ""
 
 
 class MockAnalyticExperiment:

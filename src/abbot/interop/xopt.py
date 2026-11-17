@@ -19,6 +19,9 @@ Surface:
   - ``GestGeneratorPolicy`` — the other direction: any gest ``Generator`` (Xopt's
     Nelder-Mead, RCDS, extremum seeking, genetic algorithms, its BO generators
     with TuRBO) as an abbot policy, under abbot's loop, supervisors, store and UI.
+  - ``EvaluatorExperiment`` — an Xopt ``Evaluator`` (or any ``function(inputs) ->
+    dict``) as an abbot experiment, with its VOCS as the spec it works with, so a
+    setup written for Xopt runs under ``Campaign.step``, ``serve()`` or the UI.
 
 Known limitation (by design): composite-SBI's cached ``aux`` posterior payload has
 no DataFrame representation, so only the reduced-scalar objective form runs as a
@@ -187,6 +190,78 @@ def vocs_to_spec(vocs, boxes=None) -> ProblemSpec:
         for name in (vocs.observables or {}) if name not in known
     ]
     return ProblemSpec(domain=domain, outputs=outputs, boxes=boxes)
+
+
+# --- EvaluatorExperiment: an Xopt evaluator as an abbot experiment ----------
+
+
+class EvaluatorExperiment:
+    """An Xopt ``Evaluator``, or any ``function(inputs: dict) -> dict``, as an abbot
+    experiment::
+
+        experiment = EvaluatorExperiment(evaluator, vocs)
+        Campaign(experiment.spec).step(experiment)
+        serve(experiment=experiment)            # the UI, held to the VOCS
+
+    It calls the evaluator's ``function`` with its ``function_kwargs`` directly,
+    not ``Evaluator.evaluate``: that one catches exceptions into the result, and
+    abbot needs a failed run to raise, so it is recorded as a fault and retried.
+    A ``vectorized`` evaluator gets a batch in one call (a DataFrame, one row per
+    design), as Xopt gives it.
+
+    ``vocs`` (or ``spec``) is the spec the evaluator works with, via
+    :func:`vocs_to_spec`: :attr:`spec` names the outputs to take from each result,
+    the rest (``xopt_runtime``, other observables) kept with the run, and the UI
+    holds a setup to it. Without either, the result must hold the outputs only.
+    """
+
+    def __init__(self, evaluator, vocs=None, *, spec: ProblemSpec | None = None) -> None:
+        if vocs is not None and spec is not None:
+            raise ValueError("EvaluatorExperiment takes vocs or spec, not both.")
+        self.function = getattr(evaluator, "function", evaluator)
+        if not callable(self.function):
+            raise TypeError(
+                f"{type(evaluator).__name__} is neither an Xopt Evaluator nor a function."
+            )
+        self.kwargs = dict(getattr(evaluator, "function_kwargs", None) or {})
+        self.vectorized = bool(getattr(evaluator, "vectorized", False))
+        self.spec = vocs_to_spec(vocs) if vocs is not None else spec
+        self.name = getattr(self.function, "__name__", type(self.function).__name__)
+        if self.vectorized:
+            self.run_batch = self._run_batch
+        else:
+            self.run = self._run
+
+    def __repr__(self) -> str:
+        return f"EvaluatorExperiment({self.name})"
+
+    def _run(self, design):
+        return self._split(self.function(dict(design), **self.kwargs))
+
+    def _run_batch(self, designs):
+        import pandas as pd
+
+        out = self.function(pd.DataFrame([dict(d) for d in designs]), **self.kwargs)
+        rows = pd.DataFrame(out).to_dict("records")
+        if len(rows) != len(designs):
+            raise RuntimeError(
+                f"{self.name} returned {len(rows)} row(s) for {len(designs)} design(s)."
+            )
+        return [self._split(row) for row in rows]
+
+    def _split(self, result):
+        """``(outputs, extras)`` from a result dict, given the spec."""
+        if self.spec is None or not isinstance(result, dict):
+            return result
+        names = self.spec.output_names
+        missing = [n for n in names if n not in result]
+        if missing:
+            raise RuntimeError(
+                f"{self.name} returned {sorted(result)}, without {missing}."
+            )
+        extras = {k: v for k, v in result.items() if k not in names}
+        values = {n: result[n] for n in names}
+        return (values, extras) if extras else values
 
 
 # --- CorePolicyGenerator: run an abbot Policy under Xopt ----------------------

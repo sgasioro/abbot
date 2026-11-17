@@ -35,7 +35,8 @@ def test_campaign_json_reads_back_into_the_steps():
 
 def test_fields_the_steps_cant_show_are_kept():
     config = _band_state().campaign_config()
-    config["spec"]["domain"].append({"kind": "integer", "name": "n", "lower": 1, "upper": 4})
+    config["spec"]["domain"].append({"kind": "integer", "name": "n", "lower": 1, "upper": 4,
+                                      "log": True})  # Steps has no log scale
     config["spec"]["domain_constraints"] = [{"coeffs": {"temp": 1, "n": 1}, "max_val": 50}]
     config["initial_designs"] = [{"temp": 25, "solvent": "water", "n": 2}]
     config["max_retries"] = 3
