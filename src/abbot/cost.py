@@ -61,7 +61,7 @@ class CallableCost:
         self.fn = fn
 
     def __call__(self, X: torch.Tensor) -> torch.Tensor:
-        return torch.as_tensor(self.fn(X), dtype=X.dtype).reshape(X.shape[:-1])
+        return torch.as_tensor(self.fn(X), dtype=X.dtype, device=X.device).reshape(X.shape[:-1])
 
     def fit(self, history: History, spec) -> None:
         return None

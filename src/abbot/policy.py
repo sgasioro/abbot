@@ -42,6 +42,7 @@ from abbot.feasibility import (
     row_scale,
 )
 from abbot.history import History
+from abbot.model import model_device
 from abbot.problem import ContinuousDomain, ProblemSpec
 from abbot.usability import USABLE_P
 
@@ -174,7 +175,7 @@ def _cost_weighted(acq, cost_model, history: History, spec: ProblemSpec):
     return _CostWeighted(acq, cost_model)
 
 
-def _objective_transform(spec: ProblemSpec):
+def _objective_transform(spec: ProblemSpec, device: torch.device | None = None):
     """A ``ScalarizedPosteriorTransform`` selecting the single objective column
     from a (possibly wider) model, or ``None`` when the model is already exactly
     the one objective (no OBSERVE columns) — the common case, avoids overhead.
@@ -183,12 +184,12 @@ def _objective_transform(spec: ProblemSpec):
         return None
     from botorch.acquisition.objective import ScalarizedPosteriorTransform
 
-    weights = torch.zeros(spec.n_outputs, dtype=torch.double)
+    weights = torch.zeros(spec.n_outputs, dtype=torch.double, device=device)
     weights[spec.objective_indices()[0]] = 1.0
     return ScalarizedPosteriorTransform(weights=weights)
 
 
-def _objective_kwargs(spec: ProblemSpec, history: History) -> dict:
+def _objective_kwargs(spec: ProblemSpec, history: History, device: torch.device | None = None) -> dict:
     """How a single-objective MC acquisition reads the model: through
     ``_objective_transform``, or with output constraints, an MC objective selecting
     the objective column plus the constraints (BoTorch applies constraints to the
@@ -196,7 +197,7 @@ def _objective_kwargs(spec: ProblemSpec, history: History) -> dict:
     ``TARGET`` objective is always an MC objective: the distance from the target,
     per sample."""
     if not spec.has_output_constraints and not spec.has_target:
-        return {"posterior_transform": _objective_transform(spec)}
+        return {"posterior_transform": _objective_transform(spec, device)}
     from botorch.acquisition.objective import GenericMCObjective
 
     kwargs = {}
@@ -230,7 +231,7 @@ def _find_feasible(
         "will.", type(policy).__name__,
     )
     scale = row_scale(history, spec)
-    pending = _pending_or_none(pending)
+    pending = _pending_or_none(pending, model_device(model))
     picks, values = [], []
     for _ in range(n):
         cond = condition_on_pending(model, _extend_pending(pending, picks))
@@ -256,10 +257,13 @@ class _FeasibilityWeighted(torch.nn.Module):
         return self.acq(X) * pof
 
 
-def _pending_or_none(pending: torch.Tensor | None) -> torch.Tensor | None:
+def _pending_or_none(
+    pending: torch.Tensor | None, device: torch.device | None = None
+) -> torch.Tensor | None:
+    """``pending`` as ``(k, d)`` doubles (on ``device`` if given), or None if empty."""
     if pending is None or pending.numel() == 0:
         return None
-    return pending.double().reshape(pending.shape[0], -1)
+    return pending.double().reshape(pending.shape[0], -1).to(device)
 
 
 def _extend_pending(
@@ -279,7 +283,7 @@ def condition_on_pending(model: Model, pending: torch.Tensor | None) -> Model:
     Returns ``model`` unchanged when nothing is pending or the model can't be
     conditioned (e.g. an ensemble), logging the latter.
     """
-    pending = _pending_or_none(pending)
+    pending = _pending_or_none(pending, model_device(model))
     if pending is None:
         return model
     try:
@@ -408,12 +412,13 @@ class SimpleBO:
             )
         # Improvement is judged at the target: a lucky cheap-source run must not set
         # the bar. Without sources this is the clean designs unchanged.
-        X = spec.at_target(history.clean.designs.double()).unique(dim=0)
+        device = model_device(model)
+        X = spec.at_target(history.clean.designs.double()).unique(dim=0).to(device)
         acq = qLogNoisyExpectedImprovement(
             model,
             X_baseline=X,
-            X_pending=_pending_or_none(pending),
-            **_objective_kwargs(spec, history),
+            X_pending=_pending_or_none(pending, device),
+            **_objective_kwargs(spec, history, device),
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
         acq = _usability_weighted(acq, usability)
@@ -442,7 +447,8 @@ class SimpleBO:
                 self._source_cost = SourceCost(spec)
             cost_model = self._source_cost
         cost_model.fit(history, spec)
-        candidates = spec.at_target(spec.sample_designs(self.n_candidates))
+        device = model_device(model)
+        candidates = spec.at_target(spec.sample_designs(self.n_candidates)).to(device)
         if spec.has_output_constraints:
             # The best value worth learning about is among designs that satisfy
             # the constraints: sample it over the likely ones (at least a few).
@@ -459,14 +465,14 @@ class SimpleBO:
                 lambda X: (cost_model(X) / scale).clamp_min(1e-12).unsqueeze(-1)
             )
         )
-        train_inputs = spec.at_target(history.clean.designs.double()).unique(dim=0)
+        train_inputs = spec.at_target(history.clean.designs.double()).unique(dim=0).to(device)
         objective_model = _objective_model(model, spec)
         picks, values = [], []
         for _ in range(n):  # entropy search proposes one design per call
             acq = _MultiFidelityMES(
                 objective_model,
                 candidates,
-                X_pending=_extend_pending(_pending_or_none(pending), picks),
+                X_pending=_extend_pending(_pending_or_none(pending, device), picks),
                 cost_aware_utility=utility,
                 project=spec.at_target,
                 train_inputs=train_inputs,
@@ -636,7 +642,8 @@ class ParetoBO:
             qLogNoisyExpectedHypervolumeImprovement,
         )
 
-        X = spec.at_target(history.clean.designs.double()).unique(dim=0)
+        device = model_device(model)
+        X = spec.at_target(history.clean.designs.double()).unique(dim=0).to(device)
         # Model is full-width over all outputs; select the objective columns so
         # NEHVI's hypervolume is over objectives only (OBSERVE columns ignored).
         objective = None
@@ -655,10 +662,10 @@ class ParetoBO:
             objective = IdentityMCMultiOutputObjective(outcomes=spec.objective_indices())
         acq = qLogNoisyExpectedHypervolumeImprovement(
             model=model,
-            ref_point=ref_point,
+            ref_point=ref_point.to(device),
             X_baseline=X,
             objective=objective,
-            X_pending=_pending_or_none(pending),
+            X_pending=_pending_or_none(pending, device),
             constraints=mc_constraints(spec, row_scale(history, spec)) if constrained else None,
         )
         acq = _cost_weighted(acq, self.cost_model, history, spec)
@@ -718,7 +725,7 @@ class UncertaintySampling:
         # OBSERVE columns) — keyed on n_outputs, not objective count. The std
         # acquisition is single-point, so a batch is built greedily: each pick joins
         # the pending set the model is conditioned on before the next.
-        pending = _pending_or_none(pending)
+        pending = _pending_or_none(pending, model_device(model))
         picks: list[torch.Tensor] = []
         values: list[float] = []
         for _ in range(n):
@@ -867,6 +874,9 @@ class BAXPolicy:
         )
         self._grid: torch.Tensor | None = None  # built from the spec on first use
         self._proposals: torch.Tensor | None = None  # the grid at each source level
+        # The proposal set on the model's device, as (CPU original, copy): built on
+        # the CPU, copied once.
+        self._on_device: tuple[torch.Tensor, torch.Tensor] | None = None
         self.cost_model = cost_model
         self.choose_sources = choose_sources
         self.source_levels = source_levels
@@ -878,7 +888,8 @@ class BAXPolicy:
         self.switched: bool = False  # last suggest left MeanBAX for any pick (SwitchBAX -> InfoBAX, MeanBAX -> US)
         self.last_acquisition_value: torch.Tensor | None = None  # per pick, last suggest
         # Optional ``noise_at(X) -> (N, m)`` measurement-noise variance (raw units) at
-        # candidates, for InfoBAX; default: the model's own observation noise.
+        # candidates, for InfoBAX; default: the model's own observation noise. ``X``
+        # is on the model's device.
         self.noise_at = noise_at
         self.respect_constraints = respect_constraints
         self.requery = requery
@@ -960,6 +971,15 @@ class BAXPolicy:
                 blocks.append(block)
             self._proposals = torch.cat(blocks)
         return self._proposals
+
+    def _proposals_on(self, spec: ProblemSpec, device: torch.device) -> torch.Tensor:
+        """:meth:`proposal_set` on ``device`` (the model's), copied once and cached."""
+        grid = self.proposal_set(spec)
+        if grid.device == device:
+            return grid
+        if self._on_device is None or self._on_device[0] is not grid or self._on_device[1].device != device:
+            self._on_device = (grid, grid.to(device))
+        return self._on_device[1]
 
     def _chooses_sources(self, spec: ProblemSpec) -> bool:
         return bool(spec.sources) and self.choose_sources and self.strategy in (
@@ -1061,11 +1081,12 @@ class BAXPolicy:
         within: ProblemSpec | None = None,
         usability=None,
     ) -> torch.Tensor:
-        grid = self.proposal_set(spec)
+        device = model_device(model)
+        grid = self._proposals_on(spec, device)
         self.last_warning = None
         allowed = self._matching(spec, grid, fixed)
         reach = self._in_reach(within, grid) if within is not None else None
-        pending = _pending_or_none(pending)
+        pending = _pending_or_none(pending, device)
         self._out_scale = _output_scale(history)
         usable = None
         if usability is not None:
@@ -1089,7 +1110,7 @@ class BAXPolicy:
             # Prevent-requery: grid points already measured (any record) or in flight.
             # With requery, only those in flight are kept out; MeanBAX's "stuck"
             # still counts the measured ones, so SwitchBAX moves on as before.
-            taken = [history.designs.double()] if len(history) else []
+            taken = [history.designs.double().to(grid)] if len(history) else []
             if inflight is not None:
                 taken.append(inflight)
             self._collected = _grid_matches(grid, torch.cat(taken)) if taken else []
@@ -1154,9 +1175,9 @@ class BAXPolicy:
         pinned = spec.resolve_fixed(fixed)
         if not pinned:
             return None
-        ok = torch.ones(grid.shape[0], dtype=torch.bool)
+        ok = torch.ones(grid.shape[0], dtype=torch.bool, device=grid.device)
         for j, v in pinned.items():
-            ok &= torch.isclose(grid[:, j], torch.tensor(v, dtype=grid.dtype))
+            ok &= torch.isclose(grid[:, j], torch.tensor(v, dtype=grid.dtype, device=grid.device))
         if not ok.any():
             names = spec.variable_names
             raise ValueError(
@@ -1181,7 +1202,9 @@ class BAXPolicy:
         at_target = grid[:n_target]
 
         def at_target_only(acq):
-            rest = torch.full((grid.shape[0] - n_target,), float("-inf"), dtype=acq.dtype)
+            rest = torch.full(
+                (grid.shape[0] - n_target,), float("-inf"), dtype=acq.dtype, device=acq.device
+            )
             return torch.cat([acq, rest])
 
         mean, std = self._raw_mean_std(model, at_target, spec)
@@ -1203,7 +1226,7 @@ class BAXPolicy:
                 if self.strategy == "MeanBAX":
                     return at_target_only(rel)  # fall back to US
                 return self._infobax(spec, model, grid, std)  # SwitchBAX -> InfoBAX
-            acq = torch.zeros(n_target, dtype=torch.double)
+            acq = torch.zeros(n_target, dtype=torch.double, device=rel.device)
             acq[target] = rel[target]
             return at_target_only(acq)
         # InfoBAX
@@ -1225,9 +1248,9 @@ class BAXPolicy:
         that satisfy them, and with bad-region runs on only the rows likely usable;
         its indices are mapped back to ``Y``'s rows."""
         goal = self._goal_for(spec)
-        keep = torch.ones(len(Y), dtype=torch.bool)
+        keep = torch.ones(len(Y), dtype=torch.bool, device=Y.device)
         if self._usable is not None and len(self._usable) == len(Y):
-            keep &= self._usable  # likely bad regions are out of the goal too
+            keep &= self._usable.to(Y.device)  # likely bad regions are out of the goal too
         if self._constrains(spec):
             keep &= feasible(spec, Y)
         if keep.all():
@@ -1254,7 +1277,8 @@ class BAXPolicy:
         """
         N = grid.shape[0]
         if self.noise_at is not None:
-            return torch.as_tensor(self.noise_at(grid), dtype=torch.double).reshape(N, -1)
+            noise = self.noise_at(grid)
+            return torch.as_tensor(noise, dtype=torch.double, device=grid.device).reshape(N, -1)
         try:
             with torch.no_grad():
                 noisy = model.posterior(grid.double(), observation_noise=True).variance
@@ -1265,7 +1289,7 @@ class BAXPolicy:
                 "InfoBAX: no observation noise from %s (%s); using none.",
                 type(model).__name__, exc,
             )
-            return torch.zeros(N, 1, dtype=torch.double)
+            return torch.zeros(N, 1, dtype=torch.double, device=grid.device)
 
     def _infobax(self, spec, model, grid, std) -> torch.Tensor:
         """EIG via fantasy conditioning (multibax ``multiproperty_infobax``).
@@ -1325,7 +1349,9 @@ class BAXPolicy:
                 "proposing by uncertainty instead"
             )
             rel = (std[:n_target] / self._out_scale.to(std)).mean(dim=-1)
-            rest = torch.full((grid.shape[0] - n_target,), float("-inf"), dtype=rel.dtype)
+            rest = torch.full(
+                (grid.shape[0] - n_target,), float("-inf"), dtype=rel.dtype, device=rel.device
+            )
             return torch.cat([rel, rest])
         if conditioned and failed == conditioned:
             # Every fantasy failed, so the information gain is zero everywhere and

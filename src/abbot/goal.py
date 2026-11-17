@@ -243,7 +243,7 @@ def _band_indices(f: torch.Tensor, bounds: list[tuple[float, float]]) -> list[in
         raise ValueError(
             f"bounds has {len(bounds)} entries but f has {f.shape[1]} outputs."
         )
-    mask = torch.ones(f.shape[0], dtype=torch.bool)
+    mask = torch.ones(f.shape[0], dtype=torch.bool, device=f.device)
     for j, (lo, hi) in enumerate(bounds):
         mask &= (f[:, j] >= lo) & (f[:, j] <= hi)
     return mask.nonzero(as_tuple=True)[0].tolist()

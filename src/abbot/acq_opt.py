@@ -21,6 +21,7 @@ import torch
 from botorch.acquisition import AcquisitionFunction
 from botorch.optim import optimize_acqf, optimize_acqf_discrete, optimize_acqf_mixed
 
+from abbot.model import model_device
 from abbot.problem import ContinuousDomain, EnumeratedDomain, IntegerDomain, ProblemSpec
 
 
@@ -30,6 +31,9 @@ class CandidateOptimizer(Protocol):
 
     ``fixed_features`` pins inputs ``{position: value}``; optimizers that predate it
     may not accept it, and policies only pass it when the spec has sources.
+
+    The candidates are searched on the acquisition's device (its model's, see
+    ``abbot.model.model_device``) and returned there.
     """
 
     def optimize(
@@ -80,6 +84,7 @@ class Continuous:
                 f"Continuous optimizer can't propose structured inputs {unsupported}."
             )
         fixed = dict(fixed_features or {})
+        device = model_device(acq)
         integer = [j for j, d in enumerate(inputs) if isinstance(d, IntegerDomain)]
 
         def round_integers(X: torch.Tensor) -> torch.Tensor:
@@ -94,11 +99,11 @@ class Continuous:
         ]
         kwargs = {
             "acq_function": acq,
-            "bounds": spec.bounds_tensor(),
+            "bounds": spec.bounds_tensor(device=device),
             "q": n,
             "num_restarts": self.num_restarts,
             "raw_samples": self.raw_samples,
-            "inequality_constraints": spec.inequality_constraints(),
+            "inequality_constraints": spec.inequality_constraints(device=device),
             "post_processing_func": round_integers,
         }
         if not enum:
@@ -124,6 +129,7 @@ class Continuous:
         """``(num_restarts, n, d)`` starting batches: the best of ``raw_samples``
         batches drawn by ``spec.sample_designs`` (log-uniform on log axes)."""
         X = spec._sample(self.raw_samples * n, None, fixed).reshape(self.raw_samples, n, -1)
+        X = X.to(model_device(acq))
         with torch.no_grad():
             value = acq(X).reshape(-1)
         best = value.nan_to_num(float("-inf")).topk(min(self.num_restarts, len(value))).indices
@@ -177,9 +183,9 @@ class DiscreteArgmax:
                     "no choices lie within the bounds (with travel limits: within "
                     "max_step of the last design)"
                 )
-        choices = choices.double()
+        choices = choices.double().to(model_device(acq))
         for j, value in (fixed_features or {}).items():
-            choices = choices[torch.isclose(choices[:, j], torch.tensor(value).double())]
+            choices = choices[torch.isclose(choices[:, j], torch.tensor(value).to(choices))]
         if not len(choices):
             raise ValueError(f"no choices match the fixed inputs {fixed_features}")
         candidates, _ = optimize_acqf_discrete(acq, q=n, choices=choices)

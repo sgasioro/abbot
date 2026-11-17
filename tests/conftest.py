@@ -1,6 +1,17 @@
 """Shared fixtures."""
 
 import pytest
+import torch
+
+
+def pytest_collection_modifyitems(config, items):
+    """``cuda`` tests need a GPU; without one (CI, a laptop) they're skipped."""
+    if torch.cuda.is_available():
+        return
+    skip = pytest.mark.skip(reason="needs CUDA (torch.cuda.is_available() is False)")
+    for item in items:
+        if "cuda" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture

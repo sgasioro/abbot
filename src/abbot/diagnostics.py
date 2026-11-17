@@ -217,6 +217,7 @@ def check(history: History, spec: ProblemSpec, model: Model | None) -> CheckRepo
         report.fits.append(fit)
         try:
             mean, var, y, noise = _loo(gp, row)
+            mean, var, y = mean.cpu(), var.cpu(), y.cpu()  # a GPU model's too
         except Exception:  # noqa: BLE001 - a model we can't read: say so, not crash
             add(Finding("note", f"{name}: couldn't read the fitted model for "
                                 "leave-one-out.", name))

@@ -16,6 +16,7 @@ from __future__ import annotations
 import torch
 
 from abbot.history import History
+from abbot.model import model_device
 from abbot.problem import ProblemSpec
 
 # A design counts as feasible when the model gives it at least this probability.
@@ -120,14 +121,14 @@ def log_prob_feasible_from(spec: ProblemSpec, mean: torch.Tensor, variance: torc
 
 def prob_feasible(spec: ProblemSpec, model, X: torch.Tensor) -> torch.Tensor:
     """The model's probability that each design in ``X (n, d)`` satisfies every
-    output constraint: ``(n,)``. All ones without constraints."""
+    output constraint: ``(n,)``, on ``X``'s device. All ones without constraints."""
     if not spec.has_output_constraints:
-        return torch.ones(X.shape[0], dtype=torch.double)
+        return torch.ones(X.shape[0], dtype=torch.double, device=X.device)
     with torch.no_grad():
-        post = model.posterior(X.double())
+        post = model.posterior(X.double().to(model_device(model)))
         mean = post.mean.reshape(X.shape[0], -1)
         variance = post.variance.reshape(X.shape[0], -1)
-    return log_prob_feasible_from(spec, mean, variance).exp()
+    return log_prob_feasible_from(spec, mean, variance).exp().to(X.device)
 
 
 class LogProbFeasible(torch.nn.Module):

@@ -29,7 +29,12 @@ from botorch.utils.multi_objective.pareto import is_non_dominated
 from abbot.experiment import BatchExperiment, Experiment, Verdict, _bad_region_reason
 from abbot.feasibility import FEASIBLE_P, feasible, prob_feasible, row_scale, violation
 from abbot.history import DataStore, History, Record
-from abbot.model import ModelConstructor, default_constructor
+from abbot.model import (
+    ModelConstructor,
+    default_constructor,
+    model_device,
+    resolve_device,
+)
 from abbot.policy import Policy, default_policy
 from abbot.problem import ProblemSpec
 from abbot.supervision import Rule, Supervisor, bind
@@ -276,7 +281,8 @@ def recommend(
         with torch.no_grad():
             # Model is full-width & canonical: select and score the objective
             # columns (no sign flip, unlike raw observed values).
-            Y = spec.objective_scores(model.posterior(X).mean.reshape(len(keep), -1))
+            mean = model.posterior(X.to(model_device(model))).mean.cpu()
+            Y = spec.objective_scores(mean.reshape(len(keep), -1))
     else:
         raw = torch.stack([history.records[i].outputs.reshape(-1) for i in keep]).double()
         Y = spec.objective_view(raw)
@@ -357,18 +363,20 @@ def apply_targets(targets: Targets, history: History, spec: ProblemSpec) -> Hist
 
 
 def fit_model(
-    model_constructor: ModelConstructor, history: History, spec: ProblemSpec
+    model_constructor: ModelConstructor, history: History, spec: ProblemSpec,
+    device: torch.device | str | None = None,
 ):
     """Fit the surrogate on the clean history in maximize-canonical space.
 
     Threads per-point noise through when every clean record carries it
     (``canonical_Yvar`` -> ``train_Yvar``); otherwise ``Yvar`` is ``None`` and the
-    model infers the noise level, as before.
+    model infers the noise level, as before. The training data go to ``device``
+    (the CPU by default) before ``model_constructor.build`` sees them.
     """
-    X = history.clean.designs.double()
-    Y = canonical_Y(history, spec)
+    X = history.clean.designs.double().to(device)
+    Y = canonical_Y(history, spec).to(device)
     Yvar = canonical_Yvar(history, spec)
-    return model_constructor.build(X, Y, Yvar)
+    return model_constructor.build(X, Y, Yvar.to(device) if Yvar is not None else None)
 
 
 # --- serializable snapshot ----------------------------------------------------
@@ -557,6 +565,14 @@ class Campaign:
     ``"raise"``: the error is raised, for code that would rather stop than spend a
     run on a random design. Setup errors (a policy that doesn't fit the spec) raise
     either way.
+
+    ``device``: where models are fitted and policies propose. ``None`` (default) is
+    the CPU, usually the faster one at lab scale; ``"cuda"`` (or ``"cuda:1"``, a
+    ``torch.device``) uses an NVIDIA GPU, in float64 as on the CPU. Only the model
+    and the policy see the device: the history, the store, candidates and
+    ``state()`` stay on the CPU, so a store written on a GPU reopens anywhere. The
+    device belongs to the machine, not the campaign, so it isn't saved; pass it
+    again when you rebuild the campaign.
     """
 
     def __init__(
@@ -576,7 +592,9 @@ class Campaign:
         initial_designs: torch.Tensor | list[Mapping] | None = None,
         hook_errors: Literal["log", "raise"] = "log",
         on_model_error: Literal["probe", "raise"] = "probe",
+        device: str | torch.device | None = None,
     ) -> None:
+        self.device = resolve_device(device)  # a missing CUDA fails here, not mid-run
         for name, value, allowed in (("hook_errors", hook_errors, ("log", "raise")),
                                      ("on_model_error", on_model_error, ("probe", "raise"))):
             if value not in allowed:
@@ -1317,7 +1335,8 @@ class Campaign:
         model = self.current_model()
         if model is not None:
             with torch.no_grad():
-                var = model.posterior(X_target).variance.reshape(len(X), -1)
+                var = model.posterior(X_target.to(model_device(model))).variance.cpu()
+                var = var.reshape(len(X), -1)
             result.target_std = var[:, self.spec.objective_indices()].clamp_min(0).sqrt().tolist()
         return result
 
@@ -1371,7 +1390,7 @@ class Campaign:
         (or if the fit failed). Cached like :meth:`current_model`."""
         if not self._usability_valid:
             try:
-                self._usability = fit_usability(self.history, self.spec)
+                self._usability = fit_usability(self.history, self.spec, self.device)
             except Exception:
                 logger.exception("usability fit failed; not steering away from bad regions.")
                 self._usability = None
@@ -1523,19 +1542,19 @@ class Campaign:
                 )
         # Excluded designs count as in flight, so the policy steers away from them.
         pending = [*pending, *self._excluded]
-        if not pending:
-            return self.policy.suggest(self.scored_history(), self.spec, model, n=n, **kwargs)
-        X_pending = torch.stack([x.reshape(-1).double() for x in pending])
-        if _accepts_pending(self.policy):
-            return self.policy.suggest(
-                self.scored_history(), self.spec, model, n=n, pending=X_pending, **kwargs
+        if pending and _accepts_pending(self.policy):
+            # On the model's device, as the policy works there (the CPU without one).
+            kwargs["pending"] = torch.stack([x.reshape(-1).double() for x in pending]).to(
+                model_device(model)
             )
-        logger.warning(
-            "%s.suggest takes no pending= argument, so it can't see the %d design(s) "
-            "in flight and may propose duplicates.",
-            type(self.policy).__name__, len(pending),
-        )
-        return self.policy.suggest(self.scored_history(), self.spec, model, n=n, **kwargs)
+        elif pending:
+            logger.warning(
+                "%s.suggest takes no pending= argument, so it can't see the %d design(s) "
+                "in flight and may propose duplicates.",
+                type(self.policy).__name__, len(pending),
+            )
+        xs = self.policy.suggest(self.scored_history(), self.spec, model, n=n, **kwargs)
+        return xs.cpu()  # proposals leave the device here
 
     def _random_draw(
         self, n: int, fixed: dict | None = None, within: ProblemSpec | None = None
@@ -1629,7 +1648,7 @@ class Campaign:
         history = self.scored_history()
         self._fit_error = None
         try:
-            return fit_model(self.model_constructor, history, self.spec)
+            return fit_model(self.model_constructor, history, self.spec, self.device)
         except Exception as exc:
             if self.on_model_error == "raise":
                 raise
