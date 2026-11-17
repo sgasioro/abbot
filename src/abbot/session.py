@@ -21,7 +21,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 from botorch.utils.multi_objective.pareto import is_non_dominated
@@ -542,6 +542,21 @@ class Campaign:
     Runs a fault check marks ``bad_region`` (or that a person resolves as one) are
     kept out of the output models. A separate classifier learns where runs give
     usable results, and proposals and recommendations steer away from the rest.
+
+    ``on_step`` hooks (or :meth:`add_hook`) are called after each result is recorded
+    with ``(state, model)``. While any hook is registered, every result costs a model
+    fit and a recommendation, so the hook can see them.
+
+    ``hook_errors``: what a hook that raises does. ``"log"`` (default): it's logged
+    and the campaign carries on. ``"raise"``: it's raised, after the result is
+    recorded and saved.
+
+    ``on_model_error``: what happens when the model can't be fitted, or the policy
+    fails numerically while proposing. ``"probe"`` (default): the campaign takes a
+    random design that step, says so in ``last_warning``, and tries again next step.
+    ``"raise"``: the error is raised, for code that would rather stop than spend a
+    run on a random design. Setup errors (a policy that doesn't fit the spec) raise
+    either way.
     """
 
     def __init__(
@@ -559,7 +574,16 @@ class Campaign:
         allow_resume_mismatch: bool = False,
         targets: Targets | None = None,
         initial_designs: torch.Tensor | list[Mapping] | None = None,
+        hook_errors: Literal["log", "raise"] = "log",
+        on_model_error: Literal["probe", "raise"] = "probe",
     ) -> None:
+        for name, value, allowed in (("hook_errors", hook_errors, ("log", "raise")),
+                                     ("on_model_error", on_model_error, ("probe", "raise"))):
+            if value not in allowed:
+                raise ValueError(f"{name} must be one of {list(allowed)}, got {value!r}")
+        self.hook_errors = hook_errors
+        self.on_model_error = on_model_error
+        self._fit_error: Exception | None = None  # why the last fit failed, if it did
         if policy is None:
             policy = default_policy(spec)
             logger.info("Using default policy %s.", type(policy).__name__)
@@ -646,6 +670,11 @@ class Campaign:
         self._supervisor = bind(supervisor, self.spec) if supervisor is not None else None
 
     def add_hook(self, hook: StepHook) -> None:
+        """Call ``hook(state, model)`` after each result is recorded (a batched
+        ``step``: once, after the batch). While any hook is registered, every result
+        costs a model fit and a recommendation, so the hook sees them; without hooks
+        the campaign fits only when it proposes. A hook that raises is logged
+        (default) or raised: see ``Campaign(hook_errors=)``."""
         self._hooks.append(hook)
 
     def seed(self, designs: torch.Tensor | list[Mapping]) -> None:
@@ -1318,7 +1347,8 @@ class Campaign:
     def current_model(self) -> Model | None:
         """The surrogate fitted on the current clean history, or ``None``.
 
-        ``None`` when there are too few clean points to fit, or the fit raised.
+        ``None`` when there are too few clean points to fit, or the fit raised. (Only
+        with the opt-in ``on_model_error="raise"`` is the fit's error raised.)
         The model lives in maximize-canonical space (objective signs applied); a
         caller that wants RAW posterior values must un-apply ``spec.output_signs``
         (see :func:`abbot.analysis.slice_1d`, which does this).
@@ -1437,6 +1467,14 @@ class Campaign:
         needs_model = getattr(self.policy, "needs_model", True)
         model = self.current_model() if needs_model else None
         if model is None and needs_model:
+            if self._fit_error is not None:  # the fit failed: say so, unlike a cold start
+                exc = self._fit_error
+                self.last_warning = (
+                    f"The model fit failed ({type(exc).__name__}: {exc}); took a random "
+                    "probe this step and will fit again next step."
+                )
+                logger.warning("%s", self.last_warning)
+                return self._random_draw(n, fixed, within)
             # Cold start: too few clean points to fit yet. A uniform probe is the
             # correct behavior here (not an error) — stay quiet.
             logger.debug("no model yet (too few clean points); drawing a random probe.")
@@ -1456,6 +1494,8 @@ class Campaign:
             # Setup is wrong (e.g. ParetoBO on a 1-objective spec). Fail loud.
             raise
         except Exception as exc:  # transient numerical hiccup: survive it
+            if self.on_model_error == "raise":
+                raise
             msg = (
                 f"Proposal hit a transient numerical error ({type(exc).__name__}); "
                 "took a random probe this step and will retry next step."
@@ -1587,10 +1627,14 @@ class Campaign:
             return None
         # Outside the try: a broken ``targets`` is a setup error, not a bad fit.
         history = self.scored_history()
+        self._fit_error = None
         try:
             return fit_model(self.model_constructor, history, self.spec)
-        except Exception:
+        except Exception as exc:
+            if self.on_model_error == "raise":
+                raise
             logger.exception("model fit failed.")
+            self._fit_error = exc
             return None
 
     def _safe_fit(self):
@@ -1629,6 +1673,8 @@ class Campaign:
             try:
                 hook(state, model)
             except Exception:
+                if self.hook_errors == "raise":
+                    raise
                 logger.exception("on_step hook failed.")
 
     def _new_id(self) -> str:

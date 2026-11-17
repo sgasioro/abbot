@@ -211,3 +211,82 @@ def test_misconfig_raises_not_silent_random():
         c.ingest(torch.tensor([x]))
     with pytest.raises(ValueError, match="ParetoBO"):
         c.suggest(1)  # ParetoBO on a 1-objective spec -> loud, not random
+
+
+# --- what a failing hook, fit or proposal does ------------------------------
+
+
+class _Broken(ModelListConstructor):
+    def build(self, X, Y, Yvar=None):
+        raise RuntimeError("Cholesky blew up")
+
+
+def _seeded(**kwargs):
+    spec = _scalar_spec()
+    c = Campaign(spec, SimpleBO(), _Broken(), initial_designs=torch.tensor(
+        [[0.2], [0.5], [0.8]], dtype=torch.double), **kwargs)
+    for _ in range(3):
+        c.suggest(1)
+        c.ingest(0.5)
+    return c
+
+
+def test_a_failed_fit_is_a_random_probe_that_says_so_or_raises():
+    torch.manual_seed(0)
+    c = _seeded()
+    assert len(c.suggest(1)) == 1  # the run goes on, on a random design
+    assert "The model fit failed (RuntimeError: Cholesky blew up)" in c.last_warning
+    strict = _seeded(on_model_error="raise")
+    with pytest.raises(RuntimeError, match="Cholesky blew up"):
+        strict.suggest(1)
+    assert strict.outstanding() == []  # nothing handed out
+
+
+def test_a_failed_proposal_raises_when_asked():
+    class Flaky(SimpleBO):
+        def suggest(self, *args, **kwargs):
+            raise RuntimeError("NaN in the acquisition")
+
+    torch.manual_seed(0)
+    spec = _scalar_spec()
+    seeds = torch.tensor([[0.2], [0.5], [0.8]], dtype=torch.double)
+    for mode, ok in (("probe", True), ("raise", False)):
+        c = Campaign(spec, Flaky(), initial_designs=seeds, on_model_error=mode)
+        for _ in range(3):
+            c.suggest(1)
+            c.ingest(float(torch.rand(1)))
+        if ok:
+            assert len(c.suggest(1)) == 1 and "transient numerical" in c.last_warning
+        else:
+            with pytest.raises(RuntimeError, match="NaN in the acquisition"):
+                c.suggest(1)
+
+
+def test_a_hook_error_is_logged_or_raised_after_the_result_is_saved(tmp_path, caplog):
+    def hook(state, model):
+        raise KeyError("plot")
+
+    torch.manual_seed(0)
+    spec = _scalar_spec()
+    seeds = torch.tensor([[0.2], [0.8]], dtype=torch.double)
+    c = Campaign(spec, on_step=hook, initial_designs=seeds)
+    c.suggest(1)
+    c.ingest(0.1)  # logged; the campaign carries on
+    assert len(c.history) == 1 and "on_step hook failed" in caplog.text
+
+    store = DataStore(tmp_path / "s")
+    c = Campaign(spec, on_step=hook, initial_designs=seeds, store=store,
+                 hook_errors="raise")
+    c.suggest(1)
+    with pytest.raises(KeyError, match="plot"):
+        c.ingest(0.1)
+    assert len(c.history) == 1 and len(store.load()) == 1  # recorded and saved first
+
+
+@pytest.mark.parametrize(("kwargs", "words"), [
+    ({"hook_errors": "ignore"}, "hook_errors must be one of"),
+    ({"on_model_error": "retry"}, "on_model_error must be one of"),
+])
+def test_bad_error_modes_are_refused(kwargs, words):
+    with pytest.raises(ValueError, match=words):
+        Campaign(_scalar_spec(), **kwargs)

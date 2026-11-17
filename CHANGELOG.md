@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Small fixes:**
+  - `BAXPolicy(requery=True)` lets a measured design be proposed again (only
+    designs in flight are left out), for repeating a noisy measurement.
+  - `Campaign(hook_errors=)`: what an `on_step` hook that raises does. `"log"`, the
+    default and the behavior so far, logs it and carries on. `"raise"`, opt-in,
+    raises it after the result is recorded and saved.
+  - `Campaign(on_model_error=)`: what a failed fit or a numerical failure while
+    proposing does. `"probe"`, the default and the behavior so far, takes one
+    random design and tries again next step. `"raise"`, opt-in, raises instead.
+    New in the default: a failed fit now says so in `last_warning`, where before its
+    random probe looked like a cold start's.
+  - `add_hook` and the `Campaign` docstring say that a registered hook makes each
+    result cost a model fit and a recommendation.
 - **Steps in the UI:** a knob can be a grid of numbers, "from 20 to 80 in steps
   of 5", next to Range and Choices. A step of 1 between whole ends gives whole
   numbers (`IntegerDomain`); any other step gives the list of values (an ordered
