@@ -157,3 +157,18 @@ def test_uq_pairing_refuses_point_model_with_infobax():
         check_uq_pairing(pol, _PointConstructor())
     # MeanBAX only needs a point prediction -> fine on a point model.
     check_uq_pairing(BAXPolicy(PercentileSet(80.0), strategy="MeanBAX"), _PointConstructor())
+
+
+def test_requery_lets_a_measured_design_come_back():
+    torch.manual_seed(0)
+    spec = _spec()
+    xs, ys = [0.1, 0.3, 0.5, 0.7, 0.9], [0.0, 0.4, 1.0, 0.4, 0.0]
+    model, h = _fit(spec, xs, ys)
+    grid = torch.tensor([*xs, 0.2], dtype=torch.double).reshape(-1, 1)
+    plain = BAXPolicy(PercentileSet(50.0), strategy="US", candidates=grid)
+    assert float(plain.suggest(h, spec, model)[0, 0]) == pytest.approx(0.2)  # only new
+    again = BAXPolicy(PercentileSet(50.0), strategy="US", candidates=grid, requery=True)
+    x = again.suggest(h, spec, model, n=6)
+    # Every design, measured or not, and none twice in one batch (in flight).
+    assert sorted(x[:, 0].tolist()) == pytest.approx(sorted(grid[:, 0].tolist()))
+    assert again.collected_count == 6  # measured ones still count (MeanBAX's "stuck")

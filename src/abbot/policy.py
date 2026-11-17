@@ -799,7 +799,9 @@ class BAXPolicy:
 
     Discrete: the acquisition is a length-N vector over a Sobol candidate grid
     (built once from the spec), selection is argmax, and already-collected grid
-    indices are masked to ``-inf`` (prevent-requery). A batch of ``n`` is built
+    indices are masked to ``-inf`` (prevent-requery). ``requery=True`` masks only
+    the designs in flight, so a measured design can be proposed again (repeats of a
+    noisy measurement where it matters most). A batch of ``n`` is built
     greedily: each pick is added to the pending designs, which the model is
     conditioned on at its own mean (kriging believer) before the next pick. Continuous proposal
     (pathwise / seeded-ascent) is a deferred extension point.
@@ -848,6 +850,7 @@ class BAXPolicy:
         choose_sources: bool = True,
         source_levels: int | dict[str, list[float]] = 5,
         respect_constraints: bool = True,
+        requery: bool = False,
     ) -> None:
         if strategy not in _BAX_UQ:
             raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
@@ -878,6 +881,7 @@ class BAXPolicy:
         # candidates, for InfoBAX; default: the model's own observation noise.
         self.noise_at = noise_at
         self.respect_constraints = respect_constraints
+        self.requery = requery
         self._bound = None  # (spec, goal with names resolved), see _goal_for
         self.last_warning: str | None = None  # set by suggest when the goal is empty
         self._out_scale = torch.ones(1, dtype=torch.double)  # per-output, set by suggest
@@ -1027,7 +1031,8 @@ class BAXPolicy:
     @property
     def collected_count(self) -> int:
         """How many grid points were measured, pending or picked as of the last
-        ``suggest`` (the prevent-requery set)."""
+        ``suggest`` (the prevent-requery set; with ``requery=True``, only those
+        pending or picked are kept out, but all count here)."""
         return len(self._collected)
 
     def _raw_mean_std(self, model, X, spec):
@@ -1082,14 +1087,19 @@ class BAXPolicy:
         for _ in range(min(n, grid.shape[0])):
             inflight = _extend_pending(pending, [grid[picks]] if picks else [])
             # Prevent-requery: grid points already measured (any record) or in flight.
+            # With requery, only those in flight are kept out; MeanBAX's "stuck"
+            # still counts the measured ones, so SwitchBAX moves on as before.
             taken = [history.designs.double()] if len(history) else []
             if inflight is not None:
                 taken.append(inflight)
             self._collected = _grid_matches(grid, torch.cat(taken)) if taken else []
+            busy = self._collected
+            if self.requery:
+                busy = _grid_matches(grid, inflight) if inflight is not None else []
             acq = self._acquisition(spec, condition_on_pending(model, inflight), grid)
             switched |= self.switched
             acq = acq.clone()
-            acq[self._collected] = float("-inf")
+            acq[busy] = float("-inf")
             if usable is not None and torch.isfinite(acq[usable]).any():
                 acq[~usable] = float("-inf")
             if allowed is not None:
@@ -1104,7 +1114,8 @@ class BAXPolicy:
                 best = self._toward(grid, best, acq, reach if allowed is None else reach & allowed)
             picks.append(best)
             values.append(float(acq[best]))
-        self._collected.append(picks[-1])
+        if picks[-1] not in self._collected:  # (with requery it may be measured)
+            self._collected.append(picks[-1])
         self.switched = switched
         self.last_acquisition_value = torch.tensor(values, dtype=torch.double)
         return grid[picks]
