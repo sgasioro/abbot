@@ -260,7 +260,48 @@ def test_spec_to_rows_keeps_what_the_steps_cant_show():
             {"domain": {"kind": "integer", "name": "lvl", "lower": 1, "upper": 3},
              "target": 3}]})
     variables, outputs, source, extra = spec_to_rows(spec)
-    assert [r["kind"] for r in variables] == ["continuous", "json", "json", "json"]
+    # Whole numbers are Steps of 1; a list of whole numbers 1 apart stays a list.
+    assert [r["kind"] for r in variables] == ["continuous", "steps", "json", "json"]
     assert source is None and set(extra) == {"domain_constraints", "sources"}
     assert build_spec(variables, outputs, source, extra) == spec
     assert ProblemSpec.model_validate(spec_json(spec)) == spec  # kinds kept
+
+
+def test_steps_are_whole_numbers_or_a_grid():
+    from abbot.problem import IntegerDomain
+    from abbot.ui.builder import grid, grid_step, spec_to_rows, too_many_settings
+
+    assert grid(20, 80, 5) == [20 + 5 * k for k in range(13)]
+    assert grid(0, 0.3, 0.1) == [0.0, 0.1, 0.2, 0.3]  # no 0.30000000000000004
+    for args, words in (((0, 1, 0.3), "don't land on 1"), ((0, 1, 0), "more than 0"),
+                        ((1, 1, 1), "'to' must be more"), ((0, 1e4, 1), "use a Range"),
+                        ((0, None, 1), "enter from, to")):
+        with pytest.raises(ValueError, match=words):
+            grid(*args)
+    assert grid_step([20.0, 25.0, 30.0]) == 5 and grid_step([1.0, 2.0, 5.0]) is None
+    assert grid_step(["a", "b", "c"]) is None and grid_step([1.0, 2.0]) is None
+
+    out = [{"name": "y"}]
+    spec = build_spec([
+        {"kind": "steps", "name": "n", "lower": 1, "upper": 8, "step": 1, "max_step": 2},
+        {"kind": "steps", "name": "temp", "lower": 20, "upper": 80, "step": 5},
+        {"kind": "continuous", "name": "x", "lower": 0, "upper": 1}], out)
+    n, temp, _ = spec.domain
+    assert n == IntegerDomain(name="n", lower=1, upper=8, max_step=2)
+    assert isinstance(temp, EnumeratedDomain) and temp.values == grid(20, 80, 5)
+    variables = spec_to_rows(spec)[0]
+    assert [r["kind"] for r in variables] == ["steps", "steps", "continuous"]
+    assert variables[1]["step"] == 5 and build_spec(variables, out) == spec
+    with pytest.raises(ValueError, match="Variable 'temp': steps of 7"):
+        build_spec([{"kind": "steps", "name": "temp", "lower": 20, "upper": 80, "step": 7}],
+                   out)
+
+    # Beside a range, every combination of listed settings is searched in turn.
+    assert too_many_settings(spec) is None
+    fine = build_spec([{"kind": "steps", "name": "temp", "lower": 20, "upper": 80,
+                        "step": 0.2},
+                       {"kind": "continuous", "name": "x", "lower": 0, "upper": 1}], out)
+    assert "301 for temp is 301, more than 256" in too_many_settings(fine)
+    alone = build_spec([{"kind": "steps", "name": "temp", "lower": 20, "upper": 80,
+                         "step": 0.2}], out)
+    assert too_many_settings(alone) is None  # only lists: every design is checked

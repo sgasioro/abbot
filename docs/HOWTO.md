@@ -9,7 +9,7 @@ is shown.
 | How do I… | |
 | --- | --- |
 | describe knobs and measurements | `ProblemSpec(domain=[ContinuousDomain(name="temp", lower=20, upper=80)], outputs=[OutputSpec(name="yield", direction="MAXIMIZE")])`. See the [README quickstart](../README.md#quickstart). |
-| use whole numbers, or a fixed list of values | `IntegerDomain(name=, lower=, upper=)`; `EnumeratedDomain(name=, values=[0.1, 0.5, 1.0])` (an ordered grid). |
+| use whole numbers, or a fixed list of values | `IntegerDomain(name=, lower=, upper=)`; `EnumeratedDomain(name=, values=[0.1, 0.5, 1.0])` (an ordered grid). In the UI, a knob's Steps (from, to, step). |
 | use categories (solvents, materials) | `EnumeratedDomain(name="solvent", values=["water", "ethanol"])`. Designs carry the labels. [Categories](API.md#categories-labeled-values) |
 | search a knob over decades | `ContinuousDomain(..., log=True)`. [Names, not positions](API.md#names-not-positions) |
 | record something without optimizing it | `OutputSpec(name=, direction="OBSERVE")`. |

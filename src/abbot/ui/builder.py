@@ -59,7 +59,10 @@ def build_spec(
     """Build a ``ProblemSpec`` from UI rows.
 
     ``variable_rows``: each ``{"kind": "continuous", "name", "lower", "upper"}`` or
-    ``{"kind": "enumerated", "name", "values": [...]}``. Enumerated values are
+    ``{"kind": "enumerated", "name", "values": [...]}`` or ``{"kind": "steps",
+    "name", "lower", "upper", "step"}`` (a grid of numbers: whole numbers when the
+    step is 1 and the ends are whole, else the list of values), with an optional
+    ``max_step``. Enumerated values are
     numbers, or labels (categories) if any isn't a number; as text they are
     separated by commas, or by spaces when there are no commas. A continuous row
     may add ``log`` (model on a log scale) and ``max_step`` (a travel limit; blank
@@ -118,6 +121,8 @@ def build_start(spec: ProblemSpec, variable_rows: list[dict]) -> list[dict] | No
         raw = row.get("start")
         if isinstance(d, ContinuousDomain):
             value = _number(raw)
+        elif isinstance(d, IntegerDomain) and _number(raw) is not None:
+            value = round(_number(raw))
         else:  # a label, or a number from JSON
             value = None if raw is None or raw == "" else raw
         if value is None and getattr(d, "max_step", None) is not None:
@@ -167,6 +172,19 @@ def spec_to_rows(
             variable_rows.append({
                 "kind": "continuous", "name": d.name, "lower": d.lower, "upper": d.upper,
                 "log": d.log, "max_step": d.max_step, "start": None,
+            })
+        elif isinstance(d, IntegerDomain) and not d.log:
+            variable_rows.append({
+                "kind": "steps", "name": d.name, "lower": d.lower, "upper": d.upper,
+                "step": 1, "max_step": d.max_step, "start": None,
+            })
+        elif (isinstance(d, EnumeratedDomain) and grid_step(d.values) is not None
+              and not is_whole_grid(d.values[0], d.values[-1], grid_step(d.values))):
+            # (a list of whole numbers 1 apart stays a list: as Steps it'd be IntegerDomain)
+            variable_rows.append({
+                "kind": "steps", "name": d.name, "lower": d.values[0],
+                "upper": d.values[-1], "step": grid_step(d.values),
+                "max_step": d.max_step, "start": None,
             })
         elif isinstance(d, EnumeratedDomain) and d.max_step is None:
             variable_rows.append({
@@ -260,6 +278,67 @@ def parse_values(values) -> list:
         return [str(tok) for tok in tokens]  # labels: categories
 
 
+# A Steps knob that isn't whole numbers is a list of values; past this many, a
+# range is the better fit (and proposals would enumerate them all).
+MAX_STEPS = 1000
+
+
+def grid(lower, upper, step) -> list[float]:
+    """The settings ``lower``, ``lower + step``, ... ``upper``. Raises when the
+    steps don't land on ``upper``, or there are too many."""
+    lo, hi, st = _number(lower), _number(upper), _number(step)
+    if lo is None or hi is None or st is None:
+        raise ValueError("enter from, to and the step.")
+    if st <= 0:
+        raise ValueError("the step must be more than 0.")
+    if hi <= lo:
+        raise ValueError("'to' must be more than 'from'.")
+    n = round((hi - lo) / st)
+    if abs(lo + n * st - hi) > 1e-9 * max(1.0, abs(hi), abs(lo)):
+        raise ValueError(f"steps of {st:g} from {lo:g} don't land on {hi:g}; change "
+                         "the step or the ends.")
+    if n + 1 > MAX_STEPS:
+        raise ValueError(f"that's {n + 1} settings; use a Range, or a bigger step.")
+    return [round(lo + k * st, 12) for k in range(n + 1)]
+
+
+def grid_step(values) -> float | None:
+    """The step of evenly spaced numbers (at least three, ascending), else None."""
+    if len(values) < 3 or isinstance(values[0], str):
+        return None
+    step = round(values[1] - values[0], 12)
+    try:
+        return step if step > 0 and grid(values[0], values[-1], step) == list(values) else None
+    except ValueError:
+        return None
+
+
+def too_many_settings(spec: ProblemSpec) -> str | None:
+    """Why proposals can't search ``spec``'s knobs, or None: alongside a range,
+    every combination of the listed values (Choices, Steps) is searched in turn,
+    up to a limit."""
+    from math import prod
+
+    from abbot.acq_opt import MAX_MIXED_COMBINATIONS
+
+    listed = [d for d in spec.domain if isinstance(d, EnumeratedDomain)]
+    if not listed or len(listed) == len(spec.domain):
+        return None  # nothing listed, or only lists: every design is checked
+    n = prod(len(d.values) for d in listed)
+    if n <= MAX_MIXED_COMBINATIONS:
+        return None
+    sizes = " × ".join(f"{len(d.values)} for {d.name}" for d in listed)
+    return (f"With a range among the knobs, abbot tries every combination of settings "
+            f"in turn: {sizes} is {n}, more than {MAX_MIXED_COMBINATIONS}. Use a bigger "
+            "step, fewer choices, or a Range.")
+
+
+def is_whole_grid(lower, upper, step) -> bool:
+    """Whether a Steps knob is whole numbers: a step of 1 between whole ends."""
+    return all(v is not None and float(v).is_integer()
+               for v in (_number(lower), _number(upper))) and _number(step) == 1
+
+
 _DOMAIN = TypeAdapter(Domain)
 
 
@@ -282,6 +361,17 @@ def _domain(row: dict, what: str = "Variable"):
             log=bool(row.get("log", False)),
             max_step=_number(row.get("max_step")),
         )
+    if kind == "steps":
+        lower, upper, step = row.get("lower"), row.get("upper"), row.get("step")
+        try:
+            values = grid(lower, upper, step)
+        except ValueError as exc:
+            raise ValueError(f"{what} {name!r}: {exc}") from None
+        max_step = _number(row.get("max_step"))
+        if is_whole_grid(lower, upper, step):
+            return IntegerDomain(name=row["name"], lower=int(values[0]),
+                                 upper=int(values[-1]), max_step=max_step)
+        return EnumeratedDomain(name=row["name"], values=values, max_step=max_step)
     if kind == "enumerated":
         values = parse_values(row.get("values"))
         if not values:

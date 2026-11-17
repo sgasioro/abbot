@@ -225,11 +225,12 @@ class CommandExperiment:
         self.words = None if shell else shlex.split(command)
         if not shell and not self.words:
             raise ValueError("CommandExperiment: the command is empty.")
-        # The variables it reads, in the order the command names them.
-        self.fields = list(dict.fromkeys(
-            field.split(".")[0].split("[")[0]
-            for _, field, _, _ in string.Formatter().parse(command) if field
-        ))
+        # The variables it reads, in the order the command names them, and those
+        # it formats as whole numbers ({n:d}).
+        parsed = [(field.split(".")[0].split("[")[0], fmt or "")
+                  for _, field, fmt, _ in string.Formatter().parse(command) if field]
+        self.fields = list(dict.fromkeys(name for name, _ in parsed))
+        self.whole = list(dict.fromkeys(name for name, fmt in parsed if fmt.endswith("d")))
         if spec is not None:
             unknown = [f for f in self.fields if f not in spec.variable_names]
             if unknown:
@@ -250,8 +251,13 @@ class CommandExperiment:
 
     def args(self, design: Design) -> list[str] | str:
         """The command for ``design``: a list of arguments, or (``shell=True``) a
-        string with each value quoted."""
+        string with each value quoted. A whole number held as a float (``3.0``)
+        fills a ``{n:d}`` as ``3``."""
         values = dict(design)
+        for name in self.whole:
+            value = _plain(values.get(name))
+            if isinstance(value, float) and value.is_integer():
+                values[name] = int(value)
         try:
             if self.shell:
                 quoted = {k: _Quoted(v) for k, v in values.items()}

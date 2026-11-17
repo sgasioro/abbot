@@ -370,8 +370,55 @@ async def test_a_commands_names_start_the_knobs(ui_states, served):
         assert [(r["name"], r["lower"], r["upper"]) for r in state.variable_rows] == [
             ("temp", 0.0, 1.0), ("conc", 0.0, 1.0)]
         await user.should_see("measure.sh reads temp and conc, so those are the knobs. Set "
-                              "the range each can reach; 0 to 1 is only a placeholder.")
+                              "the range each can reach; the ones shown are only "
+                              "placeholders.")
         await user.should_see(marker="add-knob")  # still yours to change
         state.variable_rows.pop()
         state.new_campaign(keep_setup=False)  # back to the defaults: the command's names
         assert [r["name"] for r in state.variable_rows] == ["temp", "conc"]
+
+
+def test_steps_fit_inside_a_declared_range():
+    from abbot.problem import IntegerDomain
+
+    rng = ContinuousDomain(name="t", lower=20, upper=80)
+    whole = IntegerDomain(name="t", lower=0, upper=10, max_step=2)
+    grid = EnumeratedDomain(name="t", values=[20.0, 50.0, 80.0])
+    assert yours._domain_within(rng, grid, "Rig") is None
+    assert yours._domain_within(rng, IntegerDomain(name="t", lower=20, upper=80), "Rig") is None
+    assert "keep the range inside" in yours._domain_within(
+        rng, EnumeratedDomain(name="t", values=[10.0, 50.0]), "Rig")
+    assert yours._domain_within(
+        whole, EnumeratedDomain(name="t", values=[0.0, 2.0, 4.0], max_step=2), "Rig") is None
+    assert "use a whole step" in yours._domain_within(
+        whole, EnumeratedDomain(name="t", values=[0.0, 0.5, 1.0], max_step=2), "Rig")
+    assert "at most 2 per run" in yours._domain_within(
+        whole, EnumeratedDomain(name="t", values=[0.0, 2.0, 4.0]), "Rig")
+    assert "takes choices, not a range" in yours._domain_within(
+        EnumeratedDomain(name="t", values=["a", "b"]), rng, "Rig")
+
+
+@pytest.mark.anyio
+async def test_steps_on_the_knobs_step(ui_states, served):
+    served["yours"] = yours.command("./measure.sh {temp} {reps:03d}")
+    async with user_simulation(root=app._build_page) as user:
+        await user.open("/")
+        state = ui_states[-1]
+        temp, reps = state.variable_rows
+        assert temp["kind"] == "continuous"
+        assert {k: reps[k] for k in ("kind", "lower", "upper", "step")} == {
+            "kind": "steps", "lower": 0, "upper": 10, "step": 1}
+        await user.should_see("11 settings, whole numbers")
+        await user.should_see(marker="knob-0-kind")  # Range, Steps, Choices
+        temp.update(kind="steps", lower=20, upper=80, step=5)
+        with user.client:
+            state.refresh()
+        await user.should_see("13 settings")
+        assert state.check_step(0) is None
+        temp["step"] = 7
+        assert "steps of 7 from 20 don't land on 80" in state.check_step(0)
+        temp.update(kind="continuous")
+        reps.update(lower=0, upper=400, step=1)
+        assert state.check_step(0) is None  # whole numbers: searched as a range
+        reps.update(step=0.5)
+        assert "801 for reps is 801, more than 256" in state.check_step(0)

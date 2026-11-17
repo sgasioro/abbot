@@ -319,7 +319,7 @@ async def test_editing_campaign_json_fills_the_steps(ui_states):
         config = state.campaign_config()
         config["spec"]["domain"][0].update(name="temp", upper=90.0)
         config["spec"]["domain"].append({"kind": "integer", "name": "n", "lower": 1,
-                                         "upper": 4})
+                                         "upper": 4, "log": True})  # not as Steps
         config["spec"]["domain_constraints"] = [{"coeffs": {"temp": 1, "n": 10},
                                                  "max_val": 60}]
         await _edit_json(user, json.dumps(config))

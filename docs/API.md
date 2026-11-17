@@ -425,7 +425,8 @@ campaign.step(rig)
   reason and the end of stderr, so the campaign records a fault and retries.
 - **In the UI:** `python -m abbot.ui --command "./measure.sh {temp} {conc}"
   [--timeout 600] [--spec rig.json]`. Without `--spec`, the knobs start as the
-  command's names, in its order, with ranges for you to set; the Start step
+  command's names, in its order, with ranges for you to set (whole-number Steps
+  for a `{n:d}`); the Start step
   checks the command's names against the knobs.
 
 ### An Xopt evaluator as the experiment

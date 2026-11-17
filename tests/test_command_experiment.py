@@ -107,3 +107,9 @@ def test_names_are_checked_against_the_spec():
     # Literal braces are doubled, as in str.format.
     assert CommandExperiment("echo {{x}} {temp}").args({"temp": 1.0}) == ["echo", "{x}", "1.0"]
     assert CommandExperiment("""echo '{{"y": {temp}}}'""").run({"temp": 2.0}) == {"y": 2.0}
+
+
+def test_a_whole_number_field_takes_a_whole_float():
+    e = CommandExperiment("./run {n:03d} {x}")
+    assert e.whole == ["n"]
+    assert e.args({"n": 7.0, "x": 0.5}) == ["./run", "007", "0.5"]

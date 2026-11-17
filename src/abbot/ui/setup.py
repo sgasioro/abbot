@@ -14,7 +14,14 @@ from __future__ import annotations
 from nicegui import ui
 
 from abbot.ui import summary, theme
-from abbot.ui.builder import BAX_STRATEGY_LABELS, domain_words, parse_values
+from abbot.ui.builder import (
+    BAX_STRATEGY_LABELS,
+    domain_words,
+    grid,
+    grid_step,
+    is_whole_grid,
+    parse_values,
+)
 from abbot.ui.state import STEPS, UIState, _message
 
 
@@ -99,11 +106,13 @@ def _knobs(state: UIState) -> None:
     if limits is None and state.own and state.yours is not None and state.yours.reads:
         theme.title("What can you set?",
                     f"{state.yours.name} reads {listed(state.yours.reads)}, so those are "
-                    "the knobs. Set the range each can reach; 0 to 1 is only a placeholder.")
+                    "the knobs. Set the range each can reach; the ones shown are only "
+                    "placeholders.")
     elif limits is None:
         theme.title("What can you set?",
                     "Each knob abbot may change between runs, and the range it can reach. "
-                    "Use Choices for settings that aren't numbers, like a material.")
+                    "Use Steps for numbers on a grid (20 to 80 in 5s), and Choices for "
+                    "settings that aren't numbers, like a material.")
     else:
         theme.title("What can you set?",
                     f"{state.yours.name} sets these knobs. Narrow a range or drop a choice "
@@ -187,8 +196,14 @@ def _declared(state: UIState, name: str):
 
 def _limit_words(d) -> str:
     """What your experiment allows for a knob, in a few words."""
-    if getattr(d, "values", None) is not None:
+    step = grid_step(d.values) if getattr(d, "values", None) is not None else None
+    if step is not None:
+        words = (f"{summary.fmt(d.values[0])} to {summary.fmt(d.values[-1])} "
+                 f"in steps of {summary.fmt(step)}")
+    elif getattr(d, "values", None) is not None:
         words = "choices " + ", ".join(str(v) for v in d.values)
+    elif d.kind == "integer":
+        words = f"whole numbers {d.lower} to {d.upper}"
     elif d.kind == "structured":
         words = domain_words({"kind": d.kind, "dim": d.dim})
     else:
@@ -213,14 +228,16 @@ def _knob_row(state: UIState, row: dict, i: int, redraw) -> None:
                     row, "name").props("outlined dense").classes("w-40").mark(f"knob-{i}-name")
 
             def kind(value: str, row=row) -> None:
+                if value == "steps":
+                    _steps_defaults(row)
                 row["kind"] = value
                 redraw()
                 _changed(state)
 
-            if not locked:
-                theme.segmented({"continuous": "Range", "enumerated": "Choices"}, row["kind"],
-                                kind)
             declared = _declared(state, row.get("name"))
+            kinds = _kinds(declared, locked)
+            if len(kinds) > 1:
+                theme.segmented(kinds, row["kind"], kind, marker=f"knob-{i}-kind")
             if declared is not None:
                 ui.label(f"{state.yours.name}: {_limit_words(declared)}").classes(
                     "ab-sub text-sm").mark(f"knob-{i}-limit")
@@ -237,6 +254,9 @@ def _knob_row(state: UIState, row: dict, i: int, redraw) -> None:
                 ui.number("to", on_change=lambda _: _changed(state)).bind_value(
                     row, "upper").props("outlined dense").classes("w-32").mark(f"knob-{i}-upper")
             _knob_options(state, row)
+        elif row["kind"] == "steps":
+            _steps_fields(state, row, i)
+            _knob_options(state, row, log=False)
         else:
             if not isinstance(row.get("values"), str):
                 row["values"] = ", ".join(str(v) for v in row.get("values") or ["a", "b"])
@@ -244,6 +264,52 @@ def _knob_row(state: UIState, row: dict, i: int, redraw) -> None:
                      on_change=lambda _: _changed(state)).bind_value(row, "values").props(
                 "outlined dense"
             ).classes("w-full").mark(f"knob-{i}-values")
+
+
+def _kinds(declared, locked: bool) -> dict[str, str]:
+    """The kinds a knob may take: any, or with a declared spec, its own kind and
+    the narrower ones (Steps within a range)."""
+    every = {"continuous": "Range", "steps": "Steps", "enumerated": "Choices"}
+    if not locked:
+        return every
+    if declared is not None and declared.kind == "continuous":
+        return {"continuous": "Range", "steps": "Steps"}
+    return {}
+
+
+def _steps_defaults(row: dict) -> None:
+    """From / to / step for a knob turning into Steps, from what it had."""
+    lower, upper = row.get("lower"), row.get("upper")
+    if lower is None or upper is None or upper <= lower:
+        lower, upper = 0.0, 1.0
+    if row.get("step") is None:
+        span = upper - lower
+        whole = float(lower).is_integer() and float(upper).is_integer() and span <= 100
+        row["step"] = 1 if whole else span / 10
+    row.update(lower=lower, upper=upper, log=False)
+
+
+def _steps_fields(state: UIState, row: dict, i: int) -> None:
+    """From, to and the step, and what that makes: "13 settings"."""
+    count = None
+
+    def counted() -> None:
+        if count is not None:
+            try:
+                n = len(grid(row.get("lower"), row.get("upper"), row.get("step")))
+            except (TypeError, ValueError) as exc:
+                count.set_text(str(exc))
+            else:
+                whole = is_whole_grid(row.get("lower"), row.get("upper"), row.get("step"))
+                count.set_text(f"{n} settings" + (", whole numbers" if whole else ""))
+
+    with ui.row().classes("items-center gap-3 w-full"):
+        for field, label in (("lower", "from"), ("upper", "to"), ("step", "step")):
+            ui.number(label, on_change=lambda _: (counted(), _changed(state))).bind_value(
+                row, field).props(
+                "outlined dense").classes("w-32").mark(f"knob-{i}-{field}")
+        count = ui.label().classes("ab-sub text-sm").mark(f"knob-{i}-count")
+    counted()
 
 
 def _json_knob(state: UIState, row: dict, i: int, redraw) -> None:
@@ -261,8 +327,8 @@ def _json_knob(state: UIState, row: dict, i: int, redraw) -> None:
                 "flat dense round color=grey-6").tooltip("Remove this knob")
 
 
-def _knob_options(state: UIState, row: dict) -> None:
-    """Log scale and a travel limit, folded behind one line."""
+def _knob_options(state: UIState, row: dict, log: bool = True) -> None:
+    """Log scale (for a range) and a travel limit, folded behind one line."""
     row.setdefault("log", False)
     row.setdefault("max_step", None)
     row.setdefault("start", None)
@@ -274,14 +340,16 @@ def _knob_options(state: UIState, row: dict) -> None:
         with box:
             text = _options_summary(row)
             label = "hide options" if row["_open"] else (
-                f"options: {text}" if text else "options: log scale, travel limit")
+                f"options: {text}" if text
+                else "options: log scale, travel limit" if log else "options: travel limit")
             theme.link(label, lambda: (row.update(_open=not row["_open"]), redraw())).classes(
                 "text-sm")
             if not row["_open"]:
                 return
             with ui.row().classes("items-center gap-3"):
-                ui.checkbox("log scale", on_change=lambda _: _changed(state)).bind_value(
-                    row, "log").tooltip("For a quantity spanning orders of magnitude.")
+                if log:
+                    ui.checkbox("log scale", on_change=lambda _: _changed(state)).bind_value(
+                        row, "log").tooltip("For a quantity spanning orders of magnitude.")
                 ui.number("most it can move per run",
                           on_change=lambda e: (start.set_visibility(e.value is not None),
                                                _changed(state))).bind_value(

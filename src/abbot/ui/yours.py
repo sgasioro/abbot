@@ -47,7 +47,7 @@ class YourExperiment:
 
     def __init__(self, target, *, spec=None, evaluate: Callable | None = None,
                  name: str | None = None, source: str | None = None,
-                 reads: list[str] | None = None) -> None:
+                 reads: list[str] | None = None, whole: list[str] | None = None) -> None:
         if not _is_experiment(target) and not callable(target):
             raise TypeError(
                 f"{source or target!r} is neither an experiment (an object with run(design) "
@@ -63,6 +63,7 @@ class YourExperiment:
         self.spec: ProblemSpec | None = None if declared is None else as_spec(declared)
         # The variables it's known to read (a command's {names}), when it says.
         self.reads = list(reads or [])
+        self.whole = list(whole or [])  # of those, the ones it takes as whole numbers
 
     def problem(self, spec: ProblemSpec) -> str | None:
         """Why a campaign on ``spec`` can't run on this experiment, or None."""
@@ -158,9 +159,22 @@ def within(declared: ProblemSpec, spec: ProblemSpec, who: str = "The experiment"
 
 def _domain_within(mine, theirs, who: str) -> str | None:
     name = mine.name
-    if type(theirs) is not type(mine):
+    numbers = isinstance(theirs, EnumeratedDomain) and not theirs.is_categorical
+    # Narrower kinds: whole numbers within a range, steps within a range or whole
+    # numbers (whole steps only), each setting inside the declared ends.
+    if isinstance(mine, (ContinuousDomain, IntegerDomain)) and (
+            numbers or (isinstance(mine, ContinuousDomain)
+                        and isinstance(theirs, IntegerDomain))):
+        values = theirs.values if numbers else [theirs.lower, theirs.upper]
+        if isinstance(mine, IntegerDomain) and not all(
+                float(v).is_integer() for v in values):
+            return f"{name}: {who} takes whole numbers; use a whole step."
+        if min(values) < mine.lower or max(values) > mine.upper:
+            return (f"{name}: {who} goes from {mine.lower:g} to {mine.upper:g}; keep the "
+                    "range inside that.")
+    elif type(theirs) is not type(mine):
         return f"{name}: {who} takes {_kind(mine)}, not {_kind(theirs)}."
-    if isinstance(mine, (ContinuousDomain, IntegerDomain)):
+    elif isinstance(mine, (ContinuousDomain, IntegerDomain)):
         if theirs.lower < mine.lower or theirs.upper > mine.upper:
             return (f"{name}: {who} goes from {mine.lower:g} to {mine.upper:g}; keep the "
                     "range inside that.")
@@ -240,7 +254,7 @@ def command(cmd: str, spec: str | None = None, timeout: float | None = None) -> 
         return CommandExperiment(cmd, spec=campaign_spec, timeout=timeout)
 
     return YourExperiment(make, spec=declared, name=probe.name, source=cmd,
-                          reads=probe.fields)
+                          reads=probe.fields, whole=probe.whole)
 
 
 def load_spec(ref: str) -> ProblemSpec:
