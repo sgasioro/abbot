@@ -9,7 +9,8 @@ All optimization logic is in the core (``Campaign``, ``RunController``, ``builde
 on a ``UIState`` made inside the page function. Campaigns are saved in a directory
 shared with the agent (``~/abbot-campaigns`` unless ``--dir`` or ``ABBOT_UI_DIR``
 says otherwise), through one :class:`~abbot.agent.workspace.Workspace` per process.
-Run with ``python -m abbot.ui``.
+Run with ``python -m abbot.ui`` (``--experiment module:Name`` adds your own
+experiment), or show a campaign built in code with :func:`serve`.
 """
 
 from __future__ import annotations
@@ -22,13 +23,16 @@ from nicegui import ui
 
 from abbot.experiment import MockAnalyticExperiment  # noqa: F401 - tests patch it here
 from abbot.ui import expert, running, setup, summary, theme
-from abbot.ui.state import UIState
+from abbot.ui.state import STEPS, UIState
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["UIState", "main"]
+__all__ = ["UIState", "main", "serve"]
 
 _workspaces: dict = {}
+# What every page this process serves starts with: your experiment (``yours``), and
+# a campaign some code runs (``controller``, from serve()).
+_served: dict = {"yours": None, "controller": None, "name": None}
 
 
 def workspace():
@@ -46,6 +50,12 @@ def workspace():
 def _build_page() -> None:
     state = UIState()
     state.workspace = workspace()
+    state.yours = _served["yours"]
+    state.own = state.yours is not None
+    if _served["controller"] is not None:
+        _show_served(state, _served["controller"], _served["name"])
+    else:
+        state.from_declared()  # the knobs and measurements your experiment declares
     theme.apply()
 
     @ui.refreshable
@@ -110,6 +120,22 @@ def _build_page() -> None:
     # One auto-run timer, made once; it reads stable state, so redrawing a panel
     # never orphans it.
     ui.timer(0.5, lambda: running.tick(state))
+    if state.controller is not None:  # serve()'s campaign: the next design, ready
+        ui.timer(0.1, lambda: running.suggest_next(state), once=True)
+
+
+def _show_served(state: UIState, controller, name: str | None) -> None:
+    """Open the page on serve()'s campaign. The steps hold its setup where they can
+    show it, for New campaign → Start from this setup."""
+    from abbot.ui.builder import spec_json
+
+    try:
+        state.apply_config({"spec": spec_json(controller.campaign.spec)})
+    except Exception:  # a setup the steps can't hold: the campaign still runs
+        logger.info("serve: the steps can't show this campaign's setup", exc_info=True)
+    state.name = name or "Campaign"
+    state.step = state.reached = len(STEPS) - 1
+    state.attach(controller)
 
 
 def _toggle_expert(state: UIState) -> None:
@@ -151,9 +177,12 @@ def main(argv: list[str] | None = None) -> None:
       --show / --no-show (ABBOT_UI_SHOW=1/0) — open a browser tab on start
       --dir (ABBOT_UI_DIR, default ~/abbot-campaigns) — where campaigns are saved;
         the abbot agent (``abbot-mcp``) saves there too.
+      --experiment module:Name (or file.py:Name) — your experiment, offered on the
+        Start step to run each design (see :mod:`abbot.ui.yours`).
+      --spec spec.json (or module:NAME) — the spec it works with, if it has no
+        ``spec`` attribute: the setup starts from it and stays within it.
     """
     import argparse
-    import os
 
     def _env_bool(name: str, default: bool) -> bool:
         val = os.environ.get(name)
@@ -173,22 +202,94 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dir", default=os.environ.get("ABBOT_UI_DIR"),
                         help="where campaigns are saved, shared with the abbot agent "
                         "(default: ~/abbot-campaigns)")
+    parser.add_argument("--experiment", metavar="MODULE:NAME",
+                        help="your experiment (an object with run(design), or a class or "
+                        "function making one; module:Name or file.py:Name), offered to "
+                        "run each design")
+    parser.add_argument("--spec", metavar="FILE.json|MODULE:NAME",
+                        help="the spec your experiment works with (a spec or campaign.json, "
+                        "or module:NAME), if it has no spec attribute: the setup starts "
+                        "from it and stays within its knobs, ranges and measurements")
     args = parser.parse_args(argv)
+    if args.spec and not args.experiment:
+        parser.error("--spec goes with --experiment (it's the spec your experiment "
+                     "works with)")
     if args.dir:
         os.environ["ABBOT_UI_DIR"] = args.dir
+    if args.experiment:
+        from abbot.ui import yours
 
-    port = args.port
-    if not args.strict_port:
-        port = _free_port(args.host, args.port)
-        if port != args.port:
-            logger.warning("port %d is in use; using %d instead.", args.port, port)
-            print(f"abbot.ui: port {args.port} busy -> using {port}")
+        try:
+            _served["yours"] = yours.load(args.experiment, spec=args.spec)
+        except Exception as exc:  # noqa: BLE001 - a bad reference: say why and stop
+            flags = f"--experiment {args.experiment}" + (f" --spec {args.spec}" if args.spec else "")
+            parser.error(f"{flags}: {exc}")
+    _launch(args.host, args.port, args.show, args.strict_port)
+
+
+def serve(
+    campaign=None,
+    experiment=None,
+    *,
+    spec=None,
+    evaluate=None,
+    name: str | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    show: bool = True,
+) -> None:
+    """Open the UI from Python, and serve it until interrupted.
+
+    ``campaign`` (a :class:`~abbot.session.Campaign` built in code, with any policy or
+    model) opens straight on its run view, shared by every tab, and isn't saved to
+    the campaigns folder: your code owns it. ``experiment`` runs each design (an
+    object with ``run(design)`` or ``run_batch(designs)``, or a class or function
+    that makes one from the spec), with ``evaluate`` reducing what it returns to
+    the outputs; it is also offered on the Start step of a new campaign. With only
+    an experiment, the page starts at the first step. Without one, you enter each
+    result. ``name`` titles the campaign.
+
+    ``spec`` is the spec the experiment works with (by default its ``spec``
+    attribute, if any): a new campaign's setup starts from it and stays within its
+    knobs, ranges and measurements, and ``campaign``'s spec must stay within it too.
+
+    Call it from a script (it blocks, as ``ui.run`` does)::
+
+        from abbot.ui import serve
+        serve(Campaign(spec), Rig(port="/dev/ttyUSB0"))
+    """
+    from abbot.ui.controller import RunController
+    from abbot.ui.yours import YourExperiment
+
+    if spec is not None and experiment is None:
+        raise ValueError("serve(spec=...) is the spec your experiment works with; pass "
+                         "the experiment too.")
+    yours = None if experiment is None else YourExperiment(experiment, spec=spec,
+                                                           evaluate=evaluate)
+    _served["yours"] = yours
+    _served["name"] = name
+    _served["controller"] = None
+    if campaign is not None:
+        made = None if yours is None else yours.make(campaign.spec)
+        _served["controller"] = RunController(
+            campaign, experiment=made,
+            evaluate=None if made is None else yours.outputs(campaign.spec))
+    _launch(host, port, show, strict=False)
+
+
+def _launch(host: str, port: int, show: bool, strict: bool) -> None:
+    if not strict:
+        free = _free_port(host, port)
+        if free != port:
+            logger.warning("port %d is in use; using %d instead.", port, free)
+            print(f"abbot.ui: port {port} busy -> using {free}")
+            port = free
 
     @ui.page("/")
     def index() -> None:
         _build_page()
 
-    ui.run(title="abbot", host=args.host, port=port, show=args.show, reload=False)
+    ui.run(title="abbot", host=host, port=port, show=show, reload=False)
 
 
 def _free_port(host: str, preferred: int) -> int:

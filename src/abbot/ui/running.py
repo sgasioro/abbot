@@ -14,6 +14,7 @@ import logging
 import torch
 from nicegui import run, ui
 
+from abbot.experiment import MockAnalyticExperiment
 from abbot.ui import figures, summary, theme
 from abbot.ui.controller import RunStatus
 from abbot.ui.state import UIState
@@ -184,8 +185,14 @@ def _auto_card(state: UIState) -> None:
     ctrl = state.controller
     with ui.element("div").classes("ab-card w-full p-6"), ui.column().classes("gap-3"):
         with ui.row().classes("items-baseline gap-3"):
-            ui.label("Simulated experiment").classes("text-xl font-semibold")
-            ui.label("a made-up experiment runs each design").classes("ab-sub text-sm")
+            mock = isinstance(ctrl.experiment, MockAnalyticExperiment)
+            yours = state.yours if not mock else None
+            if yours is not None:
+                ui.label(yours.name).classes("text-xl font-semibold").mark("runner")
+                ui.label("your experiment runs each design").classes("ab-sub text-sm")
+            else:
+                ui.label("Simulated experiment").classes("text-xl font-semibold").mark("runner")
+                ui.label("a made-up experiment runs each design").classes("ab-sub text-sm")
 
         def show_running() -> None:
             run_button.set_visibility(not ctrl.is_running)

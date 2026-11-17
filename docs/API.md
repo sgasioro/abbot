@@ -68,7 +68,13 @@ on them.
   `abbot.agent.server` (`build_server`, the `abbot-mcp` command; `abbot[mcp]`). New;
   tool names and the shape of their results may change.
 - **`abbot.ui.*`** — the NiceGUI app is an application, not a programmatic API. Drive
-  the engine through `Campaign`, not by importing UI internals.
+  the engine through `Campaign`, not by importing UI internals. Two entry points are
+  public and new: `abbot.ui.serve(campaign=None, experiment=None, *, spec=None,
+  evaluate=None, name=None, host=, port=, show=)` opens the UI from Python, and
+  `python -m abbot.ui --experiment module:Name [--spec spec.json]` adds your
+  experiment (an object with `run(design)` / `run_batch(designs)`, or a class or
+  function making one from the spec). Its declared spec (`spec=`, `--spec`, or a
+  `spec` attribute) bounds every campaign it runs.
 - **`abbot.acq_opt.*`** (`CandidateOptimizer`, `Continuous`, `DiscreteArgmax`,
   `default_optimizer`) — the seam is stable. `Continuous` now covers mixed spaces
   (integer inputs relaxed then rounded; enumerated inputs alongside continuous ones

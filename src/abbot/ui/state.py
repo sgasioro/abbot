@@ -36,6 +36,7 @@ from abbot.ui.controller import RunController
 
 if TYPE_CHECKING:
     from abbot.agent.workspace import Workspace
+    from abbot.ui.yours import YourExperiment
 
 STEPS = ["Knobs", "Measurements", "Goal", "Extras", "Start"]
 
@@ -68,6 +69,9 @@ class UIState:
         }
         self.model: str = "default"  # a MODEL_LABELS key
         self.mock: bool = False  # who runs the experiments: the person, or a simulation
+        # Or your own experiment (``--experiment`` / ``serve``), when there is one.
+        self.yours: YourExperiment | None = None
+        self.own: bool = False
         # What the steps don't edit, as JSON: spec fields (EXTRA_SPEC_FIELDS),
         # ``initial_designs`` other than the current setting, ``max_retries``.
         self.extra: dict = {}
@@ -257,15 +261,46 @@ class UIState:
     # Kept for callers of the old name.
     _normalized_goal_row = normalized_goal_row
 
+    @property
+    def limits(self) -> ProblemSpec | None:
+        """The spec your experiment declares, when it's the one to run the designs:
+        the setup must stay within it (:func:`abbot.ui.yours.within`)."""
+        if self.yours is None or not self.own or self.mock:
+            return None
+        return self.yours.spec
+
+    def from_declared(self) -> None:
+        """Fill the steps from the spec your experiment declares, if it does."""
+        if self.yours is None or self.yours.spec is None:
+            return
+        # The rows alone, not apply_config: what the spec leaves to the person (where
+        # a travel-limited knob starts, the goal) is asked for on its step.
+        variables, outputs, source_row, extra = spec_to_rows(self.yours.spec)
+        for row in variables:  # a travel limit needs where it is now: ask up front
+            row["_open"] = row.get("max_step") is not None
+        self.variable_rows, self.objective_rows, self.extra = variables, outputs, extra
+        self.source_on = source_row is not None
+        if source_row is not None:
+            self.source_row = source_row
+        self.method = "optimize"
+
     def check_step(self, step: int) -> str | None:
         """Why the person can't leave ``step`` yet, or None. Each step checks what
-        it sets: the knobs, the measurements' names, the goal, the extras."""
+        it sets: the knobs, the measurements' names, the goal, the extras; with your
+        experiment's spec, that they stay within it."""
+        from abbot.ui.yours import listed, within
+
+        limits = self.limits
         try:
             if step == 0:
                 if not self.variable_rows:
                     return "Add at least one knob."
                 spec = build_spec(self.variable_rows, [{"name": "_", "direction": "MAXIMIZE"}])
                 build_start(spec, self.variable_rows)
+                if limits is not None:
+                    knobs = limits.model_copy(update={
+                        "outputs": spec.outputs, "sources": None, "domain_constraints": None})
+                    return within(knobs, spec, self.yours.name)
             elif step == 1:
                 names = [(r.get("name") or "").strip() for r in self.objective_rows]
                 if not names:
@@ -277,6 +312,9 @@ class UIState:
                 knobs = {r.get("name") for r in self.variable_rows}
                 if knobs & set(names):
                     return f"{min(knobs & set(names))!r} is both a knob and a measurement."
+                if limits is not None and set(names) != set(limits.output_names):
+                    return (f"{self.yours.name} measures {listed(limits.output_names)}; "
+                            "keep those names.")
             elif step == 2:
                 spec = self.build_spec()
                 if self.method == "bax":
@@ -285,6 +323,8 @@ class UIState:
                     return "Pick Higher or Lower for at least one measurement."
             elif step == 3:
                 build_constructor(self.build_spec(), self.model)
+            if step >= 3 and limits is not None:
+                return within(limits, self.build_spec(), self.yours.name)
         except Exception as exc:  # noqa: BLE001 - shown to the person as is
             return _message(exc)
         return None
@@ -301,14 +341,15 @@ class UIState:
 
         With a workspace, the campaign is saved there (as the agent saves one), under
         a name made from :attr:`name`; a simulation stays in memory."""
+        spec = self.build_spec()
+        experiment = self._experiment(spec)  # yours is made first: it may refuse the spec
         if self.workspace is not None and not self.mock:
             config = self.campaign_config()
             name = self.workspace.free_name(self.name)
             self.workspace.create(name, **config)
             self.saved_as = name
-            self._attach(self.workspace.open(name))
+            self._attach(self.workspace.open(name), experiment)
             return
-        spec = self.build_spec()
         policy = self.build_policy(spec)
         # With travel limits the campaign starts from the current settings, not
         # from space-filling seeds.
@@ -319,7 +360,7 @@ class UIState:
         )
         if start is None:
             campaign.seed(default_initial_designs(spec))
-        self._attach(campaign)
+        self._attach(campaign, experiment)
 
     def open_saved(self, name: str) -> None:
         """Resume a campaign saved in the workspace (by the UI or the agent): its
@@ -334,9 +375,31 @@ class UIState:
         self.name = self.saved_as = name
         self.mock = False
         self.step = self.reached = len(STEPS) - 1
-        self._attach(campaign)
+        try:
+            experiment = self._experiment(campaign.spec)
+        except Exception:
+            self.workspace.close(name)
+            raise
+        self._attach(campaign, experiment)
 
-    def _attach(self, campaign: Campaign) -> None:
+    def runs_itself(self) -> bool:
+        """Whether a campaign started now runs each design itself (a simulation or
+        your experiment) rather than waiting for the person's results."""
+        return self.mock or (self.own and self.yours is not None)
+
+    def _experiment(self, spec: ProblemSpec):
+        """Your experiment made for ``spec``, if it's the one to run the designs."""
+        if self.mock or not self.own or self.yours is None:
+            return None
+        return self.yours.make(spec)
+
+    def attach(self, controller: RunController) -> None:
+        """Show a campaign some other code runs (:func:`abbot.ui.serve`): every tab
+        shares its ``controller``."""
+        self._attach(controller.campaign)
+        self.controller = controller
+
+    def _attach(self, campaign: Campaign, experiment=None) -> None:
         spec = campaign.spec
         self.spec = spec
         self.viz_obj = 0
@@ -347,6 +410,9 @@ class UIState:
         if self.mock:
             exp = MockAnalyticExperiment(spec, seed=0, noise=0.0)
             self.controller = RunController(campaign, experiment=exp, evaluate=lambda o: o)
+        elif experiment is not None:
+            self.controller = RunController(
+                campaign, experiment=experiment, evaluate=self.yours.outputs(spec))
         else:
             self.controller = RunController(campaign)
 
@@ -375,6 +441,8 @@ class UIState:
             UIState.__init__(fresh)
             for field in self.SETUP_FIELDS:
                 setattr(self, field, getattr(fresh, field))
+            self.own = self.yours is not None
+            self.from_declared()
 
     # -- redrawing --
 

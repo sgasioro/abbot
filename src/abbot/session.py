@@ -1128,6 +1128,12 @@ class Campaign:
                     " (Experiment.run receives a {name: value} design dict; wrap a "
                     "tensor-based experiment in abbot.TensorExperiment.)"
                 )
+            elif (isinstance(exc, KeyError) and exc.args and isinstance(exc.args[0], str)
+                  and exc.args[0] not in self.spec.variable_names):
+                error += (
+                    f" (the run asked for {exc.args[0]!r}, which isn't a variable here; "
+                    f"the design has {', '.join(self.spec.variable_names)}.)"
+                )
         else:
             error = str(exc)
         x, retry_of, attempt = item.x, item.retry_of, item.attempt
