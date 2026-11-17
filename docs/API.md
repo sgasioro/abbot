@@ -985,15 +985,16 @@ explicitly if you need it pinned.
   `pre_run` must pass every design before any runs. `on_step` hooks fire once per
   step, after the whole batch is recorded. Picks within a batch are
   pending-aware (BO: joint q-batch; BAX / US: greedy kriging believer).
-- **Transient numerical hiccups self-heal.** A one-off failed fit or acquisition
-  mid-run falls back to a single random probe and records a message on
+- **Transient numerical hiccups self-heal (by default).** A one-off failed fit or
+  acquisition mid-run falls back to a single random probe and records a message on
   `Campaign.last_warning` (surfaced as a toast in the UI); the next step retries
-  normally. Unattended runs survive blips without going silently wrong.
-  `Campaign(on_model_error="raise")` raises instead, for code that would rather
-  stop than spend a run on a random design.
-- **Hooks don't stop the campaign.** An `on_step` hook that raises is logged and the
-  campaign carries on. `Campaign(hook_errors="raise")` raises it, after the result
-  is recorded and saved. While any hook is registered, every result costs a model
+  normally. Unattended runs survive blips without going silently wrong. This is
+  `on_model_error="probe"`, the default. Code that would rather stop than spend a
+  run on a random design can opt in to `Campaign(on_model_error="raise")`.
+- **Hooks don't stop the campaign (by default).** An `on_step` hook that raises is
+  logged and the campaign carries on (`hook_errors="log"`, the default). Opt in to
+  `Campaign(hook_errors="raise")` to have it raised, after the result is recorded
+  and saved. While any hook is registered, every result costs a model
   fit and a recommendation (the hook is handed both); without hooks the campaign
   fits only when it proposes.
 

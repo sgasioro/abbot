@@ -35,8 +35,8 @@ is shown.
 | report a run that failed | `campaign.fail(c.id, "pump jammed")`; it's retried up to `max_retries`, then the campaign halts. [Faults and bad regions](API.md#faults-and-bad-regions) |
 | carry on after a halt | `campaign.resolve("retry")` once fixed; `"exclude"` to skip the design; `"bad_region"` if the design itself is the cause. Or the halt banner's buttons in the UI. [Faults and bad regions](API.md#faults-and-bad-regions) |
 | never retry, ask me at once | `Campaign(spec, max_retries=0)`. |
-| stop rather than take a random probe when the model fails | `Campaign(spec, on_model_error="raise")`; by default a failed fit or proposal takes one random design and says so in `last_warning`. [Failure behavior](API.md#failure-behavior) |
-| see errors from my `on_step` hook | `Campaign(spec, on_step=hook, hook_errors="raise")`; by default they're logged. |
+| stop rather than take a random probe when the model fails | By default a failed fit or proposal takes one random design and says so in `last_warning`. To stop instead, opt in with `Campaign(spec, on_model_error="raise")`. [Failure behavior](API.md#failure-behavior) |
+| see errors from my `on_step` hook | By default they're logged and the campaign carries on. To have them raised, opt in with `Campaign(spec, on_step=hook, hook_errors="raise")`. |
 | let BAX measure a design again | `BAXPolicy(goal, requery=True)`: only designs in flight are left out. [BAX details](API.md#bax-details) |
 | tell abbot a region gives nothing usable | `per_shot(is_dark, bad_region="dark")` in `faults=`, or a rule returning `Verdict(bad_region=True)`; proposals then steer away. [Faults and bad regions](API.md#faults-and-bad-regions) |
 | withdraw a design I won't run | `campaign.cancel(c.id)`. |

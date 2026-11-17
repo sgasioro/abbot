@@ -545,15 +545,18 @@ class Campaign:
 
     ``on_step`` hooks (or :meth:`add_hook`) are called after each result is recorded
     with ``(state, model)``. While any hook is registered, every result costs a model
-    fit and a recommendation, so the hook can see them. A hook that raises is logged
-    and the campaign carries on; ``hook_errors="raise"`` raises it instead, after the
-    result is recorded and saved.
+    fit and a recommendation, so the hook can see them.
 
-    When the model can't be fitted, or the policy fails numerically while proposing,
-    the campaign takes a random probe that step, says so in ``last_warning``, and
-    tries again next step. ``on_model_error="raise"`` raises instead, for code that
-    would rather stop than spend a run on a random design. Setup errors (a policy
-    that doesn't fit the spec) always raise.
+    ``hook_errors``: what a hook that raises does. ``"log"`` (default): it's logged
+    and the campaign carries on. ``"raise"``: it's raised, after the result is
+    recorded and saved.
+
+    ``on_model_error``: what happens when the model can't be fitted, or the policy
+    fails numerically while proposing. ``"probe"`` (default): the campaign takes a
+    random design that step, says so in ``last_warning``, and tries again next step.
+    ``"raise"``: the error is raised, for code that would rather stop than spend a
+    run on a random design. Setup errors (a policy that doesn't fit the spec) raise
+    either way.
     """
 
     def __init__(
@@ -670,7 +673,8 @@ class Campaign:
         """Call ``hook(state, model)`` after each result is recorded (a batched
         ``step``: once, after the batch). While any hook is registered, every result
         costs a model fit and a recommendation, so the hook sees them; without hooks
-        the campaign fits only when it proposes. Errors: see ``hook_errors``."""
+        the campaign fits only when it proposes. A hook that raises is logged
+        (default) or raised: see ``Campaign(hook_errors=)``."""
         self._hooks.append(hook)
 
     def seed(self, designs: torch.Tensor | list[Mapping]) -> None:
@@ -1343,8 +1347,8 @@ class Campaign:
     def current_model(self) -> Model | None:
         """The surrogate fitted on the current clean history, or ``None``.
 
-        ``None`` when there are too few clean points to fit, or the fit raised (with
-        ``on_model_error="raise"``, the fit's error is raised instead).
+        ``None`` when there are too few clean points to fit, or the fit raised. (Only
+        with the opt-in ``on_model_error="raise"`` is the fit's error raised.)
         The model lives in maximize-canonical space (objective signs applied); a
         caller that wants RAW posterior values must un-apply ``spec.output_signs``
         (see :func:`abbot.analysis.slice_1d`, which does this).
