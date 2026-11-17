@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A command as the experiment:** `CommandExperiment("./measure.sh {temp}
+  {conc}")` runs a program for each design and reads its outputs from the JSON on
+  its last line (`"cost"` recorded as the run's cost, other keys kept with the
+  run); a non-zero exit, no JSON or a `timeout` fails the run with the reason. In
+  the UI: `python -m abbot.ui --command "./measure.sh {temp} {conc}"`, the Start
+  step checking its names against the knobs.
+- **An Xopt evaluator as the experiment:** `EvaluatorExperiment(evaluator, vocs)`
+  (`abbot.interop.xopt`), its VOCS as the spec it works with; a failed run
+  raises (rather than becoming a value) so abbot retries it.
 - **Your own experiment in the UI:** `python -m abbot.ui --experiment rig:Rig`
   (or `rig.py:Rig`) offers your experiment on the Start step as who runs the
   experiments; the run view drives it with run / pause / step / stop, and the

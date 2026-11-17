@@ -49,7 +49,8 @@ src/abbot/
     workspace.py  # Workspace: named campaigns saved on disk, JSON in and out
     server.py     # MCP server over a Workspace; `abbot-mcp`
   interop/
-    xopt.py       # gest VOCS <-> spec + CorePolicyGenerator (runs under Xopt)
+    xopt.py       # gest VOCS <-> spec + CorePolicyGenerator (runs under Xopt);
+                  #   GestGeneratorPolicy; EvaluatorExperiment (an Xopt evaluator)
     sbi.py        # SBI as a composite objective: PosteriorSampler, sbi_evaluate,
                   #   TrainedPosterior [sbi]
 ```

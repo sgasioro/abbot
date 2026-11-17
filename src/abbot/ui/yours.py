@@ -46,7 +46,8 @@ class YourExperiment:
     A campaign's spec must then stay within it (see :func:`within`)."""
 
     def __init__(self, target, *, spec=None, evaluate: Callable | None = None,
-                 name: str | None = None, source: str | None = None) -> None:
+                 name: str | None = None, source: str | None = None,
+                 reads: list[str] | None = None) -> None:
         if not _is_experiment(target) and not callable(target):
             raise TypeError(
                 f"{source or target!r} is neither an experiment (an object with run(design) "
@@ -60,9 +61,16 @@ class YourExperiment:
         if spec is None and not isinstance(declared, ProblemSpec):
             declared = None  # an attribute named spec that isn't one: not a declaration
         self.spec: ProblemSpec | None = None if declared is None else as_spec(declared)
+        # The variables it's known to read (a command's {names}), when it says.
+        self.reads = list(reads or [])
 
     def problem(self, spec: ProblemSpec) -> str | None:
         """Why a campaign on ``spec`` can't run on this experiment, or None."""
+        missing = [n for n in self.reads if n not in spec.variable_names]
+        if missing:
+            return (f"{self.name} reads {listed(missing)}, which "
+                    f"{'is' if len(missing) == 1 else 'are'}n't a knob here; the knobs are "
+                    f"{listed(spec.variable_names)}.")
         return None if self.spec is None else within(self.spec, spec, self.name)
 
     def make(self, spec: ProblemSpec):
@@ -212,16 +220,38 @@ def load(ref: str, spec: str | None = None) -> YourExperiment:
     without it, the experiment's own ``spec`` attribute, if any. Raises with a
     message naming what's missing."""
     target, shown = _resolve(ref, "--experiment")
+    declared = None if spec is None else load_spec(spec)
+    return YourExperiment(target, spec=declared, source=shown)
+
+
+def command(cmd: str, spec: str | None = None, timeout: float | None = None) -> YourExperiment:
+    """``--command "./measure.sh {temp} {conc}"`` → a :class:`YourExperiment` that
+    runs it for each design (:class:`abbot.experiment.CommandExperiment`), made
+    for each campaign's spec. ``spec`` as for :func:`load`."""
+    from abbot.experiment import CommandExperiment
+
+    probe = CommandExperiment(cmd, timeout=timeout)  # a bad command fails here
     declared = None
     if spec is not None:
-        if spec.endswith(".json"):
-            path = Path(spec).expanduser()
-            if not path.is_file():
-                raise FileNotFoundError(f"--spec: no file {path.resolve()}")
-            declared = as_spec(path)
-        else:
-            declared = as_spec(_resolve(spec, "--spec")[0])
-    return YourExperiment(target, spec=declared, source=shown)
+        declared = load_spec(spec)
+        probe = CommandExperiment(cmd, spec=declared, timeout=timeout)
+
+    def make(campaign_spec: ProblemSpec) -> CommandExperiment:
+        return CommandExperiment(cmd, spec=campaign_spec, timeout=timeout)
+
+    return YourExperiment(make, spec=declared, name=probe.name, source=cmd,
+                          reads=probe.fields)
+
+
+def load_spec(ref: str) -> ProblemSpec:
+    """``--spec``: a JSON file (a spec or campaign.json), or ``module:NAME`` /
+    ``file.py:NAME`` naming one."""
+    if ref.endswith(".json"):
+        path = Path(ref).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"--spec: no file {path.resolve()}")
+        return as_spec(path)
+    return as_spec(_resolve(ref, "--spec")[0])
 
 
 def _resolve(ref: str, flag: str):
@@ -250,4 +280,4 @@ def _resolve(ref: str, flag: str):
     return target, shown
 
 
-__all__ = ["YourExperiment", "as_spec", "listed", "load", "within"]
+__all__ = ["YourExperiment", "as_spec", "command", "listed", "load", "load_spec", "within"]

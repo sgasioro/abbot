@@ -66,7 +66,9 @@ problem itself:
 - Xopt's proposals in abbot's loop: `GestGeneratorPolicy` wraps any
   gest generator (TuRBO, Nelder-Mead, RCDS, genetic algorithms, time-dependent
   BO) as an abbot `Policy`, under abbot's supervisors, resume, cost tracking and
-  UI.
+  UI;
+- Xopt's evaluators in abbot's loop: `EvaluatorExperiment(evaluator, vocs)` runs
+  an Xopt evaluator as an abbot experiment, its VOCS as the spec it works with.
 
 **Bluesky / blop.** Bluesky runs the hardware; blop is its optimization agent,
 used at several light sources. blop defines a small `Optimizer` protocol

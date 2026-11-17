@@ -317,3 +317,45 @@ async def test_an_undeclared_experiment_asks_you_to_check_the_names(ui_states, s
             state.refresh()
         await user.should_see("Rig doesn't say which knobs it reads or what it returns. "
                               "Check it reads x1 and returns y.")
+
+
+# -- a command as your experiment --
+
+
+def test_command_flag_makes_a_command_experiment(served, tmp_path):
+    app.main(["--no-show", "--command", "./measure.sh {temp} {solvent}", "--timeout", "5"])
+    made = served["yours"]
+    assert made.name == "measure.sh" and made.source == "./measure.sh {temp} {solvent}"
+    assert made.reads == ["solvent", "temp"]
+    assert made.problem(SPEC) == ("measure.sh reads solvent and temp, which aren't a knob "
+                                  "here; the knobs are x1.")
+    experiment = made.make(DECLARED)
+    assert experiment.timeout == 5 and experiment.spec is DECLARED
+
+
+@pytest.mark.parametrize(("argv", "words"), [
+    (["--command", "a", "--experiment", "b:c"], "not allowed with argument"),
+    (["--timeout", "3"], "--timeout goes with --command"),
+    (["--command", "   "], "the command is empty"),
+])
+def test_command_flag_refusals(served, capsys, argv, words):
+    with pytest.raises(SystemExit):
+        app.main(["--no-show", *argv])
+    assert words in capsys.readouterr().err
+
+
+@pytest.mark.anyio
+async def test_the_start_step_checks_a_commands_names(ui_states, served):
+    served["yours"] = yours.command("./measure.sh {x1}")
+    async with user_simulation(root=app._build_page) as user:
+        await user.open("/")
+        state = ui_states[-1]
+        state.step = state.reached = 4
+        with user.client:
+            state.refresh()
+        await user.should_see("Your experiment: measure.sh")
+        await user.should_see("measure.sh reads x1. Check it prints y.")
+        state.variable_rows[0]["name"] = "temp"
+        with user.client:
+            state.refresh()
+        await user.should_see("measure.sh reads x1, which isn't a knob here; the knobs are temp.")

@@ -175,6 +175,7 @@ python -m abbot.ui --no-show       # headless (e.g. on a cluster) — tunnel the
 python -m abbot.ui --dir ./runs    # where campaigns are saved (default ~/abbot-campaigns)
 python -m abbot.ui --experiment rig:Rig   # your experiment runs each design
 python -m abbot.ui --experiment rig:Rig --spec rig.json   # ... within this spec
+python -m abbot.ui --command "./measure.sh {temp} {conc}"   # a program per design
 ```
 Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`,
 `ABBOT_UI_DIR`.
@@ -196,7 +197,10 @@ and plots working.
 `{"yield": ...}` dict or a list), or a class or function that makes one; a maker
 that takes an argument gets the campaign's spec. The Start step then offers it as
 who runs the experiments, and the run view drives it with run / pause / step /
-stop, saving every result as it comes.
+stop, saving every result as it comes. A program works too: `--command
+"./measure.sh {temp} {conc}"` runs it for each design and reads the JSON it
+prints last (`{"yield": 0.82}`), and `EvaluatorExperiment(evaluator, vocs)`
+(`abbot.interop.xopt`) runs an Xopt evaluator.
 
 Give it the spec it works with (a `spec` attribute, or `--spec rig.json`) and the
 setup starts from it and stays within it: its knobs and measurements by name, each
@@ -254,24 +258,21 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
   correlated=True)`).
 - Supervision: fault checks, retries and halts, bad regions with a usability
   classifier, stopping rules, and `campaign.check()` diagnostics.
-- Xopt interop both ways: abbot as an Xopt generator, and Xopt generators (TuRBO,
-  Nelder-Mead, ...) in abbot's loop.
+- Xopt interop both ways: abbot as an Xopt generator, Xopt generators (TuRBO,
+  Nelder-Mead, ...) in abbot's loop, and Xopt evaluators as abbot experiments.
 - The NiceGUI lab frontend (`python -m abbot.ui`): a guided setup, a run view in
   plain language, and an expert panel (spec tables, an editable `campaign.json`
   kept in sync with the steps, every run, plots, `check()`). Campaigns are saved
   in the folder the agent uses, so the UI and the agent can each carry one on.
-  Your own experiment can run each design (`--experiment module:Class`, or
-  `abbot.ui.serve(campaign, experiment)` from code).
+  Your own experiment can run each design (`--experiment module:Class`, a
+  program with `--command "./measure.sh {temp}"`, or `abbot.ui.serve(campaign,
+  experiment)` from code), held to the spec it declares.
 - An MCP server (`abbot-mcp`) for agents, over named campaigns saved on disk, with
   a setup assistant: the agent asks what it needs before writing the spec
   (`plan_campaign`, and a Claude Code skill).
 
 **Next:**
-1. **A command as the experiment:** a command adapter (`./measure.sh {temp}
-   {conc}` printing JSON) so a script can run the experiment without writing
-   Python, in the UI and in code; and an Xopt evaluator as the experiment, its
-   VOCS as the declared spec.
-2. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
+1. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
    and runs policies on the GPU, while the history, saved files, experiments and
    the UI stay on the CPU. The default stays CPU, since lab-scale GPs are usually
    faster there. CUDA only: abbot fits in float64, which Apple's MPS doesn't

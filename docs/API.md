@@ -24,7 +24,7 @@ without a deprecation period.
 | Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol; optional `bind(spec)` to resolve output names), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiSourceGPConstructor` (provisional; formerly `MultiFidelityGPConstructor`, kept as an alias), `default_constructor` |
-| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor(faults=, stops=)` (fault checks and stop rules, see [Supervisors](#supervisors-faults-and-stops); any callable `(history) -> Verdict` is also accepted), `Verdict`, `ManualExperiment`, `TensorExperiment`; mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
+| Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor(faults=, stops=)` (fault checks and stop rules, see [Supervisors](#supervisors-faults-and-stops); any callable `(history) -> Verdict` is also accepted), `Verdict`, `ManualExperiment`, `TensorExperiment`, `CommandExperiment(command, spec=, timeout=, cwd=, env=, shell=)` (a command run for each design, `{name}` for each value, printing its outputs as JSON on its last line; see [A command as the experiment](#a-command-as-the-experiment)); mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
 | Run data | `History`, `Record`, `DataStore`, `ResumeMismatchError` |
 | Import/export | `abbot.io.spec_to_json` / `spec_from_json`, `history_to_csv` / `history_from_csv`, `spec_history_to_csv` / `spec_history_from_csv` |
 | Live analysis | `abbot.analysis.convergence`, `hypervolume`, `recommended_set`, `parity`, `slice_1d`, `slice_2d`, `bax_target_region` |
@@ -37,7 +37,8 @@ on them.
 - **`abbot.interop.*`** — the gest-api / Xopt field map (`spec_to_vocs`,
   `vocs_to_spec`), both directions of the generator bridge (`CorePolicyGenerator`:
   abbot in Xopt's loop; `GestGeneratorPolicy`: Xopt's generators in abbot's loop,
-  see below) and the SBI adapter (`PosteriorSampler`, `sbi_evaluate`,
+  see below), `EvaluatorExperiment(evaluator, vocs)` (an Xopt evaluator as an
+  abbot experiment) and the SBI adapter (`PosteriorSampler`, `sbi_evaluate`,
   `TrainedPosterior`). These track external packages, which move.
 - **`abbot.composite`** (`composite_evaluate`, `Rescore`, `ObjectiveReducer`) —
   composite objectives; the reducer-mount API may grow
@@ -399,6 +400,50 @@ sources) isn't supported yet, so `correlated=True` refuses a spec with sources.
   correlation), labeled and `log=True` inputs, travel limits and bad regions.
   **Not yet:** source variables, `prior_mean`.
 - `rank=` sets the rank of the learned output covariance (default: full).
+
+## A command as the experiment
+
+```python
+from abbot import Campaign, CommandExperiment
+
+rig = CommandExperiment("./measure.sh {temp} {conc:.3f}", spec=spec, timeout=600)
+campaign = Campaign(spec)
+campaign.step(rig)
+```
+
+- **Each `{name}`** is filled with the design's value (format specs like `:.3f`
+  work), one argument per word, so no value is split or read by a shell. Write a
+  literal brace as `{{` or `}}`. `shell=True` runs it through the shell (pipes,
+  `&&`), with each value quoted. The design also goes to stdin as JSON.
+- **The last line printed is the result**, as JSON: `{"yield": 0.82}`, a list in
+  `spec.outputs` order, or a number for one output. Earlier lines are free for
+  logging. `"cost"` in the object is recorded as the run's cost (unless an output
+  has that name). With `spec`, other keys are kept with the run (`record.aux`)
+  instead of refused, and the `{names}` are checked against the variables up
+  front.
+- **A failed run** (a non-zero exit, no JSON, past `timeout`) raises with the
+  reason and the end of stderr, so the campaign records a fault and retries.
+- **In the UI:** `python -m abbot.ui --command "./measure.sh {temp} {conc}"
+  [--timeout 600] [--spec rig.json]`. The Start step checks the command's names
+  against the knobs.
+
+### An Xopt evaluator as the experiment
+
+```python
+from abbot.interop.xopt import EvaluatorExperiment
+
+experiment = EvaluatorExperiment(evaluator, vocs)   # or a plain function(inputs) -> dict
+campaign = Campaign(experiment.spec)
+campaign.step(experiment)
+```
+
+It calls the evaluator's `function` with its `function_kwargs` (not
+`Evaluator.evaluate`, which turns an exception into a value), so a failed run is
+a fault abbot retries. `experiment.spec` comes from the VOCS: the result's other
+keys (`xopt_runtime`, ...) are kept with the run, and in the UI
+(`serve(experiment=experiment)`, or `--experiment lab:experiment`) the setup is
+held to the VOCS. A `vectorized` evaluator gets each batch in one call, as a
+DataFrame.
 
 ## Xopt's generators in abbot's loop
 

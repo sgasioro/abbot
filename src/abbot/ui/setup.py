@@ -704,17 +704,25 @@ def _start(state: UIState) -> None:
 def _fit_note(state: UIState) -> None:
     """Under your experiment: what doesn't fit its spec, or, if it declares none,
     a reminder to check the names against its code."""
-    if state.yours.spec is not None:
-        problem = state.check_step(3)
-        if problem:
-            ui.label(problem).classes("ab-error").mark("fit-problem")
-        return
+    from abbot.ui.yours import listed
+
     try:
         spec = state.build_spec()
     except Exception:  # noqa: BLE001 - the steps say what's missing
         return
-    from abbot.ui.yours import listed
-
-    ui.label(f"{state.yours.name} doesn't say which knobs it reads or what it returns. "
-             f"Check it reads {listed(spec.variable_names)} and returns "
-             f"{listed(spec.output_names)}.").classes("ab-sub text-sm").mark("fit-unchecked")
+    problem = state.yours.problem(spec) or (
+        state.check_step(3) if state.yours.spec is not None else None)
+    if problem:
+        ui.label(problem).classes("ab-error").mark("fit-problem")
+        return
+    if state.yours.spec is not None:
+        return
+    name = state.yours.name
+    if state.yours.reads:
+        text = (f"{name} reads {listed(state.yours.reads)}. Check it prints "
+                f"{listed(spec.output_names)}.")
+    else:
+        text = (f"{name} doesn't say which knobs it reads or what it returns. Check it "
+                f"reads {listed(spec.variable_names)} and returns "
+                f"{listed(spec.output_names)}.")
+    ui.label(text).classes("ab-sub text-sm").mark("fit-unchecked")

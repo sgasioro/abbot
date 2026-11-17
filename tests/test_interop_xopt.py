@@ -129,3 +129,61 @@ def test_abbot_policy_drives_an_xopt_run():
     assert abs(best_xopt - 0.3) < 0.1
     rec = live.campaign.recommend()
     assert rec and abs(float(live.campaign.history.records[rec[0]].candidate) - 0.3) < 0.15
+
+
+# -- EvaluatorExperiment: an Xopt evaluator as an abbot experiment --
+
+
+def _peak(inputs, scale=1.0):
+    if inputs["temp"] > 79:
+        raise RuntimeError("interlock")
+    return {"yield": scale * (100 - (inputs["temp"] - 55) ** 2 / 10), "flux": 3.0,
+            "xopt_runtime": 0.01}
+
+
+def test_an_evaluator_runs_as_an_experiment_held_to_its_vocs():
+    xopt = pytest.importorskip("xopt")
+    from abbot import Campaign
+    from abbot.interop.xopt import EvaluatorExperiment
+
+    vocs = xopt.VOCS(variables={"temp": [20, 80]}, objectives={"yield": "MAXIMIZE"},
+                     observables=["flux"])
+    e = EvaluatorExperiment(xopt.Evaluator(function=_peak, function_kwargs={"scale": 2.0}),
+                            vocs)
+    assert e.spec.variable_names == ["temp"] and e.spec.output_names == ["yield", "flux"]
+    assert e.run({"temp": 55.0}) == ({"yield": 200.0, "flux": 3.0}, {"xopt_runtime": 0.01})
+    # A raise reaches abbot (Evaluator.evaluate would have caught it): a fault, retried.
+    with pytest.raises(RuntimeError, match="interlock"):
+        e.run({"temp": 80.0})
+    torch.manual_seed(0)
+    campaign = Campaign(e.spec)
+    for _ in range(3):
+        campaign.step(e)
+    assert len(campaign.history) == 3
+    assert campaign.history.records[-1].aux == {"xopt_runtime": 0.01}
+
+
+def test_a_plain_function_or_a_vectorized_evaluator():
+    xopt = pytest.importorskip("xopt")
+    from abbot import Campaign
+    from abbot.interop.xopt import EvaluatorExperiment
+
+    spec = ProblemSpec(domain=[ContinuousDomain(name="temp", lower=20, upper=80)],
+                       objectives=[ObjectiveSpec(name="yield", direction="MAXIMIZE")])
+    plain = EvaluatorExperiment(lambda inputs: {"yield": inputs["temp"]}, spec=spec)
+    assert plain.run({"temp": 30.0}) == {"yield": 30.0}
+
+    def batch(df):
+        return {"yield": list(df["temp"] / 10), "xopt_runtime": [0.0] * len(df)}
+
+    vec = EvaluatorExperiment(xopt.Evaluator(function=batch, vectorized=True), spec=spec)
+    assert not hasattr(vec, "run")
+    assert vec.run_batch([{"temp": 30.0}, {"temp": 50.0}]) == [
+        ({"yield": 3.0}, {"xopt_runtime": 0.0}), ({"yield": 5.0}, {"xopt_runtime": 0.0})]
+    campaign = Campaign(spec)
+    campaign.step(vec, n=3)
+    assert len(campaign.history) == 3
+    with pytest.raises(RuntimeError, match=r"without \['yield'\]"):
+        EvaluatorExperiment(lambda inputs: {"y": 1}, spec=spec).run({"temp": 30.0})
+    with pytest.raises(ValueError, match="vocs or spec, not both"):
+        EvaluatorExperiment(batch, spec_to_vocs(spec), spec=spec)

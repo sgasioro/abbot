@@ -179,6 +179,9 @@ def main(argv: list[str] | None = None) -> None:
         the abbot agent (``abbot-mcp``) saves there too.
       --experiment module:Name (or file.py:Name) — your experiment, offered on the
         Start step to run each design (see :mod:`abbot.ui.yours`).
+      --command "./measure.sh {temp} {conc}" — a command as your experiment: run
+        for each design, printing its outputs as JSON on its last line (see
+        :class:`abbot.experiment.CommandExperiment`); --timeout SECONDS for each run.
       --spec spec.json (or module:NAME) — the spec it works with, if it has no
         ``spec`` attribute: the setup starts from it and stays within it.
     """
@@ -202,27 +205,41 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dir", default=os.environ.get("ABBOT_UI_DIR"),
                         help="where campaigns are saved, shared with the abbot agent "
                         "(default: ~/abbot-campaigns)")
-    parser.add_argument("--experiment", metavar="MODULE:NAME",
-                        help="your experiment (an object with run(design), or a class or "
-                        "function making one; module:Name or file.py:Name), offered to "
-                        "run each design")
+    yours_group = parser.add_mutually_exclusive_group()
+    yours_group.add_argument("--experiment", metavar="MODULE:NAME",
+                             help="your experiment (an object with run(design), or a class "
+                             "or function making one; module:Name or file.py:Name), offered "
+                             "to run each design")
+    yours_group.add_argument("--command", metavar='"PROGRAM {knob} ..."',
+                             help="a command to run for each design, with {knob} for each "
+                             "value; it prints the outputs as JSON on its last line")
+    parser.add_argument("--timeout", type=float, metavar="SECONDS",
+                        help="with --command: fail a run that takes longer than this")
     parser.add_argument("--spec", metavar="FILE.json|MODULE:NAME",
                         help="the spec your experiment works with (a spec or campaign.json, "
                         "or module:NAME), if it has no spec attribute: the setup starts "
                         "from it and stays within its knobs, ranges and measurements")
     args = parser.parse_args(argv)
-    if args.spec and not args.experiment:
-        parser.error("--spec goes with --experiment (it's the spec your experiment "
-                     "works with)")
+    if args.spec and not (args.experiment or args.command):
+        parser.error("--spec goes with --experiment or --command (it's the spec your "
+                     "experiment works with)")
+    if args.timeout is not None and not args.command:
+        parser.error("--timeout goes with --command")
     if args.dir:
         os.environ["ABBOT_UI_DIR"] = args.dir
-    if args.experiment:
+    if args.experiment or args.command:
         from abbot.ui import yours
 
         try:
-            _served["yours"] = yours.load(args.experiment, spec=args.spec)
+            if args.command:
+                _served["yours"] = yours.command(args.command, spec=args.spec,
+                                                 timeout=args.timeout)
+            else:
+                _served["yours"] = yours.load(args.experiment, spec=args.spec)
         except Exception as exc:  # noqa: BLE001 - a bad reference: say why and stop
-            flags = f"--experiment {args.experiment}" + (f" --spec {args.spec}" if args.spec else "")
+            flags = (f"--command {args.command!r}" if args.command
+                     else f"--experiment {args.experiment}")
+            flags += f" --spec {args.spec}" if args.spec else ""
             parser.error(f"{flags}: {exc}")
     _launch(args.host, args.port, args.show, args.strict_port)
 
