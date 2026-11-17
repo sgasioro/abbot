@@ -163,6 +163,20 @@ def test_log_prob_feasible_matches_the_normal_cdf_with_finite_gradients():
     assert torch.isfinite(mean.grad).all()
 
 
+@pytest.mark.parametrize("bound", [{"max_val": 0.0}, {"max_val": -2.0}, {"min_val": 3.0}])
+def test_log_prob_feasible_with_a_one_sided_bound_anywhere(bound):
+    # An upper bound at or below zero alone once failed: the stand-in lower bound
+    # (0) wasn't below it.
+    spec = _spec(outputs=[OutputSpec(name="y"), OutputSpec(name="c", direction="OBSERVE", **bound)])
+    mean = torch.tensor([[0.0, -1.0]], dtype=torch.double)
+    var = torch.tensor([[1.0, 1.0]], dtype=torch.double)
+    N = torch.distributions.Normal(0.0, 1.0)
+    edge = torch.tensor(next(iter(bound.values())) + 1.0, dtype=torch.double)
+    expected = N.cdf(edge) if "max_val" in bound else 1 - N.cdf(edge)
+    p = log_prob_feasible_from(spec, mean, var).exp()
+    assert float(p) == pytest.approx(float(expected), rel=1e-6)
+
+
 # --- policies (GP fits) -----------------------------------------------------------
 
 

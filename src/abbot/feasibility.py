@@ -105,7 +105,9 @@ def log_prob_feasible_from(spec: ProblemSpec, mean: torch.Tensor, variance: torc
     row_mean, row_std = _row_moments(spec, mean, variance)
     has_lo, has_hi = torch.isfinite(lower), torch.isfinite(upper)
     # Infinite bounds give NaN gradients, so one-sided rows use the normal CDF directly.
-    lo = torch.where(has_lo, lower, torch.zeros_like(lower))
+    # A missing bound gets a stand-in one below or above the other, as the two-sided
+    # formula (computed for every row) needs lo < hi.
+    lo = torch.where(has_lo, lower, torch.where(has_hi, upper - 1, torch.zeros_like(lower)))
     hi = torch.where(has_hi, upper, lo + 1)
     a = (lo - row_mean) / row_std
     b = (hi - row_mean) / row_std
