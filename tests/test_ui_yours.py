@@ -326,8 +326,8 @@ def test_command_flag_makes_a_command_experiment(served, tmp_path):
     app.main(["--no-show", "--command", "./measure.sh {temp} {solvent}", "--timeout", "5"])
     made = served["yours"]
     assert made.name == "measure.sh" and made.source == "./measure.sh {temp} {solvent}"
-    assert made.reads == ["solvent", "temp"]
-    assert made.problem(SPEC) == ("measure.sh reads solvent and temp, which aren't a knob "
+    assert made.reads == ["temp", "solvent"]  # in the command's order
+    assert made.problem(SPEC) == ("measure.sh reads temp and solvent, which aren't a knob "
                                   "here; the knobs are x1.")
     experiment = made.make(DECLARED)
     assert experiment.timeout == 5 and experiment.spec is DECLARED
@@ -359,3 +359,19 @@ async def test_the_start_step_checks_a_commands_names(ui_states, served):
         with user.client:
             state.refresh()
         await user.should_see("measure.sh reads x1, which isn't a knob here; the knobs are temp.")
+
+
+@pytest.mark.anyio
+async def test_a_commands_names_start_the_knobs(ui_states, served):
+    served["yours"] = yours.command("./measure.sh {temp} {conc:.3f} {temp}")
+    async with user_simulation(root=app._build_page) as user:
+        await user.open("/")
+        state = ui_states[-1]
+        assert [(r["name"], r["lower"], r["upper"]) for r in state.variable_rows] == [
+            ("temp", 0.0, 1.0), ("conc", 0.0, 1.0)]
+        await user.should_see("measure.sh reads temp and conc, so those are the knobs. Set "
+                              "the range each can reach; 0 to 1 is only a placeholder.")
+        await user.should_see(marker="add-knob")  # still yours to change
+        state.variable_rows.pop()
+        state.new_campaign(keep_setup=False)  # back to the defaults: the command's names
+        assert [r["name"] for r in state.variable_rows] == ["temp", "conc"]

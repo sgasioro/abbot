@@ -93,8 +93,14 @@ def _changed(state: UIState) -> None:
 
 
 def _knobs(state: UIState) -> None:
+    from abbot.ui.yours import listed
+
     limits = state.limits
-    if limits is None:
+    if limits is None and state.own and state.yours is not None and state.yours.reads:
+        theme.title("What can you set?",
+                    f"{state.yours.name} reads {listed(state.yours.reads)}, so those are "
+                    "the knobs. Set the range each can reach; 0 to 1 is only a placeholder.")
+    elif limits is None:
         theme.title("What can you set?",
                     "Each knob abbot may change between runs, and the range it can reach. "
                     "Use Choices for settings that aren't numbers, like a material.")

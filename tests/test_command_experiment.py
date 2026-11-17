@@ -46,7 +46,7 @@ def test_runs_the_command_and_reads_its_last_line(rig, tmp_path):
     assert extras == {"stage": pytest.approx(55.1)}  # kept with the run, not refused
     assert e.cost(design) == 2.5  # "cost" is the run's cost, asked once
     assert e.cost(design) is None
-    assert e.fields == ["conc", "temp"] and e.name == "measure.sh"
+    assert e.fields == ["temp", "conc"] and e.name == "measure.sh"
 
 
 def test_a_campaign_steps_through_it(rig, tmp_path):

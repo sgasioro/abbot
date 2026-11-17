@@ -270,8 +270,17 @@ class UIState:
         return self.yours.spec
 
     def from_declared(self) -> None:
-        """Fill the steps from the spec your experiment declares, if it does."""
-        if self.yours is None or self.yours.spec is None:
+        """Fill the steps from the spec your experiment declares, if it does; else
+        name the knobs after what it reads (a command's ``{names}``), as ranges
+        for the person to set."""
+        if self.yours is None:
+            return
+        if self.yours.spec is None:
+            if self.yours.reads:
+                self.variable_rows = [
+                    {"kind": "continuous", "name": name, "lower": 0.0, "upper": 1.0}
+                    for name in self.yours.reads
+                ]
             return
         # The rows alone, not apply_config: what the spec leaves to the person (where
         # a travel-limited knob starts, the goal) is asked for on its step.

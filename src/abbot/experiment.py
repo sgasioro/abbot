@@ -225,10 +225,11 @@ class CommandExperiment:
         self.words = None if shell else shlex.split(command)
         if not shell and not self.words:
             raise ValueError("CommandExperiment: the command is empty.")
-        self.fields = sorted({
+        # The variables it reads, in the order the command names them.
+        self.fields = list(dict.fromkeys(
             field.split(".")[0].split("[")[0]
             for _, field, _, _ in string.Formatter().parse(command) if field
-        })
+        ))
         if spec is not None:
             unknown = [f for f in self.fields if f not in spec.variable_names]
             if unknown:
