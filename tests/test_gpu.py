@@ -601,3 +601,30 @@ def test_a_custom_model_left_on_the_cpu_still_works():
     c = _gpu_campaign(_bowl_spec(), model_constructor=OnCPU())
     _steps(c, _Bowl(), 3)
     assert model_device(c.current_model()).type == "cpu"
+
+
+# -- the UI and the agent -----------------------------------------------------------
+
+
+@pytest.mark.cuda
+def test_the_agent_and_the_ui_fit_on_the_gpu(tmp_path):
+    from abbot.agent import Workspace
+    from abbot.ui.state import UIState
+
+    spec = {"domain": [{"kind": "continuous", "name": "x", "lower": 0, "upper": 1}],
+            "outputs": [{"name": "y", "direction": "MAXIMIZE"}]}
+    ws = Workspace(tmp_path, device="cuda")
+    ws.create("opt", spec)
+    for _ in range(6):
+        (s,) = ws.suggest("opt")
+        ws.report_result("opt", s["id"], {"y": -(s["design"]["x"] - 0.3) ** 2})
+    c = ws.open("opt")
+    assert c.device.type == "cuda" and _on_gpu(c.current_model())
+    _assert_on_cpu(c)
+
+    state = UIState()
+    state.device = "cuda"
+    state.mock = True  # the built-in simulation, in memory
+    state.start_campaign()
+    campaign = state.controller.campaign
+    assert campaign.device.type == "cuda"

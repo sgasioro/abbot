@@ -148,7 +148,10 @@ training data to the device, and `_policy_suggest` hands the policy its pending
 designs on the model's device and brings its picks back with `.cpu()`. So
 `History`, `Record`, the `DataStore` files, `Candidate`s, `CampaignState`, the
 experiments, the UI and the MCP server only ever see CPU tensors, and a store
-reopens on any machine. The device isn't saved: it belongs to the machine.
+reopens on any machine. The device isn't saved: it belongs to the machine. The UI
+and the MCP server take one per process (`--device`, `ABBOT_DEVICE`), held by
+their `Workspace` (and `UIState.device` for a simulation's in-memory campaign),
+which passes it to every `Campaign` it builds.
 
 Below the boundary, code takes its device from the model, not from the campaign
 (`model.model_device`): policies, optimizers (from the acquisition), the

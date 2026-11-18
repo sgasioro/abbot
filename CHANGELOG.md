@@ -12,8 +12,15 @@
   `recommend`, `abbot.analysis`, `abbot.plots`, the UI's figures and `check()` all
   follow the model's device (`abbot.model.model_device`). A custom
   `ModelConstructor` gets its data on the device. The device isn't saved with a
-  campaign; the UI and the MCP server run on the CPU. Tests marked `cuda` run only
-  where a GPU is available.
+  campaign. The UI and the MCP server take one for the whole process:
+  `python -m abbot.ui --device cuda`, `abbot-mcp --device cuda`, or
+  `ABBOT_DEVICE=cuda` (`serve(device=)`, `Workspace(root, device=)`). Tests marked
+  `cuda` run only where a GPU is available.
+  **Your own functions on a GPU campaign** get designs as GPU tensors: a
+  `prior_mean` function, a cost model, `BAXPolicy(noise_at=)`, a `FunctionGoal`'s
+  function or your own `Goal`. One that calls `.numpy()` on its input fails there;
+  write it in torch, or call `.cpu()` first and return a tensor on the input's
+  device.
 - **Fix:** InfoBAX no longer keeps every posterior sample's fantasy model until
   the proposal ends (a GPyTorch model is in a reference cycle, so only Python's
   cyclic collector frees one). Its memory no longer grows with

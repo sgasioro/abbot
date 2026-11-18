@@ -181,9 +181,10 @@ python -m abbot.ui --dir ./runs    # where campaigns are saved (default ~/abbot-
 python -m abbot.ui --experiment rig:Rig   # your experiment runs each design
 python -m abbot.ui --experiment rig:Rig --spec rig.json   # ... within this spec
 python -m abbot.ui --command "./measure.sh {temp} {conc}"   # a program per design
+python -m abbot.ui --device cuda   # fit on an NVIDIA GPU (a CUDA build of torch)
 ```
 Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`,
-`ABBOT_UI_DIR`.
+`ABBOT_UI_DIR`, `ABBOT_DEVICE`.
 
 Each campaign you start is saved in `~/abbot-campaigns/<name>/`, the folder the
 agent's server (`abbot-mcp`) uses: *Open a saved campaign* on the first step

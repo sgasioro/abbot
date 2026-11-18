@@ -35,7 +35,8 @@ class Rig:
 @pytest.fixture
 def served(monkeypatch):
     """app._served for this test only, and a serve() that doesn't start a server."""
-    monkeypatch.setattr(app, "_served", {"yours": None, "controller": None, "name": None})
+    monkeypatch.setattr(app, "_served", {"yours": None, "controller": None, "name": None,
+                                         "device": None})
     monkeypatch.setattr(app, "_launch", lambda *a, **k: None)
     return app._served
 
@@ -422,3 +423,32 @@ async def test_steps_on_the_knobs_step(ui_states, served):
         assert state.check_step(0) is None  # whole numbers: searched as a range
         reps.update(step=0.5)
         assert "801 for reps is 801, more than 256" in state.check_step(0)
+
+
+# -- the device --
+
+
+def test_the_device_flag_reaches_every_campaign(served, monkeypatch, tmp_path, capsys):
+    import torch
+
+    from abbot.agent import launch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    for main in (app.main, launch.main):  # the UI and abbot-mcp refuse it at launch
+        with pytest.raises(SystemExit):
+            main(["--no-show", "--device", "cuda"] if main is app.main
+                 else ["--dir", str(tmp_path), "--device", "cuda"])
+        assert "--device cuda: device='cuda' but CUDA isn't available" in (
+            capsys.readouterr().err)
+    with pytest.raises(ValueError, match="CUDA isn't available"):
+        app.serve(device="cuda")
+
+    monkeypatch.setenv("ABBOT_UI_DIR", str(tmp_path))
+    monkeypatch.setenv("ABBOT_DEVICE", "cpu")  # the env var stands in for the flag
+    app.main(["--no-show"])
+    assert served["device"] == "cpu" and app.workspace().device.type == "cpu"
+    state = app.UIState()
+    state.device = served["device"]
+    state.mock = True  # a simulation: in memory, not saved
+    state.start_campaign()
+    assert state.controller.campaign.device.type == "cpu"

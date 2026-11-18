@@ -84,4 +84,4 @@ is shown.
 | use an Xopt generator (TuRBO, Nelder-Mead, …) in abbot | `Campaign(spec, GestGeneratorPolicy(NelderMeadGenerator))` from `abbot.interop.xopt`. [Xopt's generators](API.md#xopts-generators-in-abbots-loop) |
 | use abbot inside Xopt | `CorePolicyGenerator(spec)` from `abbot.interop.xopt`. |
 | account for runs that cost different amounts | `SimpleBO(cost_model=...)`. [Column contract → cost and stopping](API.md#column-contract) |
-| fit on a GPU | `Campaign(spec, device="cuda")` (or `run_campaign(..., device="cuda")`), with a CUDA build of torch. The history, the store and the candidates stay on the CPU. Worth it from a few hundred runs, or for BAX over thousands of candidates. [Fitting on a GPU](API.md#fitting-on-a-gpu) |
+| fit on a GPU | `Campaign(spec, device="cuda")` (or `run_campaign(..., device="cuda")`; in the UI or the agent's server, `--device cuda`), with a CUDA build of torch. The history, the store and the candidates stay on the CPU. Worth it from a few hundred runs, or for BAX over thousands of candidates. [Fitting on a GPU](API.md#fitting-on-a-gpu) |

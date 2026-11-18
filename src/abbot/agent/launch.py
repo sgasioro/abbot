@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -134,11 +135,27 @@ def main(argv: list[str] | None = None) -> None:
         "--dir", default="abbot-campaigns",
         help="where campaigns are saved (default: ./abbot-campaigns)",
     )
+    parser.add_argument(
+        "--device", default=os.environ.get("ABBOT_DEVICE"),
+        help="where models are fitted: cpu (default) or cuda, for an NVIDIA GPU with a "
+        "CUDA build of torch",
+    )
     args = parser.parse_args(argv)
+    _check_device(parser, args.device)
     _need_mcp()
     from abbot.agent.server import build_server
 
-    build_server(args.dir).run("stdio")
+    build_server(args.dir, device=args.device).run("stdio")
+
+
+def _check_device(parser, device: str | None) -> None:
+    """Refuse a device torch can't use at launch, with the reason."""
+    from abbot.model import resolve_device
+
+    try:
+        resolve_device(device)
+    except ValueError as exc:
+        parser.error(f"--device {device}: {exc}")
 
 
 def _launch(argv: list[str]) -> None:

@@ -27,9 +27,10 @@ Ask the person before resolving a halt as a bad region, and before creating a
 campaign whose spec you inferred rather than were given."""
 
 
-def build_server(root: str | Path) -> MCPServer:
-    """The MCP server for the campaigns saved under ``root``."""
-    ws = Workspace(root)
+def build_server(root: str | Path, device: str | None = None) -> MCPServer:
+    """The MCP server for the campaigns saved under ``root``, fitting on ``device``
+    (the CPU by default; ``"cuda"`` for an NVIDIA GPU)."""
+    ws = Workspace(root, device=device)
     server = MCPServer(
         "abbot",
         title="abbot",

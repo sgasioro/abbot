@@ -961,7 +961,11 @@ Only the model and the policy are on the device:
 
 The device belongs to the machine, not the campaign, so it isn't saved with the
 store or in `campaign.json`: pass it again when you rebuild the campaign. The web
-UI and the MCP server run on the CPU.
+UI and the MCP server take it for the whole process: `python -m abbot.ui --device
+cuda`, `abbot-mcp --device cuda`, or `ABBOT_DEVICE=cuda` for either (and
+`abbot.ui.serve(device=)`, `Workspace(root, device=)`). Every campaign they create
+or open then fits there; a campaign passed to `serve()` keeps its own. A device
+torch can't use stops them at launch, with the reason.
 
 Your own code on a GPU campaign:
 
@@ -972,8 +976,10 @@ Your own code on a GPU campaign:
   return its picks there, and the campaign moves them to the CPU.
 - Functions abbot calls on designs inside a fit or a proposal get them on the
   device: `prior_mean` functions, cost models, `BAXPolicy(noise_at=)`, goals (a
-  `FunctionGoal`'s function, your own `Goal`). Write them in torch (no `.numpy()`), and make new tensors on the
-  input's device.
+  `FunctionGoal`'s function, your own `Goal`). Write them in torch (no `.numpy()`,
+  which fails on a GPU tensor), and make new tensors on the input's device. A
+  function that must use NumPy can call `.cpu()` first and return
+  `torch.as_tensor(result, device=X.device)`.
 - `GestGeneratorPolicy` (Xopt's generators) brings its own model and runs on the
   CPU whatever the device.
 

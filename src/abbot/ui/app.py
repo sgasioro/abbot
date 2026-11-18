@@ -32,7 +32,8 @@ __all__ = ["UIState", "main", "serve"]
 _workspaces: dict = {}
 # What every page this process serves starts with: your experiment (``yours``), and
 # a campaign some code runs (``controller``, from serve()).
-_served: dict = {"yours": None, "controller": None, "name": None}
+# ``device``: where this process fits models (``Campaign(device=...)``).
+_served: dict = {"yours": None, "controller": None, "name": None, "device": None}
 
 
 def workspace():
@@ -42,14 +43,16 @@ def workspace():
     from abbot.agent.workspace import Workspace
 
     root = Path(os.environ.get("ABBOT_UI_DIR") or DEFAULT_DIR).expanduser().resolve()
-    if root not in _workspaces:
-        _workspaces[root] = Workspace(root)
-    return _workspaces[root]
+    key = (root, _served["device"])
+    if key not in _workspaces:
+        _workspaces[key] = Workspace(root, device=_served["device"])
+    return _workspaces[key]
 
 
 def _build_page() -> None:
     state = UIState()
     state.workspace = workspace()
+    state.device = _served["device"]
     state.yours = _served["yours"]
     state.own = state.yours is not None
     if _served["controller"] is not None:
@@ -184,6 +187,8 @@ def main(argv: list[str] | None = None) -> None:
         :class:`abbot.experiment.CommandExperiment`); --timeout SECONDS for each run.
       --spec spec.json (or module:NAME) — the spec it works with, if it has no
         ``spec`` attribute: the setup starts from it and stays within it.
+      --device (ABBOT_DEVICE, default cpu) — where models are fitted: ``cuda`` for an
+        NVIDIA GPU (``Campaign(device=...)``).
     """
     import argparse
 
@@ -219,7 +224,17 @@ def main(argv: list[str] | None = None) -> None:
                         help="the spec your experiment works with (a spec or campaign.json, "
                         "or module:NAME), if it has no spec attribute: the setup starts "
                         "from it and stays within its knobs, ranges and measurements")
+    parser.add_argument("--device", default=os.environ.get("ABBOT_DEVICE"),
+                        help="where models are fitted: cpu (default) or cuda, for an "
+                        "NVIDIA GPU with a CUDA build of torch")
     args = parser.parse_args(argv)
+    from abbot.model import resolve_device
+
+    try:
+        resolve_device(args.device)
+    except ValueError as exc:
+        parser.error(f"--device {args.device}: {exc}")
+    _served["device"] = args.device
     if args.spec and not (args.experiment or args.command):
         parser.error("--spec goes with --experiment or --command (it's the spec your "
                      "experiment works with)")
@@ -254,6 +269,7 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8080,
     show: bool = True,
+    device: str | None = None,
 ) -> None:
     """Open the UI from Python, and serve it until interrupted.
 
@@ -270,6 +286,9 @@ def serve(
     attribute, if any): a new campaign's setup starts from it and stays within its
     knobs, ranges and measurements, and ``campaign``'s spec must stay within it too.
 
+    ``device`` is where the campaigns the page makes or opens fit their models
+    (``"cuda"`` for an NVIDIA GPU); ``campaign`` keeps its own.
+
     Call it from a script (it blocks, as ``ui.run`` does)::
 
         from abbot.ui import serve
@@ -281,8 +300,12 @@ def serve(
     if spec is not None and experiment is None:
         raise ValueError("serve(spec=...) is the spec your experiment works with; pass "
                          "the experiment too.")
+    from abbot.model import resolve_device
+
+    resolve_device(device)  # a missing CUDA fails here, not on the first page
     yours = None if experiment is None else YourExperiment(experiment, spec=spec,
                                                            evaluate=evaluate)
+    _served["device"] = device
     _served["yours"] = yours
     _served["name"] = name
     _served["controller"] = None
