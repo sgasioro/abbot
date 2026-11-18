@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from abbot.history import History
+from abbot.model import model_device
 from abbot.problem import ProblemSpec
 from abbot.session import canonical_Y, observed_front
 
@@ -117,14 +118,15 @@ def recommended_set(history: History, spec: ProblemSpec, model=None) -> list[int
 def _posterior_raw(model, X: torch.Tensor, spec: ProblemSpec):
     """Posterior (mean, std) at X over ALL outputs, converted back to RAW units.
 
-    Returns tensors shaped (n, n_outputs). The sign flip maps canonical -> raw for
-    the mean (OBSERVE columns pass through); std is sign-invariant.
+    Returns tensors shaped (n, n_outputs), on ``X``'s device (``X`` goes to the
+    model's for the posterior). The sign flip maps canonical -> raw for the mean
+    (OBSERVE columns pass through); std is sign-invariant.
     """
     with torch.no_grad():
-        post = model.posterior(X.double())
+        post = model.posterior(X.double().to(model_device(model)))
         mean = spec.to_raw(post.mean.reshape(X.shape[0], -1))  # canonical -> raw
         std = post.variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
-    return mean, std
+    return mean.to(X.device), std.to(X.device)
 
 
 def parity(history: History, spec: ProblemSpec, model) -> dict:

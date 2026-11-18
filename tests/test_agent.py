@@ -194,3 +194,14 @@ def test_free_names(tmp_path):
     ws.create("My-campaign", SPEC)
     assert ws.free_name("My campaign") == "My-campaign-2"
     assert ws.free_name("  ") == "campaign"
+
+
+def test_the_workspace_fits_on_its_device(tmp_path, monkeypatch):
+    import torch
+
+    ws = Workspace(tmp_path, device="cpu")
+    ws.create("opt", SPEC)
+    assert ws.open("opt").device.type == "cpu"
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(ValueError, match="CUDA isn't available"):
+        Workspace(tmp_path, device="cuda")  # at startup, not on the first campaign

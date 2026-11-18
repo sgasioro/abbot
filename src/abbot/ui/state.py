@@ -78,6 +78,7 @@ class UIState:
         self.extra: dict = {}
         # Where campaigns are saved (shared with the agent); None keeps them in memory.
         self.workspace: Workspace | None = None
+        self.device: str | None = None  # where campaigns fit their models (the process's)
         self.saved_as: str | None = None  # the running campaign's name there
         self.step: int = 0  # index into STEPS while setting up
         self.reached: int = 0  # the furthest step reached (earlier ones are done)
@@ -371,7 +372,7 @@ class UIState:
         start = self.extra.get("initial_designs") or build_start(spec, self.variable_rows)
         campaign = Campaign(
             spec, policy, build_constructor(spec, self.model), initial_designs=start,
-            max_retries=self.extra.get("max_retries", 1),
+            max_retries=self.extra.get("max_retries", 1), device=self.device,
         )
         if start is None:
             campaign.seed(default_initial_designs(spec))

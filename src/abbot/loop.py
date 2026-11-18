@@ -133,6 +133,7 @@ def run_campaign(
     fingerprint: dict | None = None,
     allow_resume_mismatch: bool = False,
     targets: Targets | None = None,
+    device: str | torch.device | None = None,
 ) -> CampaignResult:
     """Run the propose -> evaluate -> retrain loop to completion.
 
@@ -148,7 +149,8 @@ def run_campaign(
     Only ``spec`` and ``experiment`` are required. ``policy`` and
     ``model_constructor`` default to what the spec implies, ``evaluate`` to none
     (the experiment returns the outputs directly), and ``initial_designs``
-    to ``default_initial_designs(spec)``.
+    to ``default_initial_designs(spec)``. ``device`` is where models are fitted and
+    policies propose (``Campaign(device=...)``; the CPU by default).
     """
     if initial_designs is None:
         initial_designs = default_initial_designs(spec)
@@ -164,6 +166,7 @@ def run_campaign(
         fingerprint=fingerprint,
         allow_resume_mismatch=allow_resume_mismatch,
         targets=targets,
+        device=device,
     )
     campaign.seed(initial_designs)
     if campaign.halted:  # rerunning after a halt means the cause is fixed

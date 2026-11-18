@@ -22,6 +22,7 @@ import math
 import torch
 
 from abbot.history import History
+from abbot.model import model_device
 from abbot.problem import ProblemSpec
 
 # Designs with at least this chance of a usable result count as usable (for
@@ -37,7 +38,8 @@ class Usability:
 
     Call it on designs ``(..., d)`` for probabilities ``(...)``; it is
     differentiable, so acquisition functions can use it. ``log_prob`` gives the
-    log.
+    log. Designs may be on any device: they go to the classifier's, and the
+    answer comes back on theirs.
     """
 
     def __init__(self, model) -> None:
@@ -53,11 +55,11 @@ class Usability:
         - f_bad)]``; this uses the probit approximation of that expectation
         (MacKay, 1992), which is smooth in the posterior mean and variance.
         """
-        post = self.model.posterior(X.double())
+        post = self.model.posterior(X.double().to(model_device(self.model)))
         mean, var = post.mean, post.variance  # (..., 2)
         diff = mean[..., 1] - mean[..., 0]
         spread = (var[..., 0] + var[..., 1]).clamp_min(0)
-        return torch.nn.functional.logsigmoid(diff / torch.sqrt(1 + math.pi * spread / 8))
+        return torch.nn.functional.logsigmoid(diff / torch.sqrt(1 + math.pi * spread / 8)).to(X.device)
 
 
 def dirichlet_targets(usable: torch.Tensor, alpha_epsilon: float = ALPHA_EPSILON):
@@ -69,9 +71,12 @@ def dirichlet_targets(usable: torch.Tensor, alpha_epsilon: float = ALPHA_EPSILON
     return alpha.log() - noise / 2, noise
 
 
-def fit_usability(history: History, spec: ProblemSpec) -> Usability | None:
+def fit_usability(
+    history: History, spec: ProblemSpec, device: torch.device | str | None = None
+) -> Usability | None:
     """Fit the classifier on ``history``'s judged runs, or ``None`` when there's
-    nothing to learn: no bad-region run, or no usable one."""
+    nothing to learn: no bad-region run, or no usable one. ``device`` is where it is
+    fitted (the CPU by default)."""
     judged = history.judged.records
     usable = torch.tensor([r.bad_region is None for r in judged], dtype=torch.bool)
     if not len(judged) or usable.all() or not usable.any():
@@ -81,11 +86,11 @@ def fit_usability(history: History, spec: ProblemSpec) -> Usability | None:
     from botorch.models.transforms import Normalize, Standardize
     from gpytorch.mlls import ExactMarginalLogLikelihood
 
-    X = torch.stack([r.candidate.double().reshape(-1) for r in judged])
-    Y, Yvar = dirichlet_targets(usable)
+    X = torch.stack([r.candidate.double().reshape(-1) for r in judged]).to(device)
+    Y, Yvar = (t.to(X) for t in dirichlet_targets(usable))
     model = SingleTaskGP(
         X, Y, Yvar,
-        input_transform=Normalize(X.shape[-1], bounds=spec.bounds_tensor().double()),
+        input_transform=Normalize(X.shape[-1], bounds=spec.bounds_tensor(device=X.device)),
         outcome_transform=Standardize(m=2),
     )
     fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))

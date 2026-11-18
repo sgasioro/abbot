@@ -39,6 +39,50 @@ from gpytorch.mlls import ExactMarginalLogLikelihood, SumMarginalLogLikelihood
 UQCapability = str  # "point" | "samples" | "calibrated_variance"
 
 
+def model_device(model) -> torch.device:
+    """The device a model (or an acquisition function holding one) lives on: that
+    of its first parameter or buffer, else the CPU. Inputs to ``model.posterior``
+    go here (``Campaign(device="cuda")`` fits on the GPU)."""
+    if isinstance(model, torch.nn.Module):
+        for tensor in model.parameters():
+            return tensor.device
+        for tensor in model.buffers():
+            return tensor.device
+    return torch.device("cpu")
+
+
+def resolve_device(device: str | torch.device | None) -> torch.device:
+    """``device`` as a ``torch.device``, checked: ``None`` is the CPU, and CUDA must
+    be available. abbot fits in float64, so only the CPU and CUDA are supported
+    (Apple's MPS has no float64)."""
+    if device is None:
+        return torch.device("cpu")
+    try:
+        device = torch.device(device)
+    except (RuntimeError, TypeError) as exc:
+        raise ValueError(f"device must be 'cpu' or 'cuda', got {device!r}") from exc
+    if device.type == "cpu":
+        return device
+    if device.type != "cuda":
+        raise ValueError(
+            f"device {str(device)!r} isn't supported: abbot fits in float64, which only "
+            "the CPU and CUDA support. Use device='cpu' or 'cuda'."
+        )
+    if not torch.cuda.is_available():
+        raise ValueError(
+            f"device={str(device)!r} but CUDA isn't available to torch "
+            f"({torch.__version__}). Install a CUDA build of torch (see the README's "
+            "install section) on a machine with an NVIDIA GPU, or leave device unset to "
+            "run on the CPU."
+        )
+    if device.index is not None and device.index >= torch.cuda.device_count():
+        raise ValueError(
+            f"device={str(device)!r} but torch sees {torch.cuda.device_count()} CUDA "
+            "device(s); pick one of those, or 'cuda' for the current one."
+        )
+    return device
+
+
 @runtime_checkable
 class ModelConstructor(Protocol):
     """Build a fitted botorch ``Model`` from training data.
@@ -47,6 +91,9 @@ class ModelConstructor(Protocol):
     Y:    (n, m) observed outputs (m=1 for scalar objectives)
     Yvar: (n, m) optional observation-noise variances (-> train_Yvar). When None
           the model infers the noise level (e.g. a score from one noisy observation).
+
+    All three arrive on the campaign's device (``Campaign(device=...)``), and the
+    model should live there too: build any tensor of your own on ``X.device``.
 
     ``provides_uq`` declares the UQ quality the built model's posterior supplies, so
     the loop can refuse a policy that needs more than the surrogate can give.
@@ -90,7 +137,7 @@ class _PriorMean(Mean):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         transform = self._untransform[0]
         raw = transform.untransform(x) if transform is not None else x
-        value = torch.as_tensor(self.prior(raw), dtype=x.dtype).expand(x.shape[:-1])
+        value = torch.as_tensor(self.prior(raw), dtype=x.dtype, device=x.device).expand(x.shape[:-1])
         return self.scale * (value - self.y_mean) / self.y_std + self.offset
 
 
@@ -157,6 +204,7 @@ def _gp(X, Y, Yvar, bounds, log, kernel: Kernel, categorical: list[int],
     ``prior``, its mean follows the prior (see :class:`_PriorMean`)."""
     d = X.shape[-1]
     Yvar = Yvar.double() if Yvar is not None else None
+    bounds = bounds.to(X) if bounds is not None else None  # made on the CPU at setup
     if not categorical:
         gp = SingleTaskGP(
             X, Y, train_Yvar=Yvar, input_transform=_input_transform(d, bounds, log),
@@ -175,7 +223,7 @@ def _gp(X, Y, Yvar, bounds, log, kernel: Kernel, categorical: list[int],
         gp.mean_module = _PriorMean(
             prior, getattr(gp, "input_transform", None),
             gp.outcome_transform.means, gp.outcome_transform.stdvs, fit_scale,
-        )
+        ).to(X)
     return gp
 
 
@@ -328,7 +376,7 @@ class EnsembleConstructor:
             # Independent init per member: reseed torch's global RNG from our
             # generator (avoids Date/random bans elsewhere; deterministic by seed).
             torch.manual_seed(int(torch.randint(0, 2**31 - 1, (1,), generator=g)))
-            net = make_toy_mlp(d, m, width=self.width)
+            net = make_toy_mlp(d, m, width=self.width).to(X)
             opt = torch.optim.Adam(net.parameters(), lr=self.lr)
             for _ in range(self.epochs):
                 opt.zero_grad()
@@ -434,7 +482,7 @@ class MultiSourceGPConstructor:
             iteration_fidelity=iteration,
             data_fidelities=[i for i in positions.values() if i != iteration] or None,
             linear_truncated=self.linear_truncated,
-            input_transform=_fidelity_transform(spec, self.bounds),
+            input_transform=_fidelity_transform(spec, self.bounds.to(X)),
         )
         if spec.categorical_indices():
             _add_categories(gp, spec.categorical_indices(), iteration, positions.values(),
@@ -466,7 +514,7 @@ class MultiSourceGPConstructor:
                 if Yvar is None
                 else None,
                 input_transform=_input_transform(
-                    d, self.bounds, self.spec.log_indices(), indices=design
+                    d, self.bounds.to(X), self.spec.log_indices(), indices=design
                 ) if design else None,
                 covar_module=_design_kernel(design, categorical, d) if categorical else None,
             )
@@ -532,7 +580,7 @@ class MultiTaskGPConstructor:
         Yvar = Yvar.double() if Yvar is not None else None
         d, m = X.shape[-1], Y.shape[-1]
         X_long, Y_long, Yvar_long = _long(X, Y, Yvar)
-        run = torch.arange(len(X)).repeat(m)
+        run = torch.arange(len(X), device=X.device).repeat(m)
         keep = ~Y_long.isnan().reshape(-1)  # an output a run didn't measure
         if Yvar_long is not None:
             keep &= ~Yvar_long.isnan().reshape(-1)
@@ -541,13 +589,16 @@ class MultiTaskGPConstructor:
         categorical = self.spec.categorical_indices()
         numeric = [j for j in range(d) if j not in categorical]
         bounds = torch.cat(  # the output column passes through unnormalized
-            [self.spec.bounds_tensor().double(), torch.tensor([[0.0], [m - 1.0]]).double()], -1
+            [self.spec.bounds_tensor(device=X.device),
+             torch.tensor([[0.0], [m - 1.0]], dtype=torch.double, device=X.device)], -1
         )
         gp = _OutputsMultiTaskGP(
             X_long, Y_long, train_Yvar=Yvar_long, task_feature=d,
             output_tasks=list(range(m)), all_tasks=list(range(m)), rank=self.rank,
             likelihood=get_gaussian_likelihood_with_lognormal_prior() if Yvar is None else None,
-            outcome_transform=_PerOutputStandardize(stratification_idx=d, all_task_values=torch.arange(m)),
+            outcome_transform=_PerOutputStandardize(
+                stratification_idx=d, all_task_values=torch.arange(m, device=X.device)
+            ),
             input_transform=_input_transform(
                 d + 1, bounds, self.spec.log_indices(), indices=numeric
             ) if numeric else None,
@@ -573,7 +624,7 @@ def _start_from_data(gp, Y: torch.Tensor, rank: int) -> None:
         Z = (full - full.mean(0)) / full.std(0).clamp_min(1e-12)
         corr = (Z.T @ Z) / (len(full) - 1)
     else:
-        corr = torch.eye(m, dtype=Y.dtype)
+        corr = torch.eye(m, dtype=Y.dtype, device=Y.device)
     values, vectors = torch.linalg.eigh(corr)  # ascending
     top = values.flip(0)[:rank].clamp_min(1e-3).sqrt()
     W = vectors.flip(1)[:, :rank] * top

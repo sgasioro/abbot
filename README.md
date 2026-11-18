@@ -156,7 +156,12 @@ The CPU build of torch is all the UI and the tests need. For an NVIDIA GPU,
 install a CUDA build instead, e.g. `pip install torch --index-url
 https://download.pytorch.org/whl/cu128`; the right tag for your driver is listed
 at [pytorch.org/get-started](https://pytorch.org/get-started). Installing torch
-with pip from PyTorch's index is more reliable than conda's CUDA packages.
+with pip from PyTorch's index is more reliable than conda's CUDA packages. Then
+`Campaign(spec, device="cuda")` fits models and runs policies on the GPU (the
+history, saved files and the UI stay on the CPU). With a few dozen runs the CPU
+is as fast; the GPU pays off from a few hundred runs, and most for BAX over large
+candidate grids. See
+[Fitting on a GPU](https://github.com/sgasioro/abbot/blob/main/docs/API.md#fitting-on-a-gpu).
 Everything else (BoTorch, `gest-api`, ...) comes from PyPI with `pip install -e`.
 
 ## Examples
@@ -176,9 +181,10 @@ python -m abbot.ui --dir ./runs    # where campaigns are saved (default ~/abbot-
 python -m abbot.ui --experiment rig:Rig   # your experiment runs each design
 python -m abbot.ui --experiment rig:Rig --spec rig.json   # ... within this spec
 python -m abbot.ui --command "./measure.sh {temp} {conc}"   # a program per design
+python -m abbot.ui --device cuda   # fit on an NVIDIA GPU (a CUDA build of torch)
 ```
 Flags also read env vars: `ABBOT_UI_HOST`, `ABBOT_UI_PORT`, `ABBOT_UI_SHOW`,
-`ABBOT_UI_DIR`.
+`ABBOT_UI_DIR`, `ABBOT_DEVICE`.
 
 Each campaign you start is saved in `~/abbot-campaigns/<name>/`, the folder the
 agent's server (`abbot-mcp`) uses: *Open a saved campaign* on the first step
@@ -270,13 +276,10 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 - An MCP server (`abbot-mcp`) for agents, over named campaigns saved on disk, with
   a setup assistant: the agent asks what it needs before writing the spec
   (`plan_campaign`, and a Claude Code skill).
-
-**Next:**
-1. **GPU support:** one setting (`Campaign(..., device="cuda")`) that fits models
-   and runs policies on the GPU, while the history, saved files, experiments and
-   the UI stay on the CPU. The default stays CPU, since lab-scale GPs are usually
-   faster there. CUDA only: abbot fits in float64, which Apple's MPS doesn't
-   support.
+- GPU support: `Campaign(..., device="cuda")` fits models and runs policies on an
+  NVIDIA GPU, while the history, saved files, experiments and the UI stay on the
+  CPU. The default stays the CPU, which is as fast for a few dozen runs. CUDA
+  only: abbot fits in float64, which Apple's MPS doesn't support.
 
 **Later:**
 - Continuous BAX (no candidate grid).

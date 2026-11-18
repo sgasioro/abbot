@@ -122,9 +122,16 @@ the runs that fit the new spec are copied in.
 
 
 class Workspace:
-    """Named campaigns under ``root``, opened on demand and kept open."""
+    """Named campaigns under ``root``, opened on demand and kept open.
 
-    def __init__(self, root: str | Path) -> None:
+    ``device`` is where their models are fitted and their policies propose
+    (``Campaign(device=...)``; the CPU by default). It belongs to this process, not
+    the campaigns: it isn't saved, so another process may open them on its own."""
+
+    def __init__(self, root: str | Path, device: str | None = None) -> None:
+        from abbot.model import resolve_device
+
+        self.device = resolve_device(device)  # a missing CUDA fails here
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._open: dict[str, Campaign] = {}
@@ -416,8 +423,7 @@ class Workspace:
         self._open[name] = campaign
         return campaign
 
-    @staticmethod
-    def _build(folder: Path, config: dict) -> Campaign:
+    def _build(self, folder: Path, config: dict) -> Campaign:
         spec = ProblemSpec.model_validate(config["spec"])
         policy = None
         if config.get("goal"):
@@ -430,6 +436,7 @@ class Workspace:
             store=DataStore(folder / "store"),
             initial_designs=config.get("initial_designs"),
             max_retries=config.get("max_retries", 1),
+            device=self.device,
         )
 
 

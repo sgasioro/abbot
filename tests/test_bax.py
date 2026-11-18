@@ -101,6 +101,38 @@ def test_infobax_eig_finite_and_prefers_boundary():
     assert float(near_boundary) >= float(far) - 1e-6
 
 
+def test_infobax_frees_each_fantasy_before_the_next(monkeypatch):
+    # A fantasy model is in a reference cycle, so only the cyclic collector frees it;
+    # InfoBAX collects after each sample, or every fantasy is kept until the loop
+    # ends (memory n² per sample). With automatic collection off, only that does.
+    import gc
+    import weakref
+
+    import abbot.policy as P
+
+    torch.manual_seed(0)
+    spec = _spec()
+    model = _fit(spec, [0.1, 0.3, 0.5, 0.7, 0.9], [0.0, 0.4, 1.0, 0.4, 0.0])[0]
+    pol = BAXPolicy(BandIntersection([(0.5, 1.2)]), strategy="InfoBAX",
+                    n_candidates=60, n_posterior_samples=6)
+    alive, condition = [], P._condition
+
+    def tracked(*args, **kwargs):
+        fant = condition(*args, **kwargs)
+        alive.append(weakref.ref(fant))
+        return fant
+
+    monkeypatch.setattr(P, "_condition", tracked)
+    gc.collect()
+    gc.disable()
+    try:
+        pol._acquisition(spec, model, pol.candidate_grid(spec))
+        assert len(alive) > 1
+        assert sum(r() is not None for r in alive) == 0
+    finally:
+        gc.enable()
+
+
 def test_infobax_refuses_when_every_fantasy_fails(monkeypatch):
     import abbot.policy
 

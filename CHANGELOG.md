@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **GPU support:** `Campaign(spec, device="cuda")` (and `run_campaign(...,
+  device=)`) fits the model and runs the policy on an NVIDIA GPU, in float64. The
+  default stays the CPU. Only the model and the policy see the device: the history,
+  the store, candidates, `state()`, experiments and the UI stay on the CPU, so a
+  store written on a GPU resumes on any machine. Without CUDA, `device="cuda"`
+  raises at construction and says how to install a CUDA build of torch. The
+  built-in constructors, policies, optimizers, the bad-region classifier,
+  `recommend`, `abbot.analysis`, `abbot.plots`, the UI's figures and `check()` all
+  follow the model's device (`abbot.model.model_device`). A custom
+  `ModelConstructor` gets its data on the device. The device isn't saved with a
+  campaign. The UI and the MCP server take one for the whole process:
+  `python -m abbot.ui --device cuda`, `abbot-mcp --device cuda`, or
+  `ABBOT_DEVICE=cuda` (`serve(device=)`, `Workspace(root, device=)`). Tests marked
+  `cuda` run only where a GPU is available.
+  **Your own functions on a GPU campaign** get designs as GPU tensors: a
+  `prior_mean` function, a cost model, `BAXPolicy(noise_at=)`, a `FunctionGoal`'s
+  function or your own `Goal`. One that calls `.numpy()` on its input fails there;
+  write it in torch, or call `.cpu()` first and return a tensor on the input's
+  device.
+- **Fix:** InfoBAX no longer keeps every posterior sample's fantasy model until
+  the proposal ends (a GPyTorch model is in a reference cycle, so only Python's
+  cyclic collector frees one). Its memory no longer grows with
+  `n_posterior_samples`: 100 samples at 1000 runs peaked at 766 MB, now 95 MB, and
+  at 3000 runs no longer need over 7 GB.
+- **Fix:** an output bounded only from above at or below zero
+  (`OutputSpec(max_val=0)`) no longer fails when the model's chance of satisfying
+  the constraints is computed.
 - **Small fixes:**
   - `BAXPolicy(requery=True)` lets a measured design be proposed again (only
     designs in flight are left out), for repeating a noisy measurement.

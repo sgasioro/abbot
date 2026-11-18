@@ -74,4 +74,5 @@ testpaths = ["tests"]
 # committing, not on every interactive change.
 markers = [
     "slow: GP-fitting / integration test (deselect with -m 'not slow')",
+    "cuda: needs a CUDA GPU (skipped without one; run alone with -m cuda)",
 ]
