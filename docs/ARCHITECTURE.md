@@ -140,6 +140,24 @@ physical measurements, no caller-side negation. `run_campaign` returns a
 `CampaignResult` whose `.recommended` is a single index (scalar) or the Pareto set
 (multi-objective); `.best` is the single-objective convenience.
 
+## Devices
+
+`Campaign(device="cuda")` puts the model and the policy on a GPU, and nothing else.
+The boundary is crossed in two places in `session.py`: `fit_model` moves the
+training data to the device, and `_policy_suggest` hands the policy its pending
+designs on the model's device and brings its picks back with `.cpu()`. So
+`History`, `Record`, the `DataStore` files, `Candidate`s, `CampaignState`, the
+experiments, the UI and the MCP server only ever see CPU tensors, and a store
+reopens on any machine. The device isn't saved: it belongs to the machine.
+
+Below the boundary, code takes its device from the model, not from the campaign
+(`model.model_device`): policies, optimizers (from the acquisition), the
+constructors (from `X`), BAX's device copy of its CPU grid. A model that ends up on
+the CPU therefore just runs there. Functions that read a model from outside
+(`analysis._posterior_raw`, `feasibility.prob_feasible`, `Usability`) send their
+designs to the model's device and answer on the caller's. Everything stays
+float64, so CUDA is the only GPU backend.
+
 ## Ready for agents
 
 Three design properties are kept so that agents can drive abbot without

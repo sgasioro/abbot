@@ -52,6 +52,9 @@ on them.
   and the constructors' `prior_mean=`. New.
 - **Correlated outputs** — `default_constructor(spec, correlated=True)`,
   `MultiTaskGPConstructor(spec, rank=)`. New.
+- **GPU** — `Campaign(device=)`, `run_campaign(device=)`, `Campaign.device`,
+  `abbot.model.model_device`, and `device=` on `abbot.session.fit_model` and
+  `abbot.usability.fit_usability`. See [Fitting on a GPU](#fitting-on-a-gpu). New.
 - **Faults and bad regions** — `Campaign.resolve`, `Campaign.halted_on`,
   `Verdict(bad_region=)`, `per_shot(..., bad_region=)`, `Record.bad_region`,
   `Record.excluded`,
@@ -915,6 +918,64 @@ kernel, a fully-Bayesian GP, or a deep ensemble all slot in this way; see
 `examples/custom_models.py`. `EnsembleConstructor` is the builtin non-GP example. The GP constructors take
 `kernel="default"` (BoTorch's choice) or `kernel="matern52"` (scaled ARD Matern-5/2,
 what multibax's sklearn GPs used).
+
+On a GPU campaign, `build` receives `X`, `Y` and `Yvar` on the campaign's device,
+and the model it returns should live there too: make any tensor of your own (bounds,
+a mean's parameters, a kernel's indices) on `X.device`. See
+[Fitting on a GPU](#fitting-on-a-gpu).
+
+## Fitting on a GPU
+
+```python
+campaign = Campaign(spec, device="cuda")   # or "cuda:1", a torch.device; run_campaign(..., device=)
+```
+
+`device="cuda"` fits the model and runs the policy on an NVIDIA GPU, in float64 as
+on the CPU. The default, `device=None`, is the CPU: it needs no CUDA build, and
+for a few dozen runs it is as fast. The GPU pays off from a few hundred runs, and
+most for BAX: on our test machine (an RTX 2080 Ti against two cores of a Xeon Gold
+5118), one fit and one proposal took about the same time either way at 50 runs with
+`SimpleBO`, 4.5× less on the GPU at 1000 runs, and about 10× less for InfoBAX over
+10,000 candidates at any number of runs (`benchmarks/gpu_timing.py`). A CPU with
+more cores narrows the gap; a GPU built for float64 (A100, H100) widens it. It
+needs a CUDA build of torch (see the README's [Local setup](../README.md#local-setup)):
+without CUDA, `Campaign(device="cuda")` raises a `ValueError` saying so, before
+anything runs. CUDA only: abbot fits in float64, which Apple's MPS doesn't support.
+
+Only the model and the policy are on the device:
+
+- The training data go to the device before the fit, and the model stays there;
+  `abbot.model.model_device(model)` says where a model is.
+- The policy gets the pending designs on the model's device and works there. BAX
+  builds its candidate grid on the CPU (`candidate_grid` returns that one) and
+  keeps a copy on the device; the optimizers search on the acquisition's device.
+  The policy's picks come back to the CPU before the campaign records them.
+- `History`, `Record`, the store's files, `Candidate`s, `CampaignState`, the
+  experiment and the UI stay on the CPU. A store written by a GPU campaign reopens
+  on any machine, and a CPU campaign carries it on.
+- What reads `current_model()` (`recommend`, `result`, `abbot.analysis`,
+  `abbot.plots`, the UI's figures, `check()`) sends its designs to the model's
+  device and gets its answers back on the CPU.
+- The bad-region classifier is fitted on the same device; `Usability` answers on
+  the device of the designs it's given.
+
+The device belongs to the machine, not the campaign, so it isn't saved with the
+store or in `campaign.json`: pass it again when you rebuild the campaign. The web
+UI and the MCP server run on the CPU.
+
+Your own code on a GPU campaign:
+
+- A `ModelConstructor` gets its data on the device (see above). One that builds on
+  the CPU anyway still works: the policy follows the model, so that campaign runs
+  on the CPU.
+- A `Policy` should work on its model's device (`model_device(model)`); it may
+  return its picks there, and the campaign moves them to the CPU.
+- Functions abbot calls on designs inside a fit or a proposal get them on the
+  device: `prior_mean` functions, cost models, `BAXPolicy(noise_at=)`, goals (a
+  `FunctionGoal`'s function, your own `Goal`). Write them in torch (no `.numpy()`), and make new tensors on the
+  input's device.
+- `GestGeneratorPolicy` (Xopt's generators) brings its own model and runs on the
+  CPU whatever the device.
 
 ## Defaults
 
