@@ -889,7 +889,7 @@ ordered):
   the target; all values of an unordered source; or `{name: [values]}`), by the
   information a run there gives about the goal's target set, per unit of cost (the
   same default `SourceCost`). `proposal_set(spec)` is the grid at every level. US,
-  MeanBAX and SwitchBAX's MeanBAX phase propose at the target;
+  MeanBAX, PS-BAX and SwitchBAX's MeanBAX phase propose at the target;
   `choose_sources=False` keeps InfoBAX there too.
 
 Everything else works *at the target*:
@@ -1001,13 +1001,25 @@ explicitly if you need it pinned.
 
 ## BAX details
 
+- **The strategies.** `BAXPolicy(goal, strategy=...)`:
+  - `"MeanBAX"` runs the goal on the posterior mean and measures the most uncertain
+    design in what it selects (US when that's empty or all measured). Fast; it can
+    settle on a wrong region, since the mean doesn't explore.
+  - `"PSBAX"` (posterior-sampling BAX, Cheng et al. 2024) does the same on one joint
+    posterior draw instead of the mean, a fresh draw per pick, so it explores where
+    the model is unsure of the target set. About MeanBAX's cost per proposal.
+  - `"InfoBAX"` measures where a run tells most about the target set (expected
+    information gain over `n_posterior_samples` draws, each conditioned on). The
+    most careful and by far the costliest; with sources, it also chooses the source.
+  - `"SwitchBAX"` (the default) is MeanBAX until it's stuck, then InfoBAX.
+  - `"US"` ignores the goal and measures where the model is most unsure.
 - **InfoBAX measures information about a noisy measurement.** Both entropy terms
   include the measurement noise at each candidate: the model's own (learned, or
   the mean per-point `Yvar`), or `BAXPolicy(noise_at=fn)` with `fn(X) -> (N, m)`
   variances in raw output units. The hallucinated target values are conditioned
   on with hyperparameters fixed and only a 1e-6 numerical jitter, since they are
   function values, not measurements.
-- **US / MeanBAX compare outputs in relative units:** each output's posterior std
+- **US / MeanBAX / PS-BAX compare outputs in relative units:** each output's posterior std
   is divided by its observed spread before averaging, so units don't decide.
 - **A design isn't proposed twice by default.** Grid points already measured, or in
   flight, are left out. `BAXPolicy(requery=True)` leaves out only those in flight,

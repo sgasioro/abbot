@@ -786,13 +786,14 @@ class _SumPosteriorStd(torch.nn.Module):
 
 # --- BAX: goal-as-algorithm over a discrete candidate grid --------------------
 
-BAXStrategy = Literal["US", "MeanBAX", "SwitchBAX", "InfoBAX"]
+BAXStrategy = Literal["US", "MeanBAX", "SwitchBAX", "InfoBAX", "PSBAX"]
 
 _BAX_UQ: dict[str, UQRequirement] = {
     "US": "calibrated_variance",
     "MeanBAX": "point",  # runs the goal on the posterior mean; a point net suffices
     "SwitchBAX": "samples",  # stuck -> InfoBAX, which needs coherent samples
     "InfoBAX": "samples",
+    "PSBAX": "samples",  # runs the goal on one coherent posterior draw
 }
 
 
@@ -800,10 +801,18 @@ class BAXPolicy:
     """Bayesian Algorithm Execution over a discrete candidate grid.
 
     One policy, strategy-dispatched over ``US`` / ``MeanBAX`` / ``SwitchBAX`` /
-    ``InfoBAX`` — ports multibax-sklearn's acquisition layer onto a botorch
+    ``InfoBAX`` / ``PSBAX`` — ports multibax-sklearn's acquisition layer onto a botorch
     ``Model`` (a multi-output ``ModelListGP`` for the theta-feature case). The
     ``Goal`` identifies the target subset of the grid; the acquisition focuses
     sampling to resolve that subset.
+
+    ``PSBAX`` is posterior-sampling BAX (Cheng et al., 2024): the goal runs on one
+    joint posterior draw over the grid, and the pick is the most uncertain design
+    in that draw's target set (US when the set is empty or all measured). MeanBAX
+    is the same on the posterior mean; the draw makes it explore. It needs no
+    entropy estimates, so a proposal costs about as much as MeanBAX's, far less
+    than InfoBAX's. Each pick of a batch takes a fresh draw. Like MeanBAX it
+    proposes at the target (it doesn't choose sources).
 
     Discrete: the acquisition is a length-N vector over a Sobol candidate grid
     (built once from the spec), selection is argmax, and already-collected grid
@@ -886,7 +895,7 @@ class BAXPolicy:
         # Grid indices measured or pending at the last suggest, plus its picks.
         # Recomputed every call from history + pending (nothing to lose on resume).
         self._collected: list[int] = []
-        self.switched: bool = False  # last suggest left MeanBAX for any pick (SwitchBAX -> InfoBAX, MeanBAX -> US)
+        self.switched: bool = False  # last suggest left MeanBAX for any pick (SwitchBAX -> InfoBAX, MeanBAX / PSBAX -> US)
         self.last_acquisition_value: torch.Tensor | None = None  # per pick, last suggest
         # Optional ``noise_at(X) -> (N, m)`` measurement-noise variance (raw units) at
         # candidates, for InfoBAX; default: the model's own observation noise. ``X``
@@ -1214,6 +1223,17 @@ class BAXPolicy:
         rel = (std / self._out_scale.to(std)).mean(dim=-1)
         if self.strategy == "US":
             return at_target_only(rel)
+        if self.strategy == "PSBAX":
+            with torch.no_grad():  # one joint draw over the grid, raw units for the goal
+                draw = model.posterior(at_target.double()).rsample(torch.Size([1]))
+            f_raw = spec.to_raw(draw[0].reshape(n_target, -1))
+            target = self._identify(spec, f_raw, at_target)
+            if self._stuck(target):
+                self.switched = True
+                return at_target_only(rel)  # fall back to US
+            acq = torch.zeros(n_target, dtype=torch.double, device=rel.device)
+            acq[target] = rel[target]
+            return at_target_only(acq)
         # MeanBAX / SwitchBAX gate on the mean-execution target set.
         if self.strategy in ("MeanBAX", "SwitchBAX"):
             target = self._identify(spec, mean, at_target)

@@ -71,6 +71,7 @@ body {{ background: white; color: var(--ab-ink);
 .ab-status.grey {{ background: #f3f4f6; color: #4b5563; }}
 .ab-error {{ color: {BAD}; font-size: .9rem; }}
 .ab-seg .q-btn {{ text-transform: none; }}
+.ab-seg {{ max-width: 100%; flex-wrap: wrap; }}  /* five choices on a phone: wrap, don't overflow */
 @media (max-width: 639px) {{ .ab-chip.ab-not-current {{ display: none; }} }}
 """
 

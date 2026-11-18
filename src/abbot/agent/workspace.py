@@ -104,8 +104,9 @@ the outputs the goal reads OBSERVE. Goal kinds:
                                                        where yield >= 0.8 (upper: <=)
   {"kind": "topk", "output": "yield", "k": 5, "largest": true}
   {"kind": "percentile", "percentile": 90}             top 10% of a single output
-strategy (with a goal): SwitchBAX (balanced, default), MeanBAX (fast), InfoBAX
-(thorough), US (explore only).
+strategy (with a goal): SwitchBAX (balanced, default), MeanBAX (fast), PSBAX (fast,
+exploring: for a target that may be in several places), InfoBAX (thorough), US
+(explore only).
 model: "default" (independent GPs) or "correlated" (one GP over correlated outputs).
 
 Loop: suggest -> run the design -> report_result (or report_failure). A value

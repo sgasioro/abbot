@@ -204,3 +204,32 @@ def test_requery_lets_a_measured_design_come_back():
     # Every design, measured or not, and none twice in one batch (in flight).
     assert sorted(x[:, 0].tolist()) == pytest.approx(sorted(grid[:, 0].tolist()))
     assert again.collected_count == 6  # measured ones still count (MeanBAX's "stuck")
+
+
+def test_psbax_picks_in_a_sampled_target_set_and_explores():
+    spec = _spec()
+    xs, ys = [0.1, 0.3, 0.5, 0.7, 0.9], [0.0, 0.4, 1.0, 0.4, 0.0]
+    model, h = _fit(spec, xs, ys)
+    grid = torch.linspace(0, 1, 101, dtype=torch.double).reshape(-1, 1)
+    goal = BandIntersection([(0.6, 1.5)])  # around the peak at 0.5
+    picks = []
+    for seed in range(8):
+        torch.manual_seed(seed)
+        pol = BAXPolicy(goal, strategy="PSBAX", candidates=grid)
+        (x,) = pol.suggest(h, spec, model)
+        picks.append(float(x[0]))
+        assert not pol.switched and pol.uq_requirement == "samples"
+    assert all(0.3 < p < 0.7 for p in picks)  # inside a plausible target set
+    # A batch: a fresh draw per pick, none twice.
+    torch.manual_seed(0)
+    batch = BAXPolicy(goal, strategy="PSBAX", candidates=grid).suggest(h, spec, model, n=3)
+    assert len({float(v) for v in batch[:, 0]}) == 3
+
+
+def test_psbax_falls_back_to_us_when_the_draw_selects_nothing():
+    torch.manual_seed(0)
+    spec = _spec()
+    model, h = _fit(spec, [0.1, 0.5, 0.9], [0.0, 0.0, 0.0])
+    pol = BAXPolicy(BandIntersection([(1e6, 1e7)]), strategy="PSBAX", n_candidates=200)
+    pol.suggest(h, spec, model, n=1)
+    assert pol.switched is True
