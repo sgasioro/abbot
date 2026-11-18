@@ -5,8 +5,10 @@
 - **PS-BAX:** `BAXPolicy(goal, strategy="PSBAX")`, posterior-sampling BAX (Cheng et
   al., 2024). The goal runs on one joint posterior draw over the grid, and the
   pick is the most uncertain design in that draw's target set (uncertainty
-  sampling when it's empty or all measured). It explores like InfoBAX at about
-  MeanBAX's cost per proposal. Proposes at the target, like MeanBAX.
+  sampling when it's empty or all measured). For mapping where a goal holds
+  rather than collecting designs that meet it: it explores like InfoBAX, at a
+  small multiple of MeanBAX's cost per proposal. Proposes at the target, like
+  MeanBAX. The docs and the UI now present the strategies by that choice.
 - **GPU support:** `Campaign(spec, device="cuda")` (and `run_campaign(...,
   device=)`) fits the model and runs the policy on an NVIDIA GPU, in float64. The
   default stays the CPU. Only the model and the policy see the device: the history,

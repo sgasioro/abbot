@@ -662,10 +662,10 @@ def _extras(state: UIState) -> None:
             theme.segmented(labels, state.bax_strategy,
                             lambda v: (setattr(state, "bax_strategy", v), _changed(state)),
                             marker="strategy")
-            ui.label("Balanced suits most campaigns. Fast, exploring costs little more "
-                     "than Fast / greedy and is less likely to settle on one region; "
-                     "try it when the target may be in several places.").classes(
-                "ab-sub text-sm")
+            ui.label("Balanced spends most runs on designs that meet the target. To map "
+                     "where the target holds instead (a boundary, or every region of "
+                     "it), use Fast, exploring, or Thorough for the most careful map."
+                     ).classes("ab-sub text-sm")
 
 
 def _sources(state: UIState) -> None:

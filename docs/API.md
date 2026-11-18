@@ -1001,18 +1001,28 @@ explicitly if you need it pinned.
 
 ## BAX details
 
-- **The strategies.** `BAXPolicy(goal, strategy=...)`:
-  - `"MeanBAX"` runs the goal on the posterior mean and measures the most uncertain
-    design in what it selects (US when that's empty or all measured). Fast; it can
-    settle on a wrong region, since the mean doesn't explore.
-  - `"PSBAX"` (posterior-sampling BAX, Cheng et al. 2024) does the same on one joint
-    posterior draw instead of the mean, a fresh draw per pick, so it explores where
-    the model is unsure of the target set. About MeanBAX's cost per proposal.
-  - `"InfoBAX"` measures where a run tells most about the target set (expected
-    information gain over `n_posterior_samples` draws, each conditioned on). The
-    most careful and by far the costliest; with sources, it also chooses the source.
-  - `"SwitchBAX"` (the default) is MeanBAX until it's stuck, then InfoBAX.
-  - `"US"` ignores the goal and measures where the model is most unsure.
+- **The strategies, by what you want from the runs.** `BAXPolicy(goal,
+  strategy=...)`:
+  - **Designs that meet the goal** (recipes that work):
+    - `"SwitchBAX"` (the default) measures inside the target set the posterior mean
+      gives, as long as there's something new there, and switches to InfoBAX when
+      there isn't (the set is empty, or all measured or in flight). Most of its runs
+      land in the target, though it may stay in the part of it found first.
+    - `"MeanBAX"` is the same, falling back to US instead of InfoBAX.
+  - **A map of where the goal holds** (a boundary, every region of it):
+    - `"PSBAX"` (posterior-sampling BAX, Cheng et al. 2024) runs the goal on one
+      joint posterior draw instead of the mean, a fresh draw per pick, and
+      measures the most uncertain design in that draw's set (US when it's empty or
+      all measured). Draws disagree where the model is unsure of the set, so it
+      looks there; it costs a few times MeanBAX's proposal, far less than InfoBAX's.
+    - `"InfoBAX"` measures where a run tells most about the target set (expected
+      information gain over `n_posterior_samples` draws, each conditioned on). The
+      most careful and by far the costliest; with sources, it also chooses the
+      source.
+    - `"US"` ignores the goal and measures where the model is most unsure.
+  - On a toy with the target in three separate basins (30 runs): SwitchBAX put 19
+    of 30 runs in the target and mapped about half of it; PS-BAX 12 runs and 83%
+    of it; InfoBAX 8 runs and 91%, at ~18× PS-BAX's time per proposal.
 - **InfoBAX measures information about a noisy measurement.** Both entropy terms
   include the measurement noise at each candidate: the model's own (learned, or
   the mean per-point `Yvar`), or `BAXPolicy(noise_at=fn)` with `fn(X) -> (N, m)`
