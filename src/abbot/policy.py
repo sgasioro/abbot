@@ -20,6 +20,7 @@ silently pair a point-estimate model with a variance-hungry acquisition.
 
 from __future__ import annotations
 
+import gc
 import logging
 from typing import Literal, Protocol, runtime_checkable
 
@@ -1334,10 +1335,16 @@ class BAXPolicy:
                 )
                 _, fstd = self._raw_mean_std(fant, grid, spec)
                 term2 += _entropy((fstd**2 + noise).sqrt())
+                del fant
             except Exception:
                 logger.exception("InfoBAX fantasy conditioning failed for a sample.")
                 failed += 1
                 term2 += term1
+            # A GPyTorch model is in a reference cycle (its own load-state hook), so
+            # only the cyclic collector frees a fantasy. Without this, each sample's
+            # fantasy (its n x n caches) is kept until the loop ends: 100 samples at
+            # n = 3000 hold 7 GB. Young generations only: cheap, and enough.
+            gc.collect(1)
         if not conditioned:
             # No sample gives the goal anything to select, so the information gain
             # is zero everywhere and the pick would be arbitrary. Explore instead.
