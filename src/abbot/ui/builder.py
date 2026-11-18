@@ -30,6 +30,7 @@ EXTRA_SPEC_FIELDS = ("sources", "boxes", "domain_constraints", "output_constrain
 BAX_STRATEGY_LABELS: dict[str, str] = {
     "SwitchBAX": "Balanced (SwitchBAX)",
     "MeanBAX": "Fast / greedy (MeanBAX)",
+    "PSBAX": "Fast, exploring (PS-BAX)",
     "InfoBAX": "Thorough (InfoBAX)",
     "US": "Explore only (US)",
 }

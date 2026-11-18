@@ -205,3 +205,13 @@ def test_the_workspace_fits_on_its_device(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(ValueError, match="CUDA isn't available"):
         Workspace(tmp_path, device="cuda")  # at startup, not on the first campaign
+
+
+def test_a_psbax_campaign_maps_its_goal(tmp_path):
+    ws = Workspace(tmp_path)
+    spec = {**SPEC, "outputs": [{"name": "yield", "direction": "OBSERVE"}]}
+    ws.create("map", spec, goal={"kind": "level", "output": "yield", "threshold": 0.8},
+              strategy="PSBAX")
+    assert ws.open("map").policy.strategy == "PSBAX"
+    _run(ws, "map", 8)
+    assert ws.status("map")["runs"] == 8

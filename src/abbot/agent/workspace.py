@@ -104,8 +104,10 @@ the outputs the goal reads OBSERVE. Goal kinds:
                                                        where yield >= 0.8 (upper: <=)
   {"kind": "topk", "output": "yield", "k": 5, "largest": true}
   {"kind": "percentile", "percentile": 90}             top 10% of a single output
-strategy (with a goal): SwitchBAX (balanced, default), MeanBAX (fast), InfoBAX
-(thorough), US (explore only).
+strategy (with a goal): SwitchBAX (balanced, default) or MeanBAX (fast) spend most
+runs on designs that meet the goal; PSBAX (fast, exploring) or InfoBAX (thorough)
+spread runs to pin down the whole target set, its edges and parts not found yet;
+US (explore only) ignores the goal.
 model: "default" (independent GPs) or "correlated" (one GP over correlated outputs).
 
 Loop: suggest -> run the design -> report_result (or report_failure). A value

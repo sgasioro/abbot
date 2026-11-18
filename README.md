@@ -253,7 +253,7 @@ ParetoBO hypervolume, InfoBAX fantasy conditioning, the Xopt run).
 - The ask/tell `Campaign`, blocking drivers, resume, batches and asynchronous
   runs with pending designs.
 - Single- and multi-objective BO, uncertainty sampling, and goal-driven BAX
-  (InfoBAX, SwitchBAX, MeanBAX) over discrete grids.
+  (InfoBAX, SwitchBAX, MeanBAX, PS-BAX) over discrete grids.
 - Composite objectives and SBI (`composite_evaluate`, `Rescore`,
   `abbot.interop.sbi`).
 - Multi-fidelity and multi-source BO with costs (`Source`,
@@ -307,6 +307,9 @@ If abbot helps your work, please cite the repository (see
   algorithm execution," *npj Computational Materials* 10, 156 (2024),
   [doi:10.1038/s41524-024-01326-2](https://doi.org/10.1038/s41524-024-01326-2)
   (MeanBAX, SwitchBAX and target-subset goals).
+- C. X. Cheng, R. Astudillo, T. Desautels and Y. Yue, "Practical Bayesian
+  Algorithm Execution via Posterior Sampling," *NeurIPS* 2024,
+  [arXiv:2410.20596](https://arxiv.org/abs/2410.20596) (PS-BAX).
 
 and its models and standard acquisitions come from BoTorch: M. Balandat *et al.*,
 "BoTorch: A Framework for Efficient Monte-Carlo Bayesian Optimization,"

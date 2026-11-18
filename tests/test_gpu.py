@@ -238,7 +238,7 @@ def _bax_spec():
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("strategy", ["US", "MeanBAX", "SwitchBAX", "InfoBAX"])
+@pytest.mark.parametrize("strategy", ["US", "MeanBAX", "SwitchBAX", "InfoBAX", "PSBAX"])
 def test_bax_strategies_on_the_gpu(strategy):
     torch.manual_seed(5)
     policy = BAXPolicy(TopK(k=5, output="f", largest=False), strategy,

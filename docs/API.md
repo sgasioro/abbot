@@ -889,7 +889,7 @@ ordered):
   the target; all values of an unordered source; or `{name: [values]}`), by the
   information a run there gives about the goal's target set, per unit of cost (the
   same default `SourceCost`). `proposal_set(spec)` is the grid at every level. US,
-  MeanBAX and SwitchBAX's MeanBAX phase propose at the target;
+  MeanBAX, PS-BAX and SwitchBAX's MeanBAX phase propose at the target;
   `choose_sources=False` keeps InfoBAX there too.
 
 Everything else works *at the target*:
@@ -1001,13 +1001,38 @@ explicitly if you need it pinned.
 
 ## BAX details
 
+- **The strategies.** `BAXPolicy(goal, strategy=...)`. All but US aim at the
+  goal's target set; they differ in what they spend runs on:
+  - **Measuring inside the current best guess of the set:** most runs are designs
+    that meet the goal, though parts of the set may go unfound.
+    - `"SwitchBAX"` (the default) measures inside the target set the posterior mean
+      gives, as long as there's something new there, and switches to InfoBAX when
+      there isn't (the set is empty, or all measured or in flight).
+    - `"MeanBAX"` is the same, falling back to US instead of InfoBAX.
+  - **Pinning down the set:** runs go where the model is unsure of the set, at its
+    edges and in parts not found yet. A fuller picture of the set, with fewer runs
+    inside it.
+    - `"PSBAX"` (posterior-sampling BAX, Cheng et al. 2024) runs the goal on one
+      joint posterior draw instead of the mean, a fresh draw per pick, and
+      measures the most uncertain design in that draw's set (US when it's empty or
+      all measured). Draws disagree where the model is unsure of the set, so it
+      looks there; it costs a few times MeanBAX's proposal, far less than InfoBAX's.
+    - `"InfoBAX"` measures where a run tells most about the target set (expected
+      information gain over `n_posterior_samples` draws, each conditioned on). By
+      far the costliest; with sources, it also chooses the source.
+  - `"US"` ignores the goal and measures wherever the model is least sure: a
+    baseline.
+  - On a toy with the target in three separate basins (30 runs): SwitchBAX put 19
+    of 30 runs in the target and its estimate covered about half the set; PS-BAX
+    12 runs and 83% of it; InfoBAX 8 runs and 91%, at ~18× PS-BAX's time per
+    proposal.
 - **InfoBAX measures information about a noisy measurement.** Both entropy terms
   include the measurement noise at each candidate: the model's own (learned, or
   the mean per-point `Yvar`), or `BAXPolicy(noise_at=fn)` with `fn(X) -> (N, m)`
   variances in raw output units. The hallucinated target values are conditioned
   on with hyperparameters fixed and only a 1e-6 numerical jitter, since they are
   function values, not measurements.
-- **US / MeanBAX compare outputs in relative units:** each output's posterior std
+- **US / MeanBAX / PS-BAX compare outputs in relative units:** each output's posterior std
   is divided by its observed spread before averaging, so units don't decide.
 - **A design isn't proposed twice by default.** Grid points already measured, or in
   flight, are left out. `BAXPolicy(requery=True)` leaves out only those in flight,

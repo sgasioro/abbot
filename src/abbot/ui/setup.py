@@ -644,7 +644,7 @@ def _extras(state: UIState) -> None:
     with ui.element("div").classes("ab-card w-full p-5"), ui.column().classes("gap-2 w-full"):
         ui.label("Name").classes("font-medium")
         ui.input(on_change=lambda _: state.refresh_header()).bind_value(state, "name").props(
-            "outlined dense").classes("w-80").mark("campaign-name")
+            "outlined dense").classes("w-80 max-w-full").mark("campaign-name")
     with ui.element("div").classes("ab-card w-full p-5"), ui.column().classes("gap-2 w-full"):
         _sources(state)
     if len(state.objective_rows) > 1:
@@ -662,7 +662,9 @@ def _extras(state: UIState) -> None:
             theme.segmented(labels, state.bax_strategy,
                             lambda v: (setattr(state, "bax_strategy", v), _changed(state)),
                             marker="strategy")
-            ui.label("Balanced suits most campaigns.").classes("ab-sub text-sm")
+            ui.label("Balanced spends most runs on designs that meet the target. Fast, "
+                     "exploring and Thorough spread runs to pin down the whole target: "
+                     "its edges, and parts not found yet.").classes("ab-sub text-sm")
 
 
 def _sources(state: UIState) -> None:
