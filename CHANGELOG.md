@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Runs that didn't measure every output:** give the missing one as `None`
+  (`ingest({"yield": 0.82, "purity": None})`, `null` from the agent, an empty box
+  in the UI, an empty CSV cell). Every output must still be named, so a typo
+  can't pass for a missing value; a result with nothing measured is refused. The
+  run counts as usual, with NaN stored, and each output's model trains on the
+  runs that measured it (every built-in model; a custom `ModelConstructor` opts in
+  with `handles_missing = True`, helped by `abbot.model.measured`). The best run
+  so far, the observed front and fallbacks without a model skip runs missing an
+  objective or a constrained output. `correct` fills a value in later. Output
+  constraints ignore a gap in an output they don't use.
+
 ## 0.3.0
 
 The UI is rebuilt around a guided setup, with an expert panel for every field and

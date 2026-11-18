@@ -32,6 +32,7 @@ Xopt's tabular interchange, which is why it lives in abbot.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import torch
@@ -469,7 +470,9 @@ class GestGeneratorPolicy:
             return rows
         (j,) = spec.objective_indices()
         name, score = spec.output_names[j], spec.outputs[j].score
-        return sorted(rows, key=lambda row: score(row[name]))
+        # A run that didn't measure the objective (NaN) sorts first, never last.
+        return sorted(rows, key=lambda row: -math.inf if math.isnan(row[name])
+                      else score(row[name]))
 
     def suggest(self, history, spec: ProblemSpec, model=None, n: int = 1, *, pending=None):
         self.last_warning = None

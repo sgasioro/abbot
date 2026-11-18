@@ -762,10 +762,33 @@ a lab can have several vials, or a cluster several jobs, in flight at once.
 `outstanding()` lists them, oldest first; `state().pending` / `.pending_ids` carry
 the same in JSON.
 
+**An output a run didn't measure.** Give it as `None`:
+`ingest({"yield": 0.82, "purity": None}, id=c.id)`, or `None` in a list in
+`spec.outputs` order. Every output must still be named, so a misspelled or forgotten
+name raises instead of passing for a missing value; a result with nothing measured
+is refused (report that run with `fail`). The run is recorded as usual (not a fault,
+not retried) with NaN for the missing output, and `state()` reports it as `None`.
+- **Models:** each output's model trains on the runs that measured it
+  (`ModelListConstructor`, the default for several outputs; correlated outputs;
+  sources; the ensemble). `SingleTaskGPConstructor` over several outputs uses the
+  runs that measured them all. Until some run measures an output, there's nothing
+  to fit it on, and the fit says so (by default the campaign takes a random design
+  that step, as for any failed fit). A custom `ModelConstructor` sets
+  `handles_missing = True` once it handles NaN in `Y` (`abbot.model.measured(X, Y,
+  Yvar, j)` gives one output's runs); otherwise a campaign with a gap says so
+  instead of fitting on NaN.
+- **Decisions:** the best run so far, the observed front and `recommend` without a
+  model skip runs missing an objective or an output a constraint uses. A run missing
+  an output no constraint uses still counts. With a model, every design is scored
+  by the model either way.
+- **Filling it in later:** `campaign.correct(c.id, {"purity": 0.91})`.
+- **CSV:** an empty cell, both ways. **UI:** leave the box empty; the
+  notification names what wasn't measured. **Agent:** `null` in `report_result`.
+
 **Correcting a recorded value.** `campaign.correct(run, outputs, reason=None)`
 fixes a run already recorded (a value typed or read wrong). `run` is its id or its
 index in the history; `outputs` is every output, or a `{name: value}` dict of only
-the ones to change. The replaced values stay on the record
+the ones to change (`None`: not measured). The replaced values stay on the record
 (`Record.corrections`: the old outputs, when, and `reason`), the change is saved
 with the store, and the model refits on its next use. Only runs that counted can be
 corrected: fault checks and stop rules aren't re-run, so a failed run stays failed. Every `Record` stores the `id` it closed. `step` runs the oldest

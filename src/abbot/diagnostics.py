@@ -212,7 +212,9 @@ def check(history: History, spec: ProblemSpec, model: Model | None) -> CheckRepo
         return report
 
     signs = spec.output_signs(dtype=torch.double).tolist()
-    for name, sign, (gp, row) in zip(spec.output_names, signs, gps):
+    for j, (name, sign, (gp, row)) in enumerate(zip(spec.output_names, signs, gps)):
+        # This output's model trained on the runs that measured it.
+        seen = [i for i in steps if not history.records[i].outputs.reshape(-1)[j].isnan()]
         fit = OutputFit(name=name)
         report.fits.append(fit)
         try:
@@ -225,7 +227,7 @@ def check(history: History, spec: ProblemSpec, model: Model | None) -> CheckRepo
         fit.lengthscales = _lengthscales(gp, row, spec)
         # The model is in maximize-canonical space; z is reported in raw terms.
         _judge(fit, sign * mean, var, sign * y, noise,
-               steps if len(steps) == len(y) else None, add)
+               seen if len(seen) == len(y) else None, add)
     return report
 
 

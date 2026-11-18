@@ -18,6 +18,7 @@ the caller chooses how to react.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -110,6 +111,11 @@ def split_eval(result: object, spec: ProblemSpec) -> tuple[torch.Tensor, object 
     an ``(outputs, aux)`` tuple. Validates the OUTPUT columns against the spec so a
     wrong-width or misnamed return fails here with a clear message instead of
     crashing downstream.
+
+    An output the run didn't measure is ``None`` (or NaN), stored as NaN; each
+    output's model trains on the runs that measured it. Every output must still
+    be given, so a misspelled name can't pass for a missing value. A result with
+    nothing measured is refused: that run failed.
     """
     if isinstance(result, tuple):
         outputs, aux = result
@@ -117,6 +123,8 @@ def split_eval(result: object, spec: ProblemSpec) -> tuple[torch.Tensor, object 
         outputs, aux = result, None
     if isinstance(outputs, Mapping):
         outputs = _outputs_from_dict(outputs, spec)
+    elif isinstance(outputs, (list, tuple)):
+        outputs = [_value(v) for v in outputs]
     # dtype up front: python floats would otherwise round-trip through float32.
     outputs = torch.as_tensor(outputs, dtype=torch.double).reshape(-1)
     if outputs.shape[0] != spec.n_outputs:
@@ -125,7 +133,25 @@ def split_eval(result: object, spec: ProblemSpec) -> tuple[torch.Tensor, object 
             f"{spec.n_outputs} output(s); return one column per output in "
             "spec.outputs order."
         )
+    if outputs.isnan().all():
+        raise ValueError(
+            "the result has no measured value (every output is None or NaN). If the "
+            "run failed, report it as failed (fail(), or raise from run()) so it's "
+            "retried."
+        )
     return outputs, aux
+
+
+def _value(v) -> float:
+    """One output value: ``None`` (not measured) is NaN."""
+    return float("nan") if v is None else float(v)
+
+
+def plain_outputs(outputs: torch.Tensor | None) -> list[float | None] | None:
+    """A record's outputs as a JSON-safe list: a missing output is ``None``."""
+    if outputs is None:
+        return None
+    return [None if math.isnan(v) else v for v in outputs.reshape(-1).tolist()]
 
 
 def _outputs_from_dict(outputs: Mapping, spec: ProblemSpec) -> list[float]:
@@ -136,9 +162,10 @@ def _outputs_from_dict(outputs: Mapping, spec: ProblemSpec) -> list[float]:
     if missing or extra:
         raise ValueError(
             f"outputs dict keys {sorted(outputs)} don't match the spec's outputs "
-            f"{names} (missing {missing}, unexpected {extra})."
+            f"{names} (missing {missing}, unexpected {extra}). An output that wasn't "
+            "measured is given as None."
         )
-    return [float(outputs[n]) for n in names]
+    return [_value(outputs[n]) for n in names]
 
 
 def _looks_like_tensor_code(exc: Exception) -> bool:
@@ -229,6 +256,24 @@ def _one_per_design(
     return sorted(chosen.values())
 
 
+def deciding_outputs(spec: ProblemSpec) -> list[int]:
+    """The output columns a decision from observed values reads: the objectives
+    and every output a constraint involves."""
+    cols = set(spec.objective_indices())
+    if spec.has_output_constraints:
+        A, _, _ = spec.output_constraint_rows()
+        cols |= set((A.abs().sum(0) > 0).nonzero().reshape(-1).tolist())
+    return sorted(cols)
+
+
+def fully_measured(history: History, spec: ProblemSpec, indices: list[int]) -> list[int]:
+    """Of ``indices``, the records that measured every deciding output: one missing
+    an objective or a constrained output can't be ranked by its observed values."""
+    cols = deciding_outputs(spec)
+    return [i for i in indices
+            if not history.records[i].outputs.reshape(-1)[cols].isnan().any()]
+
+
 def recommend(
     history: History, spec: ProblemSpec, model=None, *, denoise: bool = True,
     usability: Usability | None = None,
@@ -258,6 +303,9 @@ def recommend(
     With a ``usability`` model (the campaign has bad-region runs), only designs it
     gives at least a 50% chance of a usable result are ranked, if there are any.
 
+    From observed values, a run missing an objective or a constrained output isn't
+    ranked; the model scores every design either way.
+
     Returns ``[]`` for a pure-BAX spec (no objectives — handover is the goal's job)
     or when there are no clean records.
     """
@@ -266,6 +314,8 @@ def recommend(
         return []
     keep = [i for i, r in enumerate(history.records) if r.usable]
     use_model = denoise and model is not None
+    if not use_model:
+        keep = fully_measured(history, spec, keep)
     if spec.sources:
         keep = _one_per_design(history, spec, keep, observed=not use_model)
     if usability is not None and keep:
@@ -313,7 +363,9 @@ def feasibility(
         X = torch.stack([history.records[i].candidate.double().reshape(-1) for i in indices])
         return prob_feasible(spec, model, spec.at_target(X)).tolist()
     Y = torch.stack([history.records[i].outputs.double().reshape(-1) for i in indices])
-    return feasible(spec, Y).double().tolist()
+    known = ~Y[:, deciding_outputs(spec)].isnan().any(-1)  # unmeasured: unknown
+    return torch.where(known, feasible(spec, Y).double(),
+                       torch.full_like(known, float("nan"), dtype=torch.double)).tolist()
 
 
 def observed_front(history: History, spec: ProblemSpec) -> list[int]:
@@ -376,6 +428,20 @@ def fit_model(
     X = history.clean.designs.double().to(device)
     Y = canonical_Y(history, spec).to(device)
     Yvar = canonical_Yvar(history, spec)
+    missing = Y.isnan()
+    if missing.any():  # outputs some runs didn't measure
+        never = [n for n, gap in zip(spec.output_names, missing.all(0).tolist()) if gap]
+        if never:
+            raise ValueError(
+                f"no run has measured {', '.join(never)} yet, so there's nothing to fit "
+                "it on; a run that measures it is needed first."
+            )
+        if not getattr(model_constructor, "handles_missing", False):
+            raise ValueError(
+                f"{type(model_constructor).__name__} doesn't take runs with an output "
+                "missing (it doesn't set handles_missing = True). Use a built-in model, "
+                "or fit each output on the runs that measured it (abbot.model.measured)."
+            )
     return model_constructor.build(X, Y, Yvar.to(device) if Yvar is not None else None)
 
 
@@ -913,7 +979,8 @@ class Campaign:
         values it replaces stay on the record (``Record.corrections``, with
         ``reason``) and the change is saved with the store; the model refits on
         its next use. Only runs that counted can be corrected: fault checks and
-        stopping rules aren't re-run, so a failed run stays failed.
+        stopping rules aren't re-run, so a failed run stays failed. An output left
+        unmeasured (``None``) can be filled in this way once it's measured.
         """
         step = self._find_run(run)
         r = self.history.records[step]
@@ -932,10 +999,12 @@ class Campaign:
                 )
             new = old.clone()
             for k, v in outputs.items():
-                new[names.index(k)] = float(v)
+                new[names.index(k)] = _value(v)
+            if new.isnan().all():
+                raise ValueError("correct(): that would leave the run with no measured value.")
         else:
             new, _ = split_eval(outputs, self.spec)
-        entry = {"outputs": old.tolist(), "at": time.time(), "reason": reason}
+        entry = {"outputs": plain_outputs(old), "at": time.time(), "reason": reason}
         r.corrections = [*(r.corrections or []), entry]
         r.outputs = new
         if self.store is not None:
@@ -1415,10 +1484,7 @@ class Campaign:
             variable_names=self.spec.variable_names,
             objective_names=[o.name for o in self.spec.objectives],
             designs=[r.candidate.reshape(-1).tolist() for r in self.history.records],
-            outputs=[
-                r.outputs.reshape(-1).tolist() if r.outputs is not None else None
-                for r in self.history.records
-            ],
+            outputs=[plain_outputs(r.outputs) for r in self.history.records],
             faults=[r.fault for r in self.history.records],
             pending=[self._to_dict(it.x) for it in self._inflight.values()] or None,
             recommended=list(self._recommended),

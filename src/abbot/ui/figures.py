@@ -44,6 +44,11 @@ class VizSelections:
     var_y: int = 1
 
 
+
+def _measured(r, j: int) -> bool:
+    """A usable run that measured output ``j``."""
+    return r.usable and r.outputs is not None and not r.outputs.reshape(-1)[j].isnan()
+
 def blank_fig(title: str = "building…") -> dict:
     return {"data": [], "layout": {**PLOT_LAYOUT, "title": {"text": title}}}
 
@@ -115,7 +120,7 @@ def model_fig(
         s = analysis.slice_1d(history, spec, model, var=0, output=obj, n=160)
         upper = [m + 2 * sd for m, sd in zip(s["mean"], s["std"])]
         lower = [m - 2 * sd for m, sd in zip(s["mean"], s["std"])]
-        clean = [r for r in history.records if r.usable and r.outputs is not None]
+        clean = [r for r in history.records if _measured(r, obj)]
         px = [r.candidate.reshape(-1)[0].item() for r in clean]
         py = [r.outputs.reshape(-1)[obj].item() for r in clean]
         ys = upper + lower + py
@@ -156,7 +161,7 @@ def model_fig(
             shapes.append({"type": "line", "xref": "x", "x0": p[0].item(), "x1": p[0].item(),
                            "yref": "paper", "y0": 0, "y1": 1,
                            "line": {"color": NEXT, "dash": "dash", "width": 2}})
-        latest = [r for r in history.records if r.outputs is not None and r.usable][-1:]
+        latest = [r for r in history.records if _measured(r, obj)][-1:]
         data = [
             {"x": s["x"] + s["x"][::-1], "y": upper + lower[::-1], "fill": "toself",
              "fillcolor": BAND, "line": {"color": "rgba(0,0,0,0)"}, "type": "scatter",

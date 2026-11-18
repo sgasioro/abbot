@@ -23,9 +23,13 @@ if TYPE_CHECKING:
 
 
 def _counts(r, spec: ProblemSpec) -> bool:
-    """A record counts toward the best so far: clean, measured, and satisfying
-    every output constraint."""
+    """A record counts toward the best so far: clean, measured (every objective and
+    constrained output), and satisfying every output constraint."""
+    from abbot.session import deciding_outputs
+
     if not r.usable or r.outputs is None:
+        return False
+    if r.outputs.reshape(-1)[deciding_outputs(spec)].isnan().any():
         return False
     if not spec.has_output_constraints:
         return True
@@ -144,10 +148,11 @@ def parity(history: History, spec: ProblemSpec, model) -> dict:
     mean, std = _posterior_raw(model, X, spec)
     out = {}
     for j, o in enumerate(spec.outputs):
+        seen = ~Y[:, j].isnan()  # the runs that measured this output
         out[o.name] = {
-            "observed": Y[:, j].tolist(),
-            "predicted": mean[:, j].tolist(),
-            "std": std[:, j].tolist(),
+            "observed": Y[seen, j].tolist(),
+            "predicted": mean[seen, j].tolist(),
+            "std": std[seen, j].tolist(),
         }
     return out
 

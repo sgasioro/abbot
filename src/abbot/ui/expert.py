@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 
 from nicegui import ui
 
@@ -440,17 +441,21 @@ def _correct_dialog(state: UIState, row: dict) -> None:
     with ui.dialog() as dialog, ui.element("div").classes("ab-card p-6 bg-white"), \
             ui.column().classes("gap-3"):
         ui.label(f"Correct run {step + 1} ({r.id})").classes("text-lg font-semibold")
-        fields = {o.name: ui.number(o.name, value=float(r.outputs.reshape(-1)[j])).props(
+        now = [None if math.isnan(v) else v for v in r.outputs.reshape(-1).tolist()]
+        fields = {o.name: ui.number(o.name, value=now[j]).props(
             "outlined dense").classes("w-40").mark(f"correct-{o.name}")
             for j, o in enumerate(spec.outputs)}
+        if len(spec.outputs) > 1:
+            ui.label("Leave a box empty for a value that wasn't measured.").classes(
+                "ab-sub text-xs")
         reason = ui.input("why (optional)").props("outlined dense").classes("w-72")
         if r.corrections:
             ui.label(f"Corrected {len(r.corrections)} time(s) before.").classes("ab-sub text-xs")
 
         def save() -> None:
-            values = {k: f.value for k, f in fields.items()}
-            if any(v is None for v in values.values()):
-                ui.notify("Enter every value.", type="warning")
+            values = {k: f.value for k, f in fields.items()}  # an empty box: not measured
+            if all(v is None for v in values.values()):
+                ui.notify("Enter at least one value.", type="warning")
                 return
             try:
                 campaign.correct(step, values, reason=reason.value or None)

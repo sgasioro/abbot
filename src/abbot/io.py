@@ -37,7 +37,7 @@ def history_to_csv(history: History, spec: ProblemSpec) -> str:
 
     One column per modeled output (the full set, incl. OBSERVE), in spec.outputs
     order. Only records with outputs are written. Raw (physical) output units, and
-    labels for labeled variables.
+    labels for labeled variables. An output a run didn't measure is an empty cell.
     """
     var_names = spec.variable_names
     out_names = spec.output_names
@@ -48,7 +48,7 @@ def history_to_csv(history: History, spec: ProblemSpec) -> str:
         if r.outputs is None:
             continue
         xs = list(spec.as_dict(r.candidate).values())
-        ys = r.outputs.reshape(-1).tolist()
+        ys = ["" if math.isnan(v) else v for v in r.outputs.reshape(-1).tolist()]
         writer.writerow([i, *xs, *ys])
     return buf.getvalue()
 
@@ -58,8 +58,9 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
 
     Column matching is by name against the spec (a ``step`` column, if present, is
     ignored). Raises a clear error if a required variable/output column is missing.
-    A labeled variable's column holds its labels. Imported records carry no
-    observation/aux (they are prior data).
+    A labeled variable's column holds its labels. An empty output cell is an output
+    that run didn't measure (a row must have at least one). Imported records carry
+    no observation/aux (they are prior data).
     """
     from abbot.problem import EnumeratedDomain
 
@@ -86,9 +87,13 @@ def history_from_csv(text: str, spec: ProblemSpec) -> History:
                 ],
                 dtype=torch.double,
             )
-            y = torch.tensor([float(row[n]) for n in out_names], dtype=torch.double)
+            y = torch.tensor([float(row[n]) if (row[n] or "").strip() else math.nan
+                              for n in out_names], dtype=torch.double)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"CSV row {row_num}: could not parse a value ({exc})") from exc
+        if y.isnan().all():
+            raise ValueError(f"CSV row {row_num}: no output has a value; leave out a run "
+                             "that measured nothing.")
         history.append(Record(candidate=x, observation=None, outputs=y))
     return history
 

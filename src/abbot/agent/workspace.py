@@ -30,7 +30,7 @@ from abbot import io as abbot_io
 from abbot.history import DataStore, Record
 from abbot.policy import BAXPolicy
 from abbot.problem import ProblemSpec
-from abbot.session import Campaign
+from abbot.session import Campaign, plain_outputs
 from abbot.ui.builder import (
     BAX_STRATEGY_LABELS,
     MODEL_LABELS,
@@ -110,8 +110,10 @@ spread runs to pin down the whole target set, its edges and parts not found yet;
 US (explore only) ignores the goal.
 model: "default" (independent GPs) or "correlated" (one GP over correlated outputs).
 
-Loop: suggest -> run the design -> report_result (or report_failure). A value
-reported wrong is fixed with correct_result (by the run's id); plot draws the
+Loop: suggest -> run the design -> report_result (or report_failure). An output
+the run didn't measure is reported as null (report_failure if it measured
+nothing); correct_result fills it in later. A value reported wrong is fixed
+with correct_result (by the run's id); plot draws the
 model, the progress or predicted-vs-measured for the person. A failed design
 is retried; after repeated failures the campaign halts until resolve_halt is called
 with "retry", "exclude" or "bad_region" (the design itself gives nothing usable).
@@ -253,9 +255,11 @@ class Workspace:
         return [{"id": cand.id, "design": dict(cand)} for cand in c.suggest(n, fixed=fixed)]
 
     def report_result(
-        self, name: str, id: str, outputs: dict[str, float], cost: float | None = None
+        self, name: str, id: str, outputs: dict[str, float | None],
+        cost: float | None = None,
     ) -> dict:
-        """The measured outputs (raw values, by name) for an outstanding design."""
+        """The measured outputs (raw values, by name) for an outstanding design;
+        ``None`` for one that wasn't measured."""
         c = self._campaign(name)
         c.ingest(outputs, id=id, costs=cost)
         return self._brief(name)
@@ -285,7 +289,7 @@ class Workspace:
         self,
         name: str,
         run: str | int,
-        outputs: dict[str, float],
+        outputs: dict[str, float | None],
         reason: str | None = None,
     ) -> dict:
         """Correct a reported run's measured values (a value typed wrong). ``run``
@@ -536,8 +540,7 @@ def _record_dict(record: Record, spec: ProblemSpec) -> dict:
     if record.id is not None:
         out["run"] = record.id
     if record.outputs is not None:
-        values = torch.as_tensor(record.outputs).reshape(-1).tolist()
-        out["outputs"] = dict(zip(spec.output_names, values))
+        out["outputs"] = dict(zip(spec.output_names, plain_outputs(record.outputs)))
     if record.cost is not None:
         out["cost"] = record.cost
     return out

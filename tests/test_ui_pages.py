@@ -363,3 +363,20 @@ async def test_a_saved_campaign_opens_where_it_stopped(ui_states):
         campaign = state.controller.campaign
         assert len(campaign.history) == 1 and len(campaign.outstanding()) == 1
         assert state.variable_rows[0]["name"] == "x1"
+
+
+@pytest.mark.anyio
+async def test_a_value_left_empty_is_recorded_as_not_measured(ui_states):
+    async with user_simulation(root=app._build_page) as user:
+        state = await _start(user, ui_states, lambda s: s.objective_rows.append(
+            {"name": "purity", "direction": "OBSERVE"}))
+        campaign = state.controller.campaign
+        (cand,) = await _wait_outstanding(user, campaign)
+        await user.should_see("Leave a box empty for a value that wasn't measured.")
+        user.find(marker=f"{cand.id}-submit").click()  # nothing entered: not a result
+        await user.should_see("Enter the measured values first")
+        user.find(marker=f"{cand.id}-y").type("0.7")
+        user.find(marker=f"{cand.id}-submit").click()
+        await user.should_see(f"Recorded {cand.id} (purity not measured).")
+        (r,) = campaign.history.records
+        assert r.outputs[0] == 0.7 and r.outputs[1].isnan()

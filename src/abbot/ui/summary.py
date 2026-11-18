@@ -20,9 +20,12 @@ DIRECTION_WORDS = {"MAXIMIZE": "highest", "MINIMIZE": "lowest"}
 
 
 def fmt(value) -> str:
-    """A value for people: a label as is, a number to 4 significant figures."""
+    """A value for people: a label as is, a number to 4 significant figures, and
+    "–" for an output that wasn't measured (NaN or None)."""
     if isinstance(value, str):
         return value
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "–"
     if isinstance(value, float) and math.isinf(value):
         return "∞" if value > 0 else "−∞"
     return f"{value:.4g}"
