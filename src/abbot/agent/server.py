@@ -91,11 +91,12 @@ def build_server(root: str | Path, device: str | None = None) -> MCPServer:
 
     @_tool(server)
     def report_result(
-        name: str, id: str, outputs: dict[str, float], cost: float | None = None
+        name: str, id: str, outputs: dict[str, float | None], cost: float | None = None
     ) -> dict:
         """Report what was measured for a suggested design: {output: raw value}
-        for every output, and the run's cost if known. Returns a short state;
-        status and recommend give the full picture."""
+        for every output, null for one that wasn't measured (at least one must
+        be), and the run's cost if known. Returns a short state; status and
+        recommend give the full picture."""
         return ws.report_result(name, id, outputs, cost)
 
     @_tool(server)
@@ -112,16 +113,17 @@ def build_server(root: str | Path, device: str | None = None) -> MCPServer:
     @_tool(server)
     def add_results(name: str, results: list[dict]) -> dict:
         """Results measured outside the loop: a list of {"design": {...},
-        "outputs": {...}} with optional "cost"."""
+        "outputs": {...}} with optional "cost"; an output not measured is null."""
         return ws.add_results(name, results)
 
     @_tool(server)
     def correct_result(
-        name: str, run: str, outputs: dict[str, float], reason: str | None = None
+        name: str, run: str, outputs: dict[str, float | None], reason: str | None = None
     ) -> dict:
-        """Correct a run that was already reported (a value typed or read wrong):
-        run is its id from suggest (e.g. "c0003"); outputs names only the outputs
-        to change, with raw values. The old values are kept on the run with
+        """Correct a run that was already reported (a value typed or read wrong,
+        or one measured later): run is its id from suggest (e.g. "c0003");
+        outputs names only the outputs to change, with raw values (null: not
+        measured). The old values are kept on the run with
         reason. Don't start a new campaign to fix a typo."""
         return ws.correct_result(name, run, outputs, reason)
 

@@ -23,11 +23,20 @@ from abbot.problem import ProblemSpec
 FEASIBLE_P = 0.5
 
 
+def row_values(Y: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
+    """Each constraint row's value ``Y @ A.T (..., k)``, NaN only where an output
+    the row uses wasn't measured (an unmeasured output it doesn't use is ignored)."""
+    value = Y.nan_to_num() @ A.T
+    gap = Y.isnan().to(A.dtype) @ (A != 0).to(A.dtype).T
+    return torch.where(gap > 0, torch.full_like(value, float("nan")), value)
+
+
 def feasible(spec: ProblemSpec, Y: torch.Tensor) -> torch.Tensor:
     """Which rows of RAW outputs ``Y (..., n_outputs)`` satisfy every output
-    constraint: a bool tensor ``(...)``. All True without constraints."""
+    constraint: a bool tensor ``(...)``. All True without constraints. A row
+    missing an output a constraint uses doesn't count as satisfying it."""
     A, lower, upper = spec.output_constraint_rows(dtype=Y.dtype, device=Y.device)
-    value = Y @ A.T  # (..., k)
+    value = row_values(Y, A)  # (..., k)
     return ((value >= lower) & (value <= upper)).all(dim=-1)
 
 
@@ -36,7 +45,7 @@ def violation(spec: ProblemSpec, Y: torch.Tensor, scale: torch.Tensor | None = N
     constraint: the sum over rows of the distance outside ``[lower, upper]``, each
     divided by ``scale (k,)`` (see :func:`row_scale`). 0 when feasible."""
     A, lower, upper = spec.output_constraint_rows(dtype=Y.dtype, device=Y.device)
-    value = Y @ A.T
+    value = row_values(Y, A)  # NaN where a used output is missing: unknown
     gap = (lower - value).clamp_min(0) + (value - upper).clamp_min(0)
     if scale is not None:
         gap = gap / scale
@@ -50,8 +59,19 @@ def row_scale(history: History, spec: ProblemSpec) -> torch.Tensor:
     Y = history.clean.outputs.double() if len(history.clean) else None
     if Y is None or Y.shape[0] < 2:
         return torch.ones(A.shape[0], dtype=torch.double)
-    sd = (Y @ A.T).std(dim=0)
+    sd = nanstd(row_values(Y, A))
     return torch.where(sd > 1e-12, sd, torch.ones_like(sd))
+
+
+def nanstd(Y: torch.Tensor) -> torch.Tensor:
+    """Per-column standard deviation of ``Y (n, k)`` over the measured (non-NaN)
+    entries; NaN for a column with fewer than two."""
+    seen = ~Y.isnan()
+    n = seen.sum(0)
+    mean = Y.nan_to_num().sum(0) / n.clamp_min(1)
+    sq = ((Y - mean) ** 2).nan_to_num().sum(0)
+    sd = (sq / (n - 1).clamp_min(1)).sqrt()
+    return torch.where(n >= 2, sd, torch.full_like(sd, float("nan")))
 
 
 def any_feasible(history: History, spec: ProblemSpec) -> bool:

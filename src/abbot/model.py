@@ -83,6 +83,22 @@ def resolve_device(device: str | torch.device | None) -> torch.device:
     return device
 
 
+def measured(X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None, j: int):
+    """The runs that measured output ``j``: ``(X, Y[:, j:j+1], Yvar[:, j:j+1])`` on
+    those rows only (an output a run didn't measure is NaN)."""
+    keep = ~Y[..., j].isnan()
+    if Yvar is not None:
+        keep &= ~Yvar[..., j].isnan()
+    y = Y[keep][..., j : j + 1]
+    return X[keep], y, (Yvar[keep][..., j : j + 1] if Yvar is not None else None)
+
+
+def _per_output(build_one, X, Y, Yvar):
+    """One model per output, each on the runs that measured it, as a ModelListGP."""
+    models = [build_one(*measured(X, Y, Yvar, j)) for j in range(Y.shape[-1])]
+    return models[0] if len(models) == 1 else ModelListGP(*models)
+
+
 @runtime_checkable
 class ModelConstructor(Protocol):
     """Build a fitted botorch ``Model`` from training data.
@@ -94,6 +110,11 @@ class ModelConstructor(Protocol):
 
     All three arrive on the campaign's device (``Campaign(device=...)``), and the
     model should live there too: build any tensor of your own on ``X.device``.
+
+    An output a run didn't measure is NaN in ``Y`` (and ``Yvar``). A constructor
+    that handles that sets ``handles_missing = True`` (``measured(X, Y, Yvar, j)``
+    gives one output's rows); for one that doesn't, a campaign with a missing
+    output says so instead of fitting on NaN.
 
     ``provides_uq`` declares the UQ quality the built model's posterior supplies, so
     the loop can refuse a policy that needs more than the surrogate can give.
@@ -245,6 +266,7 @@ class SingleTaskGPConstructor:
     """
 
     provides_uq = "calibrated_variance"
+    handles_missing = True  # an output a run didn't measure (NaN) is left out of its fit
 
     def __init__(
         self,
@@ -269,7 +291,17 @@ class SingleTaskGPConstructor:
         self, X: torch.Tensor, Y: torch.Tensor, Yvar: torch.Tensor | None = None
     ) -> SingleTaskGP:
         prior = self.prior_mean[0] if isinstance(self.prior_mean, list) else self.prior_mean
-        gp = _gp(X.double(), Y.double(), Yvar, self.bounds, self.log, self.kernel,
+        X, Y = X.double(), Y.double()
+        missing = Y.isnan().any(-1)
+        if Yvar is not None:
+            missing |= Yvar.isnan().any(-1)
+        if missing.any():  # one GP over every output: the runs that measured them all
+            X, Y = X[~missing], Y[~missing]
+            Yvar = Yvar[~missing] if Yvar is not None else None
+            if not len(X):
+                raise ValueError("no run has measured every output yet; with outputs "
+                                 "missing, use ModelListConstructor (one GP per output)")
+        gp = _gp(X, Y, Yvar, self.bounds, self.log, self.kernel,
                  self.categorical, prior, self.fit_prior_scale)
         fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
         return gp
@@ -286,6 +318,7 @@ class ModelListConstructor:
     """
 
     provides_uq = "calibrated_variance"
+    handles_missing = True  # an output a run didn't measure (NaN) is left out of its fit
 
     def __init__(
         self,
@@ -314,11 +347,8 @@ class ModelListConstructor:
         if callable(priors):
             raise TypeError("ModelListConstructor: prior_mean is a list, one entry per output")
         gps = [
-            _gp(
-                X, Y[..., j : j + 1], Yvar[..., j : j + 1] if Yvar is not None else None,
-                self.bounds, self.log, self.kernel, self.categorical,
-                priors[j], self.fit_prior_scale,
-            )
+            _gp(*measured(X, Y, Yvar, j), self.bounds, self.log, self.kernel,
+                self.categorical, priors[j], self.fit_prior_scale)
             for j in range(Y.shape[-1])
         ]
         model = ModelListGP(*gps)
@@ -345,6 +375,8 @@ class EnsembleConstructor:
     ``Yvar`` is ignored: an ensemble represents noise through member disagreement,
     not an explicit per-point variance.
     """
+
+    handles_missing = True  # unmeasured outputs are left out of the loss
 
     def __init__(
         self,
@@ -380,7 +412,8 @@ class EnsembleConstructor:
             opt = torch.optim.Adam(net.parameters(), lr=self.lr)
             for _ in range(self.epochs):
                 opt.zero_grad()
-                loss = torch.nn.functional.mse_loss(net(X), Y)
+                seen = ~Y.isnan()  # an output a run didn't measure adds nothing
+                loss = ((net(X) - Y.nan_to_num()) ** 2)[seen].mean()
                 loss.backward()
                 opt.step()
             members.append(net)
@@ -421,6 +454,7 @@ class MultiSourceGPConstructor:
     """
 
     provides_uq = "calibrated_variance"
+    handles_missing = True  # an output a run didn't measure (NaN) is left out of its fit
 
     def __init__(
         self,
@@ -472,6 +506,10 @@ class MultiSourceGPConstructor:
     def _fidelity_gp(self, X, Y, Yvar):
         from botorch.models import SingleTaskMultiFidelityGP
 
+        if Y.isnan().any() or (Yvar is not None and Yvar.isnan().any()):
+            # One GP per output, each on the runs that measured it.
+            return _per_output(self._fidelity_gp, X, Y, Yvar)
+
         spec = self.spec
         positions = dict(zip(spec.source_names, spec.source_indices()))
         iteration = positions[self.iteration] if self.iteration is not None else None
@@ -503,10 +541,11 @@ class MultiSourceGPConstructor:
         design = [i for i in range(d) if i != t and i not in categorical]
         gps = []
         for j in range(Y.shape[-1]):
+            Xj, Yj, Yvarj = measured(X, Y, Yvar, j)
             gp = MultiTaskGP(
-                X,
-                Y[..., j : j + 1],
-                train_Yvar=Yvar[..., j : j + 1] if Yvar is not None else None,
+                Xj,
+                Yj,
+                train_Yvar=Yvarj,
                 task_feature=t,
                 output_tasks=[int(source.target_code)],
                 all_tasks=sorted(int(v) for v in source.domain.codes),
@@ -557,6 +596,7 @@ class MultiTaskGPConstructor:
     """
 
     provides_uq = "calibrated_variance"
+    handles_missing = True  # an output a run didn't measure (NaN) is left out of its fit
 
     def __init__(self, spec, *, rank: int | None = None) -> None:
         if spec.sources:

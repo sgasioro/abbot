@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 
-import torch
 from nicegui import run, ui
 
 from abbot.experiment import MockAnalyticExperiment
@@ -131,20 +130,27 @@ def _run_this(state: UIState, cand) -> None:
 
         async def record() -> None:
             values = [inputs[o.name].value for o in spec.outputs]
-            if any(v is None for v in values):
-                ui.notify("Enter every measured value first.", type="warning")
+            if all(v is None for v in values):
+                ui.notify("Enter the measured values first (or say it didn't run).",
+                          type="warning")
                 return
+            skipped = [o.name for o, v in zip(spec.outputs, values) if v is None]
             spent = cost.value if cost is not None else None
             try:
-                ctrl.submit(torch.tensor(values, dtype=torch.double), id=cand.id, cost=spent)
+                ctrl.submit({o.name: v for o, v in zip(spec.outputs, values)}, id=cand.id,
+                            cost=spent)
             except Exception as exc:  # noqa: BLE001
                 ui.notify(str(exc), type="negative", multi_line=True, close_button=True)
                 return
-            ui.notify(f"Recorded {cand.id}.", type="positive")
+            unmeasured = f" ({summary._and(skipped)} not measured)" if skipped else ""
+            ui.notify(f"Recorded {cand.id}{unmeasured}.", type="positive")
             state.focus = None
             await _after_change(state)
 
         theme.primary("Record", record, marker=f"{cand.id}-submit").classes("h-14")
+    if len(spec.outputs) > 1:
+        ui.label("Leave a box empty for a value that wasn't measured.").classes(
+            "ab-sub text-xs pt-1")
     failure = ui.row().classes("items-center gap-3 pt-2")
     failure.set_visibility(False)
     with ui.row().classes("items-center gap-6 pt-3 text-sm"):

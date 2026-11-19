@@ -584,7 +584,7 @@ def no_improvement(patience: int, min_delta: float = 0.0) -> Rule:
         j, score = _directed(spec, name, "no_improvement")
 
         def best(runs) -> float | None:
-            values = [float(y[j]) for _, y, ok in runs if ok]
+            values = [float(y[j]) for _, y, ok in runs if ok and not y[j].isnan()]
             return max(values, key=score) if values else None
 
         def supervisor(history: History) -> Verdict:

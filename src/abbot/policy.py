@@ -39,6 +39,7 @@ from abbot.feasibility import (
     any_feasible,
     feasible,
     mc_constraints,
+    nanstd,
     prob_feasible,
     row_scale,
 )
@@ -574,8 +575,10 @@ class ParetoBO:
         self.min_clean = min_clean  # None -> max(2, 2*m) resolved at suggest time
 
     def _canonical_Y(self, history: History, spec: ProblemSpec) -> torch.Tensor:
-        """Objective columns only, in canonical space: (n_clean, n_objectives)."""
-        return spec.objective_view(history.clean.outputs)
+        """Objective columns only, in canonical space: (n_clean, n_objectives), for
+        the runs that measured every one (the front and the reference point)."""
+        Y = spec.objective_view(history.clean.outputs)
+        return Y[~Y.isnan().any(-1)]
 
     def suggest(
         self,
@@ -610,7 +613,9 @@ class ParetoBO:
                 return _find_feasible(
                     self, history, spec, model, n, pending, fixed, within, usability
                 )
-            Y = Y[feasible(spec, history.clean.outputs.double())]
+            raw = history.clean.outputs.double()
+            raw = raw[~spec.objective_view(raw).isnan().any(-1)]  # the rows of Y
+            Y = Y[feasible(spec, raw)]
 
         if self.ref_point is not None:
             ref_point = self.ref_point
@@ -1426,5 +1431,5 @@ def _output_scale(history: History) -> torch.Tensor:
     clean = [r.outputs.reshape(-1) for r in history.clean.records if r.outputs is not None]
     if len(clean) < 2:
         return torch.ones(1, dtype=torch.double)
-    sd = torch.stack(clean).double().std(dim=0)
+    sd = nanstd(torch.stack(clean).double())  # each output over the runs that measured it
     return torch.where(sd > 1e-12, sd, torch.ones_like(sd))

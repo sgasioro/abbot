@@ -215,3 +215,22 @@ def test_a_psbax_campaign_maps_its_goal(tmp_path):
     assert ws.open("map").policy.strategy == "PSBAX"
     _run(ws, "map", 8)
     assert ws.status("map")["runs"] == 8
+
+
+def test_an_output_reported_as_null_is_not_measured(tmp_path):
+    import json
+
+    ws = Workspace(tmp_path)
+    spec = {**SPEC, "outputs": [{"name": "yield", "direction": "MAXIMIZE"},
+                                {"name": "purity", "direction": "OBSERVE"}]}
+    ws.create("opt", spec)
+    (s,) = ws.suggest("opt")
+    ws.report_result("opt", s["id"], {"yield": _yield(s["design"]), "purity": None})
+    assert ws.history("opt").splitlines()[-1].endswith(",")  # an empty cell in the CSV
+    for _ in range(5):
+        (s2,) = ws.suggest("opt")
+        ws.report_result("opt", s2["id"], {"yield": _yield(s2["design"]), "purity": 0.5})
+    status = ws.status("opt")
+    json.dumps(status, allow_nan=False)  # strict JSON for the client
+    ws.correct_result("opt", s["id"], {"purity": 0.9})
+    assert ws.history("opt").splitlines()[-6].endswith(",0.9")
