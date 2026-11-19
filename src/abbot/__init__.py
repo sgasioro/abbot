@@ -86,7 +86,7 @@ from abbot.session import (
 )
 from abbot.supervision import Supervisor
 
-__version__ = "0.3.0"
+__version__ = "0.4.0a1"
 
 __all__ = [
     "BAXPolicy",

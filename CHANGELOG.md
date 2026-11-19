@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.4.0a1
 
+A pre-release (`pip install abbot==0.4.0a1`, or `pip install --pre abbot`). Runs
+that didn't measure every output can be recorded, and `abbot.nn` (experimental)
+uses your own neural network as the model. One breaking change, below.
+
+- **Breaking: InfoBAX and SwitchBAX refuse a model that can't be updated** when the campaign
+  is set up (a constructor with `supports_conditioning = False`, such as the toy
+  `EnsembleConstructor`), instead of failing at the first proposal. If you paired the toy
+  `EnsembleConstructor` with SwitchBAX, use `abbot.nn.NetEnsembleConstructor`, or
+  MeanBAX / PS-BAX.
 - **Runs that didn't measure every output:** give the missing one as `None`
   (`ingest({"yield": 0.82, "purity": None})`, `null` from the agent, an empty box
   in the UI, an empty CSV cell). Every output must still be named, so a typo
@@ -12,7 +21,6 @@
   so far, the observed front and fallbacks without a model skip runs missing an
   objective or a constrained output. `correct` fills a value in later. Output
   constraints ignore a gap in an output they don't use.
-
 - **Neural-network surrogates (experimental):** `abbot.nn` wraps your own
   `torch.nn.Module` as a model: `NetEnsembleConstructor` (a deep ensemble),
   `MCDropoutConstructor` (dropout masks shared across designs, so each sample is
@@ -26,9 +34,6 @@
   `examples/06_neural_surrogates.ipynb`.
 - **`current_model()` inside `torch.no_grad()`** fits: the fit runs with gradients
   on. Before, a GP fit there failed, and the campaign took a random design.
-- **InfoBAX and SwitchBAX refuse a model that can't be updated** when the campaign
-  is set up (a constructor with `supports_conditioning = False`, such as the toy
-  `EnsembleConstructor`), instead of failing at the first proposal.
 - **InfoBAX with an ensemble** takes distinct members as its samples, not repeated
   draws of the same ones, and uses a model's own `observation_noise_variance` when
   it has one.
