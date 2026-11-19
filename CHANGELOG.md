@@ -32,6 +32,13 @@ uses your own neural network as the model. One breaking change, below.
   US and the BO policies run on the ensemble and dropout models too, with a warning
   that the spread across samples isn't calibrated. New notebook:
   `examples/06_neural_surrogates.ipynb`.
+- **A single network** (`NetEnsembleConstructor(make_net, n_members=1)`) is a
+  model with no uncertainty, for MeanBAX: it measures inside the set the
+  network predicts, at random, and when that has nothing new, the design farthest
+  from the runs so far.
+- **`BAXPolicy(in_set=...)`** chooses which design MeanBAX, SwitchBAX and PS-BAX
+  measure inside the target set: `"uncertainty"` (the default), `"random"`,
+  `"farthest"`, or your own function.
 - **`current_model()` inside `torch.no_grad()`** fits: the fit runs with gradients
   on. Before, a GP fit there failed, and the campaign took a random design.
 - **InfoBAX with an ensemble** takes distinct members as its samples, not repeated

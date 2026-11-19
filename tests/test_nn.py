@@ -95,13 +95,56 @@ def test_dropout_needs_a_dropout_layer():
         MCDropoutConstructor(mlp, epochs=5).build(X, Y)
 
 
-def test_an_ensemble_needs_two_members():
-    with pytest.raises(ValueError, match="at least 2"):
-        NetEnsembleConstructor(mlp, n_members=1)
+def test_one_network_is_a_point_model_for_meanbax_only():
+    one = NetEnsembleConstructor(mlp, n_members=1, epochs=50, bounds=BOUNDS)
+    assert one.provides_uq == "point" and one.supports_conditioning is False
+    assert NetEnsembleConstructor(mlp).provides_uq == "samples"  # the class is unchanged
+    check_uq_pairing(BAXPolicy(TopK(k=3, output="f"), "MeanBAX"), one)
+    for strategy in ("PSBAX", "SwitchBAX", "InfoBAX", "US"):
+        with pytest.raises(ValueError):
+            check_uq_pairing(BAXPolicy(TopK(k=3, output="f"), strategy), one)
+    X, Y = _data()
+    post = one.build(X, Y).posterior(X)
+    assert (post.variance == 0).all()
+    with pytest.raises(ValueError, match="at least 1"):
+        NetEnsembleConstructor(mlp, n_members=0)
+
+
+def test_meanbax_on_one_network_picks_at_random_inside_the_set():
+    torch.manual_seed(0)
+    policy = BAXPolicy(TopK(k=20, output="f", largest=False), "MeanBAX", n_candidates=256)
+    c = Campaign(SPEC, policy, NetEnsembleConstructor(mlp, n_members=1, epochs=100, bounds=BOUNDS),
+                 on_model_error="raise")
+    for _ in range(8):
+        c.step(_Experiment)
+    assert not policy.switched  # inside the predicted set
+    assert policy._no_spread
+    value = float(policy.last_acquisition_value[0])
+    assert 1.0 <= value <= 2.0  # a random score in [0, 1), shifted above the rest
+
+
+def test_with_nothing_new_in_the_set_one_network_measures_the_farthest_design():
+    from abbot import LevelSet
+
+    torch.manual_seed(0)
+    policy = BAXPolicy(LevelSet(threshold=1e6, output="f"), "MeanBAX", n_candidates=128)
+    c = Campaign(SPEC, policy, NetEnsembleConstructor(mlp, n_members=1, epochs=50, bounds=BOUNDS),
+                 on_model_error="raise")
+    for _ in range(5):
+        c.step(_Experiment)
+    taken = c.history.designs.double()
+    (cand,) = c.suggest(1)
+    assert policy.switched  # the goal selects nothing: the fallback
+    grid = policy.candidate_grid(SPEC)
+    span = BOUNDS[1] - BOUNDS[0]
+    dist = torch.cdist((grid - BOUNDS[0]) / span, (taken - BOUNDS[0]) / span).min(-1).values
+    best = grid[int(dist.argmax())]
+    assert torch.allclose(torch.tensor([cand["a"], cand["b"]], dtype=torch.double), best)
 
 
 @pytest.mark.parametrize("kind", ["ensemble", "dropout"])
 def test_conditioning_fine_tunes_a_copy_toward_the_new_points(kind):
+    torch.manual_seed(0)  # dropout's training masks
     X, Y = _data()
     model = CONSTRUCTORS[kind](refit_epochs=200).build(X, Y)
     Xn = torch.tensor([[1.5, 1.5], [-1.5, 1.5]], dtype=torch.double)
@@ -113,12 +156,17 @@ def test_conditioning_fine_tunes_a_copy_toward_the_new_points(kind):
     assert torch.equal(model.posterior(Xn).mean, before)  # the original is untouched
     control = model.refit_control()
     assert control is model.refit_control()  # one per model
-    # As InfoBAX does: one sample's own values. Fitting them, the samples agree more
-    # there than after the same fine-tune on the data alone.
-    grid = torch.rand(40, 2, dtype=torch.double) * 4 - 2
-    own = model(grid)[0].detach()
-    cond = model.condition_on_observations(grid[:10], own[:10])
-    assert cond.posterior(grid[:10]).variance.mean() < control.posterior(grid[:10]).variance.mean()
+    # As InfoBAX does: one sample's own values. Fitting them, the samples usually
+    # agree more there than after the same fine-tune on the data alone (not always:
+    # the other members don't always reach that sample's function), so the median.
+    ratios = []
+    for seed in range(5):
+        g = torch.Generator().manual_seed(seed)
+        grid = torch.rand(10, 2, generator=g, dtype=torch.double) * 4 - 2
+        own = model(grid)[0].detach()
+        cond = model.condition_on_observations(grid, own)
+        ratios.append(float(cond.posterior(grid).variance.mean() / control.posterior(grid).variance.mean()))
+    assert torch.tensor(ratios).median() < 1
     # In a no-grad block too (the batch's kriging believer conditions in one).
     with torch.no_grad():
         model.condition_on_observations(Xn, Yn)

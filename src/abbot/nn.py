@@ -361,13 +361,22 @@ class NetEnsembleConstructor(_NetConstructor):
     Provides posterior samples, so MeanBAX, PS-BAX, SwitchBAX and InfoBAX work with
     it. US and the BO policies run too, on the spread across samples, with a
     warning that it isn't calibrated.
+
+    ``n_members=1`` is a single network: a prediction with no uncertainty. Only
+    MeanBAX takes it. It runs the goal on the network's prediction and measures
+    inside the predicted set, picking at random there by default
+    (``BAXPolicy(in_set=...)`` to choose otherwise); when the set has nothing new,
+    it measures the design farthest from the runs so far.
     """
 
     def __init__(self, make_net: MakeNet, n_members: int = 5, **kwargs) -> None:
-        if n_members < 2:
-            raise ValueError("an ensemble needs at least 2 members for a spread")
+        if n_members < 1:
+            raise ValueError(f"n_members must be at least 1, got {n_members}")
         super().__init__(make_net, **kwargs)
         self.n_members = n_members
+        if n_members == 1:  # one network: a prediction, no uncertainty
+            self.provides_uq = "point"
+            self.supports_conditioning = False
 
     def _n_nets(self) -> int:
         return self.n_members

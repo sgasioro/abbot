@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import gc
 import logging
+from collections.abc import Callable
 from typing import Literal, Protocol, runtime_checkable
 
 import torch
@@ -362,6 +363,15 @@ class SimpleBO:
     With sources, the entropy search is weighted by that probability at the target
     and the best value is sampled over designs likely to satisfy the constraints (an
     approximation).
+
+    **Inside the target set**, MeanBAX, SwitchBAX (while measuring inside it) and
+    PS-BAX pick by ``in_set``: ``"uncertainty"`` (the most uncertain design),
+    ``"random"``, ``"farthest"`` (the farthest from the runs so far, in the unit
+    box), or ``fn(X_set, taken, uncertainty) -> scores``, the highest picked
+    (``taken``: designs measured or in flight, or ``None``). The default
+    (``None``) is ``"uncertainty"``, or ``"random"`` for a model with no
+    uncertainty (a single network). Such a model also replaces US, when MeanBAX
+    falls back to it, with the farthest design.
 
     **With bad-region runs** (``usability``), the log-acquisition gains the log
     chance of a usable result (the entropy search is multiplied by it).
@@ -794,6 +804,12 @@ class _SumPosteriorStd(torch.nn.Module):
 
 BAXStrategy = Literal["US", "MeanBAX", "SwitchBAX", "InfoBAX", "PSBAX"]
 
+# How MeanBAX / SwitchBAX / PS-BAX choose inside the target set: a name, or
+# ``fn(X_set (k, d), taken (n, d) or None, uncertainty (k,)) -> scores (k,)``, the
+# highest picked. ``taken`` is the designs measured or in flight.
+InSet = Literal["uncertainty", "random", "farthest"] | Callable[..., torch.Tensor]
+_IN_SET = ("uncertainty", "random", "farthest")
+
 _BAX_UQ: dict[str, UQRequirement] = {
     "US": "calibrated_variance",
     "MeanBAX": "point",  # runs the goal on the posterior mean; a point net suffices
@@ -874,11 +890,19 @@ class BAXPolicy:
         source_levels: int | dict[str, list[float]] = 5,
         respect_constraints: bool = True,
         requery: bool = False,
+        in_set: InSet | None = None,
     ) -> None:
         if strategy not in _BAX_UQ:
             raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
+        if not (in_set is None or callable(in_set) or in_set in _IN_SET):
+            raise ValueError(
+                f"in_set must be one of {list(_IN_SET)}, a function, or None; got {in_set!r}"
+            )
         self.goal = goal
         self.strategy = strategy
+        self.in_set = in_set
+        self._no_spread = False  # the model's uncertainty is zero everywhere (one network)
+        self._taken = None  # designs measured or in flight, this pick (for "farthest")
         self.n_candidates = n_candidates
         self.n_posterior_samples = n_posterior_samples
         self.candidate_seed = candidate_seed
@@ -1083,7 +1107,9 @@ class BAXPolicy:
         with torch.no_grad():
             post = model.posterior(X.double())
             mean = spec.to_raw(post.mean.reshape(X.shape[0], -1))
-            std = post.variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
+            variance = post.variance
+            std = variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
+        self._no_spread = bool((variance == 0).all())
         return mean, std
 
     # -- Policy API --
@@ -1133,6 +1159,7 @@ class BAXPolicy:
             if inflight is not None:
                 taken.append(inflight)
             self._collected = _grid_matches(grid, torch.cat(taken)) if taken else []
+            self._taken = torch.cat(taken) if taken else None
             busy = self._collected
             if self.requery:
                 busy = _grid_matches(grid, inflight) if inflight is not None else []
@@ -1230,8 +1257,11 @@ class BAXPolicy:
         # Average uncertainty across outputs in scale-free units (multibax fits on
         # min-max-scaled outputs); raw stds would let the largest-unit output win.
         rel = (std / self._out_scale.to(std)).mean(dim=-1)
+        # With no uncertainty to go on (a single network), US is the design farthest
+        # from the runs so far.
+        explore = self._farthest(spec, at_target) if self._no_spread else rel
         if self.strategy == "US":
-            return at_target_only(rel)
+            return at_target_only(explore)
         if self.strategy == "PSBAX":
             with torch.no_grad():  # one joint draw over the grid, raw units for the goal
                 draw = model.posterior(at_target.double()).rsample(torch.Size([1]))
@@ -1239,10 +1269,8 @@ class BAXPolicy:
             target = self._identify(spec, f_raw, at_target)
             if self._stuck(target):
                 self.switched = True
-                return at_target_only(rel)  # fall back to US
-            acq = torch.zeros(n_target, dtype=torch.double, device=rel.device)
-            acq[target] = rel[target]
-            return at_target_only(acq)
+                return at_target_only(explore)  # fall back to US
+            return at_target_only(self._in_set_acq(spec, at_target, target, rel))
         # MeanBAX / SwitchBAX gate on the mean-execution target set.
         if self.strategy in ("MeanBAX", "SwitchBAX"):
             target = self._identify(spec, mean, at_target)
@@ -1254,13 +1282,46 @@ class BAXPolicy:
             if self._stuck(target):
                 self.switched = True
                 if self.strategy == "MeanBAX":
-                    return at_target_only(rel)  # fall back to US
+                    return at_target_only(explore)  # fall back to US
                 return self._infobax(spec, model, grid, std)  # SwitchBAX -> InfoBAX
-            acq = torch.zeros(n_target, dtype=torch.double, device=rel.device)
-            acq[target] = rel[target]
-            return at_target_only(acq)
+            return at_target_only(self._in_set_acq(spec, at_target, target, rel))
         # InfoBAX
         return self._infobax(spec, model, grid, std)
+
+    def _in_set_acq(self, spec, X, target: list[int], rel) -> torch.Tensor:
+        """The acquisition over ``X`` (the grid at the target): zero outside the
+        target set, and inside it the ``in_set`` rule's score, positive. The default
+        rule is the model's uncertainty, or random when it has none."""
+        acq = torch.zeros(len(X), dtype=torch.double, device=rel.device)
+        rule = self.in_set or ("random" if self._no_spread else "uncertainty")
+        if rule == "uncertainty":
+            acq[target] = rel[target]
+            return acq
+        if rule == "random":
+            score = torch.rand(len(target), dtype=torch.double, device=rel.device)
+        elif rule == "farthest":
+            score = self._farthest(spec, X[target])
+        else:
+            score = torch.as_tensor(
+                rule(X[target], self._taken, rel[target]), dtype=torch.double, device=rel.device
+            ).reshape(-1)
+            if score.shape[0] != len(target):
+                raise ValueError(
+                    f"in_set returned {score.shape[0]} scores for {len(target)} designs"
+                )
+        acq[target] = score - score.min() + 1  # positive, so the set outranks the rest
+        return acq
+
+    def _farthest(self, spec, X) -> torch.Tensor:
+        """Each design's distance to the nearest run so far (measured or in flight),
+        in the unit box: the largest is the most unexplored. Without runs, all 1."""
+        if self._taken is None or not len(self._taken):
+            return torch.ones(len(X), dtype=torch.double, device=X.device)
+        bounds = spec.bounds_tensor().to(X)
+        span = (bounds[1] - bounds[0]).clamp_min(1e-12)
+        a = (X - bounds[0]) / span
+        b = (self._taken.to(X) - bounds[0]) / span
+        return torch.cdist(a, b).min(dim=-1).values
 
     def _goal_for(self, spec):
         """The goal with output names resolved against ``spec`` (``bind``), once."""

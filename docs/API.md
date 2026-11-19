@@ -21,7 +21,7 @@ without a deprecation period.
 | Training targets | `Campaign(..., targets=)` / `Targets` (`(history, spec) -> Y` or `(Y, Yvar)`), `apply_targets` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, batch_size, ...)`, `drive(campaign, experiment, evaluate, *, n_total, batch_size, on_persistent_fault, should_continue)` (the one blocking loop; `run_campaign` and the UI `RunController` run on it), `PersistentFaultError` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
-| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
+| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `in_set=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol; optional `bind(spec)` to resolve output names), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiSourceGPConstructor` (provisional; formerly `MultiFidelityGPConstructor`, kept as an alias), `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor(faults=, stops=)` (fault checks and stop rules, see [Supervisors](#supervisors-faults-and-stops); any callable `(history) -> Verdict` is also accepted), `Verdict`, `ManualExperiment`, `TensorExperiment`, `CommandExperiment(command, spec=, timeout=, cwd=, env=, shell=)` (a command run for each design, `{name}` for each value, printing its outputs as JSON on its last line; see [A command as the experiment](#a-command-as-the-experiment)); mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
@@ -1000,7 +1000,14 @@ Three ways to get uncertainty from the network:
 | `NetEnsembleConstructor(make_net, n_members=5)` | independently initialized copies | MeanBAX, PS-BAX, SwitchBAX, InfoBAX | fine-tuning |
 | `MCDropoutConstructor(make_net, n_samples=32)` | dropout left on; needs `torch.nn.Dropout` layers | the same | fine-tuning |
 | `DeepKernelConstructor(make_net, n_features=4)` | a GP on the network's features | every policy | exact (it's a GP) |
+| `NetEnsembleConstructor(make_net, n_members=1)` | none: one network's prediction | MeanBAX | — |
 
+- **One network, no uncertainty.** With `n_members=1`, MeanBAX runs the goal on
+  the network's prediction and measures inside the predicted set, at random by
+  default (`BAXPolicy(in_set=...)`, see [BAX details](#bax-details)); when the set
+  has nothing new, it measures the design farthest from the runs so far. With
+  nothing to say where the model is unsure, it explores less well than the
+  ensemble.
 - **A posterior sample is one function.** For an ensemble it's one member. For
   dropout it's one fixed mask, shared by every design it's evaluated at: with a
   fresh mask per design (dropout's usual training behavior), a "sample" would be
@@ -1019,6 +1026,11 @@ Three ways to get uncertainty from the network:
   dropout masks), the first `n_posterior_samples` of them: each is one fine-tune,
   so a proposal costs `n_members + 1` of them. A batch (`n > 1`) fine-tunes once
   more per pick, on the earlier picks at the model's mean.
+- **Fine-tuning is an approximate update.** Fine-tuned on one sample's values,
+  the other members usually move toward that sample, narrowing the spread there,
+  but not always: in our checks, about one time in five the spread at those designs
+  came out wider than after the matching fine-tune on the data alone.
+  `refit_epochs` trades this off against time.
 - **The entropies are Gaussian,** from each design's predicted variance. Exact for
   a GP; for an ensemble or dropout, it treats the spread of a handful of samples
   as Gaussian. With 5 members the variance itself is noisy; split predictions
@@ -1144,6 +1156,14 @@ explicitly if you need it pinned.
   function values, not measurements.
 - **US / MeanBAX / PS-BAX compare outputs in relative units:** each output's posterior std
   is divided by its observed spread before averaging, so units don't decide.
+- **Which design inside the target set.** MeanBAX, SwitchBAX (while measuring
+  inside its set) and PS-BAX pick by `BAXPolicy(in_set=...)`: `"uncertainty"` (the
+  most uncertain design, the default), `"random"`, `"farthest"` (the design
+  farthest from the runs so far, measured or in flight, in the unit box), or your
+  own `fn(X_set, taken, uncertainty) -> scores`, the highest picked (`taken` is
+  `None` before any run). A model with no uncertainty (a single network,
+  `NetEnsembleConstructor(make_net, n_members=1)`) defaults to `"random"`, and
+  where MeanBAX would fall back to US it measures the farthest design instead.
 - **A design isn't proposed twice by default.** Grid points already measured, or in
   flight, are left out. `BAXPolicy(requery=True)` leaves out only those in flight,
   so a noisy measurement can be repeated where it matters most (US and InfoBAX

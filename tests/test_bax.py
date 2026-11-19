@@ -233,3 +233,57 @@ def test_psbax_falls_back_to_us_when_the_draw_selects_nothing():
     pol = BAXPolicy(BandIntersection([(1e6, 1e7)]), strategy="PSBAX", n_candidates=200)
     pol.suggest(h, spec, model, n=1)
     assert pol.switched is True
+
+
+# -- in_set: how MeanBAX / SwitchBAX / PS-BAX choose inside the target set -------
+
+
+def _in_set_campaign(in_set):
+    from abbot import Campaign, ContinuousDomain, OutputSpec, ProblemSpec
+    from abbot.goal import TopK
+
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="a", lower=0, upper=1), ContinuousDomain(name="b", lower=0, upper=1)],
+        outputs=[OutputSpec(name="f", direction="OBSERVE")],
+    )
+    policy = BAXPolicy(TopK(k=30, output="f"), "MeanBAX", n_candidates=256, in_set=in_set)
+    c = Campaign(spec, policy, on_model_error="raise")
+
+    class Run:
+        @staticmethod
+        def run(d):
+            return [-(d["a"] - 0.3) ** 2 - (d["b"] - 0.6) ** 2]
+
+    torch.manual_seed(0)
+    for _ in range(6):
+        c.step(Run)
+    return c, policy, spec
+
+
+def test_in_set_takes_a_function_of_the_set_the_runs_and_the_uncertainty():
+    seen = {}
+
+    def first_coordinate(X, taken, uncertainty):
+        seen.update(k=len(X), taken=None if taken is None else len(taken), u=uncertainty.shape)
+        return X[:, 0]
+
+    c, policy, spec = _in_set_campaign(first_coordinate)
+    (cand,) = c.suggest(1)
+    assert seen["k"] >= 1 and seen["taken"] == len(c.history) and seen["u"] == (seen["k"],)
+    # The pick is the in-set design with the largest a (among those not taken).
+    mean = c.current_model().posterior(policy.candidate_grid(spec)).mean.detach()
+    target = policy._goal_for(spec).identify_subspace(mean)
+    free = [i for i in target if i not in policy._collected[:-1]]
+    a_max = max(float(policy.candidate_grid(spec)[i, 0]) for i in free)
+    assert cand["a"] == pytest.approx(a_max)
+
+
+def test_in_set_farthest_and_validation():
+    c, policy, _ = _in_set_campaign("farthest")
+    c.suggest(1)
+    assert float(policy.last_acquisition_value[0]) >= 1.0
+    with pytest.raises(ValueError, match="in_set must be one of"):
+        BAXPolicy(None, "MeanBAX", in_set="nearest")
+    with pytest.raises(ValueError, match="scores for"):
+        c, _, _ = _in_set_campaign(lambda X, taken, u: torch.zeros(len(X) + 1))
+        c.suggest(1)
