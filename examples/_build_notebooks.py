@@ -760,14 +760,31 @@ interesting) and a network. Neither needs to change.
   from, one row per design.
 """),
     code("""
-from abbot import FunctionGoal
+import torch
+from abbot import BAXPolicy, Campaign, ContinuousDomain, FunctionGoal, OutputSpec, ProblemSpec
+from abbot.nn import NetEnsembleConstructor
+
+# What you can set and what each run measures.
+my_spec = ProblemSpec(
+    domain=[
+        ContinuousDomain(name="temperature", lower=20.0, upper=80.0),
+        ContinuousDomain(name="ratio", lower=0.0, upper=1.0),
+    ],
+    outputs=[OutputSpec(name="signal", direction="OBSERVE")],
+)
+
+class MyExperiment:                                    # stands in for your lab or simulation
+    @staticmethod
+    def run(design):
+        t, r = (design["temperature"] - 20) / 60, design["ratio"]
+        return [float(torch.exp(torch.tensor(-((t - 0.3) ** 2 + (r - 0.6) ** 2) / 0.03)))]
 
 def my_algorithm(values):
-    \"\"\"The designs within 20% of the best predicted signal.\"\"\"
+    \"\"\"Your algorithm: the designs within 20% of the best predicted signal.\"\"\"
     signal = values[:, 0]
     return (signal >= 0.8 * signal.max()).nonzero(as_tuple=True)[0].tolist()
 
-class MyNet(torch.nn.Module):
+class MyNet(torch.nn.Module):                          # your network, with its own constructor
     def __init__(self, n_in, n_out, width=64):
         super().__init__()
         self.body = torch.nn.Sequential(
@@ -779,13 +796,15 @@ class MyNet(torch.nn.Module):
     def forward(self, x):
         return self.head(self.body(x))
 
-my_domain = torch.rand(500, 2, dtype=torch.double)     # your candidate designs, one per row
+# Your candidate designs, one per row, in the spec's units and order.
+torch.manual_seed(0)
+my_domain = torch.stack([20 + 60 * torch.rand(500), torch.rand(500)], dim=-1).double()
 
 policy = BAXPolicy(FunctionGoal(lambda f, X: my_algorithm(f)), "PSBAX", candidates=my_domain)
-model = NetEnsembleConstructor(lambda d_in, d_out: MyNet(d_in, d_out), bounds=spec.bounds_tensor())
-mine = Campaign(spec, policy, model)
+model = NetEnsembleConstructor(lambda d_in, d_out: MyNet(d_in, d_out), bounds=my_spec.bounds_tensor())
+mine = Campaign(my_spec, policy, model)
 for _ in range(15):
-    mine.step(Experiment)
+    mine.step(MyExperiment)
 print(len(mine.history), "runs; last pick:", mine.history.records[-1].candidate.tolist())
 """),
     md("""
