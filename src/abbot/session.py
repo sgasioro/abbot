@@ -705,6 +705,8 @@ class Campaign:
             logger.info("Using default model %s.", type(model_constructor).__name__)
         # Guardrail reads the UQ capability off the real constructor, not a string.
         check_uq_pairing(policy, model_constructor)
+        if getattr(policy, "has_fixed_candidates", False):
+            policy.candidate_grid(spec)  # candidates outside the spec's ranges: say so now
         self.spec = spec
         self.policy = policy
         self.model_constructor = model_constructor
@@ -824,14 +826,18 @@ class Campaign:
             return
         if self.spec.has_travel_limits:
             return  # space-filling seeds can't be reached; _propose asks for a start
-        designs = default_initial_designs(self.spec)
+        from_policy = getattr(self.policy, "initial_designs", None)
+        designs = from_policy(self.spec) if callable(from_policy) else None
+        where = " from the candidates"
+        if designs is None:
+            designs = default_initial_designs(self.spec)
+            where = " (2 at the target)" if self.spec.sources else ""
         self._seed_queue.extend(list(designs))
         self._save_queue()
-        at_target = " (2 at the target)" if self.spec.sources else ""
         logger.info(
             "Queued %d default initial designs%s; pass Campaign(initial_designs=...) to "
             "choose them, or an empty tensor for a random cold start.",
-            len(designs), at_target,
+            len(designs), where,
         )
 
     def load_history(self, history: History) -> None:

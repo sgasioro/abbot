@@ -756,8 +756,9 @@ interesting) and a network. Neither needs to change.
 - **The network** comes in through `make_net`; a lambda adapts its own
   constructor. Its forward takes `(N, d_in)` (or whatever `featurize` returns) and
   returns `(N, outputs)`.
-- **The candidates** are your domain: `candidates=` takes the designs to choose
-  from, one row per design.
+- **The designs** come from the spec: BAXPolicy searches a grid over its ranges.
+  If your designs are a fixed set instead (a library of compositions or
+  structures), see the next cell.
 """),
     code("""
 import torch
@@ -796,16 +797,36 @@ class MyNet(torch.nn.Module):                          # your network, with its 
     def forward(self, x):
         return self.head(self.body(x))
 
-# Your candidate designs, one per row, in the spec's units and order.
 torch.manual_seed(0)
-my_domain = torch.stack([20 + 60 * torch.rand(500), torch.rand(500)], dim=-1).double()
-
-policy = BAXPolicy(FunctionGoal(lambda f, X: my_algorithm(f)), "PSBAX", candidates=my_domain)
+policy = BAXPolicy(FunctionGoal(lambda f, X: my_algorithm(f)), "PSBAX", n_candidates=500)
 model = NetEnsembleConstructor(lambda d_in, d_out: MyNet(d_in, d_out), bounds=my_spec.bounds_tensor())
 mine = Campaign(my_spec, policy, model)
 for _ in range(15):
     mine.step(MyExperiment)
 print(len(mine.history), "runs; last pick:", mine.history.records[-1].candidate.tolist())
+"""),
+    md("""
+**A fixed set of designs.** When only certain designs exist (the compositions on a
+wafer, a list of structures), pass them as `candidates=`, one row per design, and
+build the spec from them: `ProblemSpec.from_candidates` takes each input's range
+from its column. The campaign's starting runs are then drawn from the set, spread
+out, so every run is one you can make.
+"""),
+    code("""
+library = torch.stack([20 + 60 * torch.rand(300), torch.rand(300)], dim=-1).double()  # your designs
+
+lib_spec = ProblemSpec.from_candidates(
+    library, names=["temperature", "ratio"],
+    outputs=[OutputSpec(name="signal", direction="OBSERVE")],
+)
+policy = BAXPolicy(FunctionGoal(lambda f, X: my_algorithm(f)), "PSBAX", candidates=library)
+model = NetEnsembleConstructor(lambda d_in, d_out: MyNet(d_in, d_out), bounds=lib_spec.bounds_tensor())
+from_library = Campaign(lib_spec, policy, model)
+for _ in range(15):
+    from_library.step(MyExperiment)
+measured = from_library.history.designs
+in_library = all(torch.isclose(library, x.double()).all(-1).any() for x in measured)
+print(len(measured), "runs, all from the library:", in_library)
 """),
     md("""
 Things to know with your own network:

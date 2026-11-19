@@ -1059,7 +1059,9 @@ Three ways to get uncertainty from the network:
   shows as overconfidence. Keep it small, or use `weight_decay`.
 - **Bringing your own algorithm:** any function from the predicted values on the
   candidates to the indices it selects is a goal (`FunctionGoal(lambda f, X:
-  my_algorithm(f))`), and `candidates=` is your domain. The notebook has a worked
+  my_algorithm(f))`). The designs are a grid over the spec's ranges, or your own
+  set (`candidates=`, with `ProblemSpec.from_candidates`; see
+  [BAX details](#bax-details)). The notebook has a worked
   example. The goal sees values on a fixed candidate set only; an algorithm that
   queries the function at points of its own choosing (an optimizer's path) needs
   continuous BAX, not built yet.
@@ -1187,6 +1189,23 @@ explicitly if you need it pinned.
   function values, not measurements.
 - **US / MeanBAX / PS-BAX compare outputs in relative units:** each output's posterior std
   is divided by its observed spread before averaging, so units don't decide.
+- **A fixed set of designs.** By default BAX searches a grid over the spec's
+  ranges (`n_candidates`). When only certain designs exist (the compositions on a
+  wafer, a list of structures), pass them as `candidates=` (one row per design, in
+  the spec's units and input order) and build the spec from them:
+
+  ```python
+  spec = ProblemSpec.from_candidates(library, names=["c1", "c2"],
+                                     outputs=[OutputSpec(name="y", direction="OBSERVE")])
+  policy = BAXPolicy(goal, "InfoBAX", candidates=library)
+  ```
+
+  `from_candidates` takes each input's range from its column (whole numbers as an
+  integer input) from a tensor with `names=`, a `{name: values}` mapping or a
+  pandas DataFrame. The campaign's starting runs come from the candidates, spread
+  out by farthest-point selection (`BAXPolicy.initial_designs`), so every run is
+  one you can make; `initial_designs=` still overrides. Candidates outside the
+  spec's ranges are refused when the campaign is set up, naming the column.
 - **Which design inside the target set.** MeanBAX, SwitchBAX (while measuring
   inside its set) and PS-BAX pick by `BAXPolicy(in_set=...)`: `"uncertainty"` (the
   most uncertain design, the default), `"random"`, `"farthest"` (the design

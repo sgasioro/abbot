@@ -957,6 +957,7 @@ class BAXPolicy:
         """
         if self._grid is None and self._candidates is not None:
             self._grid = self._at_target(spec, self._candidates)
+            _check_in_bounds(spec, self._grid)
         if self._grid is None:
             from torch.quasirandom import SobolEngine
 
@@ -978,6 +979,35 @@ class BAXPolicy:
                 grid = grid[keep]
             self._grid = grid
         return self._grid
+
+    @property
+    def has_fixed_candidates(self) -> bool:
+        """Whether the policy proposes from a set of designs you gave
+        (``candidates=``), rather than a grid it builds over the spec's ranges."""
+        return self._candidates is not None
+
+    def initial_designs(self, spec: ProblemSpec, n: int | None = None, *, seed: int = 0):
+        """Starting designs for a campaign on a fixed candidate set: ``n`` spread
+        out over the candidates (farthest-point selection in the unit box, from a
+        random start), so every starting run is a design you can measure. ``n``
+        defaults to the size of :func:`abbot.session.default_initial_designs`.
+        ``None`` without fixed candidates (the campaign uses its usual seeds)."""
+        if not self.has_fixed_candidates:
+            return None
+        grid = self.candidate_grid(spec)
+        if n is None:
+            n = max(2 * len(spec.inputs) + 1, 2 * spec.n_objectives)
+        n = min(n, len(grid))
+        bounds = spec.bounds_tensor().to(grid)
+        unit = (grid - bounds[0]) / (bounds[1] - bounds[0]).clamp_min(1e-12)
+        g = torch.Generator().manual_seed(seed)
+        picks = [int(torch.randint(len(grid), (1,), generator=g))]
+        nearest = torch.cdist(unit, unit[picks]).squeeze(-1)
+        while len(picks) < n:
+            nxt = int(nearest.argmax())
+            picks.append(nxt)
+            nearest = torch.minimum(nearest, torch.cdist(unit, unit[[nxt]]).squeeze(-1))
+        return grid[picks].clone()
 
     @staticmethod
     def _at_target(spec: ProblemSpec, grid: torch.Tensor) -> torch.Tensor:
@@ -1491,6 +1521,28 @@ def _entropy(std: torch.Tensor) -> torch.Tensor:
 
     var = std.clamp_min(1e-12) ** 2
     return 0.5 * torch.log(2 * math.pi * var) + 0.5
+
+
+def _check_in_bounds(spec: ProblemSpec, grid: torch.Tensor) -> None:
+    """Refuse candidates outside the spec's ranges, naming the columns."""
+    bounds = spec.bounds_tensor().to(grid)
+    span = (bounds[1] - bounds[0]).clamp_min(1e-12)
+    tol = 1e-9 * span
+    below = (bounds[0] - tol - grid).clamp_min(0).max(dim=0).values
+    above = (grid - bounds[1] - tol).clamp_min(0).max(dim=0).values
+    bad = [
+        f"{name} (range {float(lo):g} to {float(hi):g}; candidates go "
+        + (f"down to {float(grid[:, j].min()):g}" if below[j] > 0 else f"up to {float(grid[:, j].max()):g}")
+        + ")"
+        for j, (name, lo, hi) in enumerate(zip(spec.variable_names, bounds[0], bounds[1]))
+        if below[j] > 0 or above[j] > 0
+    ]
+    if bad:
+        raise ValueError(
+            "BAXPolicy: some candidates lie outside the spec's ranges: " + "; ".join(bad)
+            + ". Widen the ranges, or build the spec from the candidates "
+            "(ProblemSpec.from_candidates)."
+        )
 
 
 def _grid_matches(grid: torch.Tensor, X: torch.Tensor) -> list[int]:

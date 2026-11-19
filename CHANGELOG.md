@@ -39,6 +39,12 @@ uses your own neural network as the model. One breaking change, below.
   model with no uncertainty, for MeanBAX: it measures inside the set the
   network predicts, at random, and when that has nothing new, the design farthest
   from the runs so far.
+- **A fixed set of designs** (`BAXPolicy(candidates=...)`): a campaign's default
+  starting runs now come from the candidates, spread out, instead of space-filling
+  points over the spec's ranges that might not be in the set.
+  `ProblemSpec.from_candidates(library, names=, outputs=)` builds the spec from the
+  set (each input's range from its column), and candidates outside the spec's
+  ranges are refused when the campaign is set up.
 - **`BAXPolicy(in_set=...)`** chooses which design MeanBAX, SwitchBAX and PS-BAX
   measure inside the target set: `"uncertainty"` (the default), `"random"`,
   `"farthest"`, or your own function.

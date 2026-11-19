@@ -287,3 +287,80 @@ def test_in_set_farthest_and_validation():
     with pytest.raises(ValueError, match="scores for"):
         c, _, _ = _in_set_campaign(lambda X, taken, u: torch.zeros(len(X) + 1))
         c.suggest(1)
+
+
+# -- a fixed set of candidate designs (a library) ---------------------------------
+
+
+def _library(n=200, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    return torch.rand(n, 2, generator=g, dtype=torch.double) * torch.tensor([60.0, 1.0]) + torch.tensor([20.0, 0.0])
+
+
+def test_spec_from_candidates_takes_each_columns_range():
+    from abbot import ContinuousDomain, IntegerDomain, OutputSpec, ProblemSpec
+
+    lib = _library()
+    out = [OutputSpec(name="y", direction="OBSERVE")]
+    spec = ProblemSpec.from_candidates(lib, names=["temperature", "ratio"], outputs=out)
+    assert spec.variable_names == ["temperature", "ratio"]
+    assert all(isinstance(d, ContinuousDomain) for d in spec.domain)
+    assert spec.domain[0].lower == pytest.approx(float(lib[:, 0].min()))
+    assert spec.domain[1].upper == pytest.approx(float(lib[:, 1].max()))
+    # A mapping, and a column of whole numbers (an index) as a whole-number input.
+    indexed = ProblemSpec.from_candidates({"structure": torch.arange(50), "x": torch.rand(50)}, outputs=out)
+    assert isinstance(indexed.domain[0], IntegerDomain)
+    assert (indexed.domain[0].lower, indexed.domain[0].upper) == (0, 49)
+    with pytest.raises(ValueError, match="names"):
+        ProblemSpec.from_candidates(lib, outputs=out)
+    with pytest.raises(ValueError, match="2 columns"):
+        ProblemSpec.from_candidates(lib, names=["a"], outputs=out)
+    with pytest.raises(ValueError, match="doesn't vary"):
+        ProblemSpec.from_candidates(torch.stack([lib[:, 0], torch.ones(200).double()], -1),
+                                    names=["a", "b"], outputs=out)
+
+
+def test_spec_from_a_dataframe():
+    pd = pytest.importorskip("pandas")
+    from abbot import OutputSpec, ProblemSpec
+
+    df = pd.DataFrame({"temperature": [20.0, 50.0, 80.0], "ratio": [0.1, 0.5, 0.9]})
+    spec = ProblemSpec.from_candidates(df, outputs=[OutputSpec(name="y")])
+    assert spec.variable_names == ["temperature", "ratio"]
+    assert (spec.domain[0].lower, spec.domain[0].upper) == (20.0, 80.0)
+
+
+def test_a_campaign_on_a_library_starts_from_the_library():
+    from abbot import Campaign, LevelSet, OutputSpec, ProblemSpec
+
+    lib = _library()
+    spec = ProblemSpec.from_candidates(lib, names=["temperature", "ratio"],
+                                       outputs=[OutputSpec(name="y", direction="OBSERVE")])
+    policy = BAXPolicy(LevelSet(0.5, output="y"), "MeanBAX", candidates=lib)
+    first = Campaign(spec, policy).suggest(5)
+    X = torch.tensor([[c["temperature"], c["ratio"]] for c in first], dtype=torch.double)
+    assert all(torch.isclose(lib, x).all(-1).any() for x in X)  # every one is in the library
+    assert len({tuple(x.tolist()) for x in X}) == 5
+    # Spread out: farther apart than the library's typical nearest neighbor.
+    unit = (X - spec.bounds_tensor()[0]) / (spec.bounds_tensor()[1] - spec.bounds_tensor()[0])
+    gaps = torch.cdist(unit, unit) + torch.eye(5) * 10
+    assert float(gaps.min()) > 0.2
+    # Designs you give still win.
+    mine = lib[:3]
+    c = Campaign(spec, BAXPolicy(LevelSet(0.5, output="y"), "MeanBAX", candidates=lib), initial_designs=mine)
+    got = torch.tensor([[d["temperature"], d["ratio"]] for d in c.suggest(3)], dtype=torch.double)
+    assert torch.allclose(got, mine)
+    # Without fixed candidates, nothing changes.
+    assert BAXPolicy(LevelSet(0.5, output="y"), "MeanBAX").initial_designs(spec) is None
+
+
+def test_candidates_outside_the_specs_ranges_are_refused_at_setup():
+    from abbot import Campaign, ContinuousDomain, LevelSet, OutputSpec, ProblemSpec
+
+    spec = ProblemSpec(
+        domain=[ContinuousDomain(name="temperature", lower=20, upper=60),
+                ContinuousDomain(name="ratio", lower=0, upper=1)],
+        outputs=[OutputSpec(name="y", direction="OBSERVE")],
+    )
+    with pytest.raises(ValueError, match=r"temperature \(range 20 to 60; candidates go up to"):
+        Campaign(spec, BAXPolicy(LevelSet(0.5, output="y"), "MeanBAX", candidates=_library()))
