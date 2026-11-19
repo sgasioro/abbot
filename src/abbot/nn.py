@@ -359,7 +359,8 @@ class NetEnsembleConstructor(_NetConstructor):
       ``control`` as in the module docs.
 
     Provides posterior samples, so MeanBAX, PS-BAX, SwitchBAX and InfoBAX work with
-    it; a method that needs calibrated variance (US, the BO policies) is refused.
+    it. US and the BO policies run too, on the spread across samples, with a
+    warning that it isn't calibrated.
     """
 
     def __init__(self, make_net: MakeNet, n_members: int = 5, **kwargs) -> None:

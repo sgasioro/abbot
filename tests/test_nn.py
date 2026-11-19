@@ -1,6 +1,8 @@
 """Neural-network surrogates (abbot.nn, experimental): ensembles, MC dropout and
 deep kernels on your own network, with InfoBAX by fine-tuning."""
 
+import warnings
+
 import pytest
 import torch
 
@@ -8,7 +10,7 @@ from abbot import BAXPolicy, Campaign, ContinuousDomain, OutputSpec, ProblemSpec
 from abbot.goal import TopK
 from abbot.model import EnsembleConstructor
 from abbot.nn import DeepKernelConstructor, MCDropoutConstructor, NetEnsembleConstructor
-from abbot.policy import UncertaintySampling
+from abbot.policy import ParetoBO, SimpleBO, UncertaintySampling
 from abbot.session import check_uq_pairing
 
 pytestmark = pytest.mark.slow  # network training
@@ -217,10 +219,43 @@ def test_a_toy_ensemble_still_pairs_with_strategies_that_dont_update():
         check_uq_pairing(BAXPolicy(TopK(k=3, output="f"), strategy), EnsembleConstructor(n_members=5))
 
 
-def test_uncertainty_sampling_needs_calibrated_variance():
-    with pytest.raises(ValueError, match="calibrated"):
-        check_uq_pairing(UncertaintySampling(), CONSTRUCTORS["ensemble"]())
-    check_uq_pairing(UncertaintySampling(), DeepKernelConstructor(mlp))
+def test_policies_wanting_calibrated_variance_warn_with_samples():
+    for kind in ("ensemble", "dropout"):
+        with pytest.warns(UserWarning, match="isn't"):
+            check_uq_pairing(UncertaintySampling(), CONSTRUCTORS[kind]())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        check_uq_pairing(UncertaintySampling(), DeepKernelConstructor(mlp))
+    with pytest.raises(ValueError, match="calibrated"):  # a single network: refused
+        check_uq_pairing(UncertaintySampling(), EnsembleConstructor(n_members=1))
+
+
+@pytest.mark.parametrize("kind", ["ensemble", "dropout"])
+@pytest.mark.parametrize("policy", ["SimpleBO", "ParetoBO", "UncertaintySampling", "US"])
+def test_bo_and_us_run_on_a_network_model(kind, policy):
+    spec = SPEC
+    if policy == "SimpleBO":
+        spec = ProblemSpec(domain=SPEC.domain, outputs=[OutputSpec(name="f", direction="MINIMIZE")])
+    if policy == "ParetoBO":
+        spec = ProblemSpec(domain=SPEC.domain, outputs=[
+            OutputSpec(name="f", direction="MINIMIZE"), OutputSpec(name="g")])
+    pol = {
+        "SimpleBO": SimpleBO, "ParetoBO": ParetoBO, "UncertaintySampling": UncertaintySampling,
+        "US": lambda: BAXPolicy(TopK(k=3, output="f"), "US", n_candidates=128),
+    }[policy]()
+
+    class Run:
+        @staticmethod
+        def run(design):
+            return _Experiment.run(design)[: spec.n_outputs]
+
+    torch.manual_seed(0)
+    with pytest.warns(UserWarning, match="calibrated"):
+        c = Campaign(spec, pol, CONSTRUCTORS[kind](), on_model_error="raise")
+    for _ in range(5):
+        c.step(Run)
+    c.step(Run, n=2)
+    assert len(c.history) == 7
 
 
 # -- in a campaign ---------------------------------------------------------------

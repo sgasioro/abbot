@@ -126,9 +126,9 @@ def _bo_demo(name: str, constructor) -> None:
 
 
 def _ensemble_demo() -> None:
-    """A deep ensemble provides SAMPLES, not calibrated variance — so it pairs with a
-    sample-based BAX policy, NOT SimpleBO. (Try SimpleBO here and the guardrail
-    refuses it: capability must match the policy. That refusal is the feature.)"""
+    """A deep ensemble provides SAMPLES, not calibrated variance — so it pairs best
+    with a sample-based BAX policy. (SimpleBO runs on it too, with a warning that
+    the spread across members isn't calibrated.)"""
     torch.manual_seed(0)
     spec = ProblemSpec(
         domain=[ContinuousDomain(name="x", lower=0.0, upper=1.0)],

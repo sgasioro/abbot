@@ -21,6 +21,11 @@
   `featurize=` handles inputs that aren't numbers. InfoBAX and SwitchBAX work with
   the ensemble and dropout models by fine-tuning a copy on each posterior sample's
   values (after nn-bax), measured against a matching fine-tune on the data alone.
+  US and the BO policies run on the ensemble and dropout models too, with a warning
+  that the spread across samples isn't calibrated. New notebook:
+  `examples/06_neural_surrogates.ipynb`.
+- **`current_model()` inside `torch.no_grad()`** fits: the fit runs with gradients
+  on. Before, a GP fit there failed, and the campaign took a random design.
 - **InfoBAX and SwitchBAX refuse a model that can't be updated** when the campaign
   is set up (a constructor with `supports_conditioning = False`, such as the toy
   `EnsembleConstructor`), instead of failing at the first proposal.

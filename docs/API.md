@@ -972,7 +972,8 @@ model = NetEnsembleConstructor(make_net, n_members=5, bounds=spec.bounds_tensor(
 campaign = Campaign(spec, BAXPolicy(goal, "InfoBAX"), model)
 ```
 
-You write the network; `abbot.nn` does the rest. `make_net(d_in, d_out)` returns a
+You write the network; `abbot.nn` does the rest. To start, run
+`examples/06_neural_surrogates.ipynb`. `make_net(d_in, d_out)` returns a
 `torch.nn.Module` from a batch of inputs `(N, d_in)` to `(N, d_out)`; abbot converts
 it to float64, moves it to the campaign's device, and:
 
@@ -1022,9 +1023,11 @@ Three ways to get uncertainty from the network:
   a GP; for an ensemble or dropout, it treats the spread of a handful of samples
   as Gaussian. With 5 members the variance itself is noisy; split predictions
   (two groups of members) read as more uncertain than they are.
-- **US and the BO policies need calibrated variance,** so they refuse the ensemble
-  and dropout models (a spread across members isn't calibrated). The deep kernel
-  is a GP and works with all of them; with few runs its network can overfit, which
+- **US and the BO policies read the uncertainty as calibrated.** With the ensemble
+  and dropout models they run, ranking by the spread across samples, and warn
+  when the campaign is set up: that spread isn't calibrated (with few members it's
+  often too narrow), so `check()` or a held-out run is worth a look. The deep
+  kernel is a GP and works with all of them without a warning; with few runs its network can overfit, which
   shows as overconfidence. Keep it small, or use `weight_decay`.
 - **Defaults are starting points.** They were checked only on two-input problems
   with up to about a hundred runs. Your network, its
@@ -1152,7 +1155,9 @@ explicitly if you need it pinned.
 - **Misconfiguration fails loud.** A policy that can't serve the spec (e.g.
   `ParetoBO` on a single-objective spec, too many enumerated combinations to
   enumerate, a model whose uncertainty is too weak for the policy) raises immediately — it
-  will not silently do something else. The UQ guardrail reads the capability off
+  will not silently do something else. One pairing warns instead: a model with
+  posterior samples (an ensemble) and a policy that wants calibrated variance
+  (US, `SimpleBO`, `ParetoBO`) run, ranking by the samples' spread. The UQ guardrail reads the capability off
   the actual `ModelConstructor` (`provides_uq`), so it can't be bypassed by a
   mismatched argument — `Campaign` has no `model_uq` parameter.
 - **Experiment errors retry, then halt.** If `experiment.run` raises inside
@@ -1216,6 +1221,11 @@ a feasibility stopping rule, a run-level JSON serializer including the SBI `aux`
 - **Correlated outputs with sources, and with prior means.** One model over
   outputs *and* sources, and a prior mean per output in the correlated model;
   see [Correlated outputs](#correlated-outputs).
+- **More models in `abbot.nn`: a random forest.** Each tree is one posterior
+  sample (a BoTorch `EnsembleModel`), so the BAX strategies would work unchanged;
+  InfoBAX would update it by refitting on the data plus the sample's values. Not
+  for the BO policies (trees have no gradients to follow). Needs scikit-learn as
+  an optional install.
 - **PFN surrogates — a research model, same seam.** A custom `ModelConstructor`
   returning a botorch `Model`; built when a problem needs it, not speculatively.
   (Deep kernels are in `abbot.nn`.)

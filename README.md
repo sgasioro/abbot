@@ -166,9 +166,10 @@ Everything else (BoTorch, `gest-api`, ...) comes from PyPI with `pip install -e`
 
 ## Examples
 
-Five runnable notebooks in [`examples/`](https://github.com/sgasioro/abbot/tree/main/examples) (install `pip install -e
+Six runnable notebooks in [`examples/`](https://github.com/sgasioro/abbot/tree/main/examples) (install `pip install -e
 '.[examples]'`), one per capability: lab BO, multi-objective (`ParetoBO`),
-composite-SBI, goal-driven BAX, and multi-fidelity. See [`examples/README.md`](https://github.com/sgasioro/abbot/blob/main/examples/README.md).
+composite-SBI, goal-driven BAX, multi-fidelity, and your own neural network
+(experimental). See [`examples/README.md`](https://github.com/sgasioro/abbot/blob/main/examples/README.md).
 
 ## Run the frontend
 

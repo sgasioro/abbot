@@ -170,6 +170,21 @@ def test_current_model_caches_until_history_mutates():
     assert c.current_model() is not m1
 
 
+def test_current_model_fits_inside_no_grad():
+    """``current_model()`` fits lazily; reading it to predict inside
+    ``torch.no_grad()`` still fits (a GP's fit needs gradients)."""
+    torch.manual_seed(0)
+    spec = _scalar_spec()
+    c = _make_campaign(spec)
+    c.seed(torch.tensor([[0.2], [0.5], [0.8]], dtype=torch.double))
+    for _ in range(3):
+        x = c.suggest(1)[0]["x"]
+        c.ingest(torch.tensor([-((x - 0.3) ** 2)]))
+    with torch.no_grad():
+        model = c.current_model()
+    assert model is not None
+
+
 def test_record_matches_ingest_and_persists(tmp_path):
     torch.manual_seed(0)
     spec = _scalar_spec()

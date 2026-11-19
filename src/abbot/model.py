@@ -372,8 +372,8 @@ class EnsembleConstructor:
         PS-BAX), which also exposes a (member-spread) variance.
       - ``n_members == 1`` -> ``"point"`` (a single deterministic net; only MeanBAX/
         greedy may pair with it).
-    An ensemble's spread is NOT calibrated variance, so it never claims that tier —
-    pairing one with ``UncertaintySampling`` is correctly refused.
+    An ensemble's spread is NOT calibrated variance, so it never claims that tier:
+    pairing one with ``UncertaintySampling`` warns.
 
     ``Yvar`` is ignored: an ensemble represents noise through member disagreement,
     not an explicit per-point variance.
