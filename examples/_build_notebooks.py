@@ -745,6 +745,84 @@ def featurize(X):                                     # (N, 1) indices -> (N, 8)
 model = NetEnsembleConstructor(lambda d_in, d_out: make_net(8, d_out), featurize=featurize)
 """),
     md("""
+### When a network helps
+A standard GP assumes the output varies about equally fast everywhere, with one
+lengthscale per input. Here the output **jumps** by 3 across a wavy boundary in
+`x1`, `x2`, and a small **bump** in `x1`, `x3` sits on the high side. The goal is
+the high side near the top of the bump (y ≥ 3.4), about 3% of the space: finding
+it needs both the jump and the bump.
+"""),
+    code("""
+import logging
+import math
+import warnings
+
+# Quiet for a short output: the policy says, while the model predicts no target
+# anywhere, that it explores by uncertainty instead; GPyTorch notes numerical jitter.
+logging.getLogger("abbot").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*added jitter.*")
+
+jump_spec = ProblemSpec(
+    domain=[ContinuousDomain(name=n, lower=0.0, upper=1.0) for n in ("x1", "x2", "x3")],
+    outputs=[OutputSpec(name="y", direction="OBSERVE")],
+)
+
+def jump_and_bump(X):
+    x1, x2, x3 = X[..., 0], X[..., 1], X[..., 2]
+    high = (x2 > 0.5 + 0.2 * torch.sin(2 * math.pi * x1)).double()
+    return 3 * high + 0.8 * torch.exp(-((x1 - 0.3) ** 2 + (x3 - 0.6) ** 2) / 0.04)
+
+class JumpExperiment:
+    @staticmethod
+    def run(design):
+        x = torch.tensor([design["x1"], design["x2"], design["x3"]], dtype=torch.double)
+        return [float(jump_and_bump(x))]
+
+jump_goal = LevelSet(threshold=3.4, output="y")
+
+def wider_net(d_in, d_out):
+    return torch.nn.Sequential(
+        torch.nn.Linear(d_in, 128), torch.nn.ReLU(),
+        torch.nn.Linear(128, 128), torch.nn.ReLU(),
+        torch.nn.Linear(128, d_out),
+    )
+
+found = {}
+for name, model in [
+    ("GP (the default)", None),
+    ("ensemble", NetEnsembleConstructor(wider_net, bounds=jump_spec.bounds_tensor())),
+]:
+    torch.manual_seed(0)
+    policy = BAXPolicy(jump_goal, "InfoBAX", n_candidates=1000)
+    found[name] = Campaign(jump_spec, policy, model)
+    for _ in range(80):
+        found[name].step(JumpExperiment)
+    grid = policy.candidate_grid(jump_spec)
+    truth = set(jump_goal.bind(jump_spec).identify_subspace(jump_and_bump(grid).unsqueeze(-1)))
+    with torch.no_grad():
+        mean = found[name].current_model().posterior(grid).mean
+    est = set(jump_goal.bind(jump_spec).identify_subspace(mean))
+    print(f"{name}: Jaccard {len(est & truth) / len(est | truth):.2f}")
+"""),
+    md("""
+The GP finds none of the region. Its check shows why: it follows the jump with a
+short lengthscale in `x2`, and gives `x1` and `x3` lengthscales longer than their
+whole range, in effect deciding they barely matter. So it misses both the wavy
+boundary and the bump, and reads part of what it can't fit as noise. It also flags
+runs it can't explain ("a sharp feature"), which is the hint to try something
+else.
+
+The ensemble has no single lengthscale to compromise on. Over several seeds it
+found most of the region (Jaccard about 0.5 to 1.0) while the GP found almost
+none; the seed here is one of those runs. InfoBAX mattered too: with MeanBAX or
+PS-BAX, the ensemble sometimes never found the region at all.
+"""),
+    code("""
+for fit in found["GP (the default)"].check().fits:
+    print(fit.name, {k: round(v, 2) for k, v in fit.lengthscales.items()})
+print(found["GP (the default)"].check())
+"""),
+    md("""
 ### Which policies
 - **MeanBAX, PS-BAX, SwitchBAX, InfoBAX** use the ensemble's and dropout's samples
   directly.
