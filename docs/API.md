@@ -1226,6 +1226,12 @@ a feasibility stopping rule, a run-level JSON serializer including the SBI `aux`
   InfoBAX would update it by refitting on the data plus the sample's values. Not
   for the BO policies (trees have no gradients to follow). Needs scikit-learn as
   an optional install.
+- **Training an ensemble's members together.** Today `abbot.nn` trains, predicts
+  with and fine-tunes the members one after another. Stacking them into one batched
+  model (`torch.func`'s `stack_module_state` and `vmap`) would do each in one pass:
+  much faster on a GPU. It would cover the default trainer, with the loop kept for
+  a custom `train=` and for networks `vmap` can't take (BatchNorm, in-place
+  operations).
 - **PFN surrogates — a research model, same seam.** A custom `ModelConstructor`
   returning a botorch `Model`; built when a problem needs it, not speculatively.
   (Deep kernels are in `abbot.nn`.)
