@@ -13,9 +13,10 @@ Three ways to get uncertainty from a network:
   (a deep ensemble). A posterior sample is one member.
 - :class:`MCDropoutConstructor`: one network with ``torch.nn.Dropout`` layers,
   sampled with dropout on. A posterior sample is one fixed dropout mask, shared by
-  every design it's evaluated at, so a sample is one coherent function (with a
-  fresh mask per design, the "sample" would be independent noise at each design
-  and the goal would run on nonsense).
+  every design it's evaluated at, so a sample is one coherent function. (A fixed
+  random seed isn't enough: ``Dropout`` draws a mask per row of the batch, so the
+  "sample" would be close to independent noise at each design.) Its spread doesn't
+  shrink fully near the data, which weakens InfoBAX; prefer the ensemble there.
 - :class:`DeepKernelConstructor`: the network maps designs to features and a GP
   works on the features (deep kernel learning). It's a GP, so it gives calibrated
   variance and exact conditioning, and every policy works with it.

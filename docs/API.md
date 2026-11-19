@@ -1009,10 +1009,26 @@ Three ways to get uncertainty from the network:
   nothing to say where the model is unsure, it explores less well than the
   ensemble.
 - **A posterior sample is one function.** For an ensemble it's one member. For
-  dropout it's one fixed mask, shared by every design it's evaluated at: with a
-  fresh mask per design (dropout's usual training behavior), a "sample" would be
-  independent noise at each design, and the goal would run on nonsense. The mask
-  is over each `Dropout` layer's last dimension (the features).
+  dropout it's one fixed mask, shared by every design it's evaluated at.
+  `torch.nn.Dropout` draws a fresh mask for every row of a batch, and fixing the
+  random seed doesn't change that: it makes a run repeatable, but a design's value
+  still depends on where it sits in the batch and what else is in it. A "sample"
+  drawn that way is close to independent noise at each design, and the goal (and
+  InfoBAX's fantasy values) would run on it. abbot applies one mask per layer
+  instead, over the layer's last dimension: the features for fully connected and
+  graph networks (`(N, features)`, `(atoms, features)`). For a convolutional layer
+  `(N, C, H, W)` that's the width, not the channels, so such a network's masks
+  aren't the usual channel dropout.
+- **Dropout's spread has a floor.** The dropout rate is fixed, so the spread
+  doesn't shrink fully where there's data (a known limit of MC dropout as a
+  posterior; Osband, 2016). In a check with data on half of one input, dropout's
+  spread was 7–8× larger away from the data, against 44× for an ensemble, and
+  near the data about ten times the ensemble's. InfoBAX scores a design by how
+  much a run would shrink the uncertainty, so this floor compresses its signal:
+  on FeCoNi, InfoBAX with dropout did worst of all the pairings we tried, and
+  MeanBAX with dropout better. For InfoBAX, prefer the ensemble; dropout is the
+  cheap option for MeanBAX or PS-BAX, or for a network too big to train several
+  copies of, and its rate is worth tuning.
 - **InfoBAX by fine-tuning.** InfoBAX asks how much a run would tell about the
   target set: the entropy at each design now, minus its average after the model is
   updated on one posterior sample's values at that sample's target set. A GP does
