@@ -52,6 +52,10 @@ on them.
   and the constructors' `prior_mean=`. New.
 - **Correlated outputs** — `default_constructor(spec, correlated=True)`,
   `MultiTaskGPConstructor(spec, rank=)`. New.
+- **Neural-network surrogates** — `abbot.nn` (`NetEnsembleConstructor`,
+  `MCDropoutConstructor`, `DeepKernelConstructor`, `adam`). Experimental: the
+  options and defaults will move as people use it. See
+  [Neural-network surrogates](#neural-network-surrogates-experimental). New.
 - **GPU** — `Campaign(device=)`, `run_campaign(device=)`, `Campaign.device`,
   `abbot.model.model_device`, and `device=` on `abbot.session.fit_model` and
   `abbot.usability.fit_usability`. See [Fitting on a GPU](#fitting-on-a-gpu). New.
@@ -699,7 +703,7 @@ reuses the cached fit, so it costs one fit at most.
   the output's shortest: the output hasn't shown a dependence on that input.
 - **Runs vs. inputs:** fewer clean runs than inputs leaves the model guessing.
   With 15 or more inputs and fewer than 10 runs per input, a note points to TuRBO
-  (`GestGeneratorPolicy`) and neural-network surrogates (`EnsembleConstructor`).
+  (`GestGeneratorPolicy`) and neural-network surrogates (`abbot.nn`).
 - **Coverage:** the fit checks read any BoTorch exact GP (the builtin constructors,
   model lists, categorical and source-aware GPs). For other models only the run
   counts apply.
@@ -938,7 +942,11 @@ specs with sources; use the JSON spec.
 what the posterior actually supplies (`"calibrated_variance"` for a GP, `"samples"`
 for an ensemble, `"point"` for a bare net — the loop enforces the match). A different
 kernel, a fully-Bayesian GP, or a deep ensemble all slot in this way; see
-`examples/custom_models.py`. `EnsembleConstructor` is the builtin non-GP example. The GP constructors take
+`examples/custom_models.py`. For a neural network, `abbot.nn` does the wrapping (see
+[Neural-network surrogates](#neural-network-surrogates-experimental));
+`EnsembleConstructor` is a toy one. InfoBAX and SwitchBAX update the model on each
+posterior sample's values (`condition_on_observations`); a constructor whose models
+can't sets `supports_conditioning = False`, and those two strategies refuse it. The GP constructors take
 `kernel="default"` (BoTorch's choice) or `kernel="matern52"` (scaled ARD Matern-5/2,
 what multibax's sklearn GPs used).
 
@@ -946,6 +954,82 @@ On a GPU campaign, `build` receives `X`, `Y` and `Yvar` on the campaign's device
 and the model it returns should live there too: make any tensor of your own (bounds,
 a mean's parameters, a kernel's indices) on `X.device`. See
 [Fitting on a GPU](#fitting-on-a-gpu).
+
+## Neural-network surrogates (experimental)
+
+```python
+import torch
+from abbot.nn import NetEnsembleConstructor
+
+def make_net(d_in, d_out):
+    return torch.nn.Sequential(
+        torch.nn.Linear(d_in, 128), torch.nn.ReLU(),
+        torch.nn.Linear(128, 128), torch.nn.ReLU(),
+        torch.nn.Linear(128, d_out),
+    )
+
+model = NetEnsembleConstructor(make_net, n_members=5, bounds=spec.bounds_tensor())
+campaign = Campaign(spec, BAXPolicy(goal, "InfoBAX"), model)
+```
+
+You write the network; `abbot.nn` does the rest. `make_net(d_in, d_out)` returns a
+`torch.nn.Module` from a batch of inputs `(N, d_in)` to `(N, d_out)`; abbot converts
+it to float64, moves it to the campaign's device, and:
+
+- **scales the inputs** to the unit box given by `bounds` (else the training data's
+  range at each fit), or hands the raw designs to your `featurize(X)` instead: for
+  an index variable into a table of structures, say, it returns the network's input
+  (a tensor, a batch of graphs). `d_in` is then the number of design columns, and
+  your network takes whatever `featurize` returns;
+- **standardizes each output** and trains on the runs that measured it (a gap is
+  left out of the loss);
+- **trains** `epochs` from fresh weights, and later fits from the last fit's weights
+  for `warm_epochs` (`None`: always fresh). The default trainer is full-batch Adam
+  on the squared error (`lr=1e-2`, `weight_decay`, `batch_size`);
+  `train=fn` replaces it, `fn(net, X, Y, epochs)` with `Y` standardized and NaN
+  where a run didn't measure an output (`abbot.nn.adam(...)` builds the default);
+- **estimates the measurement noise** as each output's mean squared residual, at
+  least `min_noise` of its variance; `noise=` (a variance in output units, one per
+  output) or per-run `Yvar` set it instead. InfoBAX's entropies include it.
+
+Three ways to get uncertainty from the network:
+
+| | Uncertainty from | Works with | InfoBAX updates by |
+| --- | --- | --- | --- |
+| `NetEnsembleConstructor(make_net, n_members=5)` | independently initialized copies | MeanBAX, PS-BAX, SwitchBAX, InfoBAX | fine-tuning |
+| `MCDropoutConstructor(make_net, n_samples=32)` | dropout left on; needs `torch.nn.Dropout` layers | the same | fine-tuning |
+| `DeepKernelConstructor(make_net, n_features=4)` | a GP on the network's features | every policy | exact (it's a GP) |
+
+- **A posterior sample is one function.** For an ensemble it's one member. For
+  dropout it's one fixed mask, shared by every design it's evaluated at: with a
+  fresh mask per design (dropout's usual training behavior), a "sample" would be
+  independent noise at each design, and the goal would run on nonsense. The mask
+  is over each `Dropout` layer's last dimension (the features).
+- **InfoBAX by fine-tuning.** InfoBAX asks how much a run would tell about the
+  target set: the entropy at each design now, minus its average after the model is
+  updated on one posterior sample's values at that sample's target set. A GP does
+  the update exactly. An ensemble or dropout model fine-tunes a copy on the data
+  plus those values for `refit_epochs` (default 100), as
+  nn-bax does. Fine-tuning on the same data
+  for longer changes the spread by itself (members keep converging), so by default
+  the "now" entropy comes from a matching fine-tune on the data alone
+  (`control=True`, one extra fine-tune per proposal); `control=False` uses the
+  model as it is, nn-bax's version. The samples are the ensemble's members (or
+  dropout masks), the first `n_posterior_samples` of them: each is one fine-tune,
+  so a proposal costs `n_members + 1` of them. A batch (`n > 1`) fine-tunes once
+  more per pick, on the earlier picks at the model's mean.
+- **The entropies are Gaussian,** from each design's predicted variance. Exact for
+  a GP; for an ensemble or dropout, it treats the spread of a handful of samples
+  as Gaussian. With 5 members the variance itself is noisy; split predictions
+  (two groups of members) read as more uncertain than they are.
+- **US and the BO policies need calibrated variance,** so they refuse the ensemble
+  and dropout models (a spread across members isn't calibrated). The deep kernel
+  is a GP and works with all of them; with few runs its network can overfit, which
+  shows as overconfidence. Keep it small, or use `weight_decay`.
+- **Defaults are starting points.** They were checked only on two-input problems
+  with up to about a hundred runs. Your network, its
+  training and `refit_epochs` are yours to tune; that's the point of bringing your
+  own.
 
 ## Fitting on a GPU
 
@@ -1132,6 +1216,6 @@ a feasibility stopping rule, a run-level JSON serializer including the SBI `aux`
 - **Correlated outputs with sources, and with prior means.** One model over
   outputs *and* sources, and a prior mean per output in the correlated model;
   see [Correlated outputs](#correlated-outputs).
-- **PFN / deep-kernel surrogates — research models, same seam.** Both are a custom
-  `ModelConstructor` returning a botorch `Model`; built when a problem needs them,
-  not speculatively.
+- **PFN surrogates — a research model, same seam.** A custom `ModelConstructor`
+  returning a botorch `Model`; built when a problem needs it, not speculatively.
+  (Deep kernels are in `abbot.nn`.)

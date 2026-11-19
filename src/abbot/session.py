@@ -99,6 +99,16 @@ def check_uq_pairing(policy: Policy, model_constructor: ModelConstructor) -> Non
             f"{_NEEDS[required]} (a Gaussian-process surrogate does), or pick a method "
             "that needs less (e.g. a greedy/MeanBAX policy only needs a point prediction)."
         )
+    if getattr(policy, "needs_conditioning", False) and not getattr(
+        model_constructor, "supports_conditioning", True
+    ):
+        strategy = getattr(policy, "strategy", type(policy).__name__)
+        raise ValueError(
+            f"{strategy} updates the model as if it had seen each posterior sample's "
+            f"values, and {type(model_constructor).__name__} can't be updated. Use a GP, "
+            "or a network from abbot.nn (NetEnsembleConstructor, MCDropoutConstructor, "
+            "DeepKernelConstructor), or a strategy that doesn't need it (MeanBAX, PSBAX)."
+        )
 
 
 # --- shared engine helpers (used by Campaign and run_campaign) ----------------

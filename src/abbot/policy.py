@@ -30,6 +30,7 @@ from botorch.acquisition import (
     qMultiFidelityMaxValueEntropy,
 )
 from botorch.models.model import Model
+from botorch.posteriors.ensemble import EnsemblePosterior
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
 from abbot.acq_opt import CandidateOptimizer, Continuous, optimize
@@ -882,6 +883,9 @@ class BAXPolicy:
         self.n_posterior_samples = n_posterior_samples
         self.candidate_seed = candidate_seed
         self.uq_requirement: UQRequirement = _BAX_UQ[strategy]
+        # InfoBAX (also SwitchBAX's fallback) updates the model on each sample's
+        # values, so the model must support conditioning (exactly, or by fine-tuning).
+        self.needs_conditioning = strategy in ("InfoBAX", "SwitchBAX")
         # A caller-supplied candidate set (e.g. an application's own design grid) replaces
         # the Sobol grid; n_candidates / candidate_seed are then unused.
         self._candidates: torch.Tensor | None = (
@@ -1305,6 +1309,10 @@ class BAXPolicy:
         if self.noise_at is not None:
             noise = self.noise_at(grid)
             return torch.as_tensor(noise, dtype=torch.double, device=grid.device).reshape(N, -1)
+        own = getattr(model, "observation_noise_variance", None)
+        if callable(own):  # e.g. a network model (abbot.nn)
+            with torch.no_grad():
+                return own(grid.double()).reshape(N, -1)
         try:
             with torch.no_grad():
                 noisy = model.posterior(grid.double(), observation_noise=True).variance
@@ -1335,13 +1343,23 @@ class BAXPolicy:
             _, rest = self._raw_mean_std(model, grid[n_target:], spec)
             std = torch.cat([std, rest])
         noise = self._measurement_noise(model, grid)  # (N, m) or (N, 1)
-        term1 = _entropy((std**2 + noise).sqrt())  # (N, d_y)
+        # A model updated by fine-tuning (abbot.nn) gives a copy fine-tuned on the
+        # data alone, so the change fine-tuning makes by itself isn't counted.
+        control = getattr(model, "refit_control", None)
+        before = control() if callable(control) else None
+        base_std = std if before is None else self._raw_mean_std(before, grid, spec)[1]
+        term1 = _entropy((base_std**2 + noise).sqrt())  # (N, d_y)
         with torch.no_grad():
             post = model.posterior(at_target.double())
-            # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
-            samples = post.rsample(torch.Size([self.n_posterior_samples]))
+            if isinstance(post, EnsemblePosterior):
+                # Its samples are its members: take distinct ones, not repeats.
+                samples = post.values[..., : self.n_posterior_samples, :, :]
+                samples = samples.reshape(-1, *samples.shape[-2:])
+            else:
+                # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
+                samples = post.rsample(torch.Size([self.n_posterior_samples]))
         term2 = torch.zeros_like(term1)
-        n = self.n_posterior_samples
+        n = len(samples)
         conditioned = failed = 0
         unconstrained = 0  # samples where only the constraints emptied the goal
         for i in range(n):

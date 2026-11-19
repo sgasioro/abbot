@@ -13,6 +13,21 @@
   objective or a constrained output. `correct` fills a value in later. Output
   constraints ignore a gap in an output they don't use.
 
+- **Neural-network surrogates (experimental):** `abbot.nn` wraps your own
+  `torch.nn.Module` as a model: `NetEnsembleConstructor` (a deep ensemble),
+  `MCDropoutConstructor` (dropout masks shared across designs, so each sample is
+  one function) or `DeepKernelConstructor` (a GP on the network's features). abbot
+  scales inputs and outputs, trains with warm starts, skips missing outputs, and
+  `featurize=` handles inputs that aren't numbers. InfoBAX and SwitchBAX work with
+  the ensemble and dropout models by fine-tuning a copy on each posterior sample's
+  values (after nn-bax), measured against a matching fine-tune on the data alone.
+- **InfoBAX and SwitchBAX refuse a model that can't be updated** when the campaign
+  is set up (a constructor with `supports_conditioning = False`, such as the toy
+  `EnsembleConstructor`), instead of failing at the first proposal.
+- **InfoBAX with an ensemble** takes distinct members as its samples, not repeated
+  draws of the same ones, and uses a model's own `observation_noise_variance` when
+  it has one.
+
 ## 0.3.0
 
 The UI is rebuilt around a guided setup, with an expert panel for every field and

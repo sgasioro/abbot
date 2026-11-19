@@ -7,16 +7,16 @@ abbot does not ship a model zoo — it ships a seam. Any botorch ``Model`` fits 
 
   1. a different KERNEL (Matern-5/2 instead of the default RBF),
   2. a fully-Bayesian GP (SAAS) for high-dimensional / few-data regimes,
-  3. a deep ensemble (non-GP), via the builtin ``EnsembleConstructor``.
+  3. a deep ensemble of your own network (non-GP), via ``abbot.nn``.
 
 The one rule: set ``provides_uq`` to what your model's posterior ACTUALLY provides
 ("calibrated_variance" for a GP, "samples" for an ensemble, "point" for a bare net).
 The loop checks it against the policy so you can't silently pair, e.g., a point net
 with a variance-hungry acquisition.
 
-Research models (PFN, deep-kernel) are the SAME seam — a ``build`` that returns a
-botorch ``Model`` — and are deliberately not built here (added when a problem
-needs them). For outputs that inform each other, abbot ships one:
+Research models (PFN) are the SAME seam — a ``build`` that returns a botorch
+``Model``. Neural networks have their own (experimental) module, ``abbot.nn``:
+your network as an ensemble, with MC dropout, or as a deep kernel. For outputs that inform each other, abbot ships one:
 ``default_constructor(spec, correlated=True)`` (``MultiTaskGPConstructor``).
 
 Run: ``python examples/custom_models.py``
@@ -35,12 +35,12 @@ from abbot import (
     BAXPolicy,
     Campaign,
     ContinuousDomain,
-    EnsembleConstructor,
     LevelSet,
     OutputSpec,
     ProblemSpec,
     SimpleBO,
 )
+from abbot.nn import NetEnsembleConstructor
 
 
 class MaternConstructor:
@@ -135,7 +135,13 @@ def _ensemble_demo() -> None:
         outputs=[OutputSpec(name="y", direction="OBSERVE")],
     )
     policy = BAXPolicy(LevelSet(threshold=-0.05), strategy="SwitchBAX", n_candidates=100)
-    campaign = Campaign(spec, policy, EnsembleConstructor(n_members=5, epochs=120))
+    def make_net(d_in, d_out):
+        return torch.nn.Sequential(
+            torch.nn.Linear(d_in, 32), torch.nn.Tanh(), torch.nn.Linear(32, d_out)
+        )
+
+    model = NetEnsembleConstructor(make_net, n_members=5, bounds=spec.bounds_tensor())
+    campaign = Campaign(spec, policy, model)
     campaign.seed(torch.tensor([[0.1], [0.5], [0.9]], dtype=torch.double))
     for _ in range(6):
         x = campaign.suggest(1)[0]["x"]
