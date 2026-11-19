@@ -987,8 +987,8 @@ it to float64, moves it to the campaign's device, and:
 - **trains** `epochs` from fresh weights, and later fits from the last fit's weights
   for `warm_epochs` (`None`: always fresh). The default trainer is full-batch Adam
   on the squared error (`lr=1e-2`, `weight_decay`, `batch_size`);
-  `train=fn` replaces it, `fn(net, X, Y, epochs)` with `Y` standardized and NaN
-  where a run didn't measure an output (`abbot.nn.adam(...)` builds the default);
+  `train=fn` replaces it (see [Your own training loop](#your-own-training-loop);
+  `abbot.nn.adam(...)` builds the default);
 - **estimates the measurement noise** as each output's mean squared residual, at
   least `min_noise` of its variance; `noise=` (a variance in output units, one per
   output) or per-run `Yvar` set it instead. InfoBAX's entropies include it.
@@ -1078,6 +1078,66 @@ Three ways to get uncertainty from the network:
   with up to about a hundred runs. Your network, its
   training and `refit_epochs` are yours to tune; that's the point of bringing your
   own.
+
+### Your own training loop
+
+`NetEnsembleConstructor` and `MCDropoutConstructor` take `train=fn`, which replaces
+the default trainer:
+
+```python
+def train(net, X, Y, epochs):
+    """Fit net in place; return nothing."""
+    opt = torch.optim.AdamW(net.parameters(), lr=3e-3, weight_decay=1e-4)
+    seen = ~Y.isnan()                                   # outputs a run didn't measure
+    net.train()
+    for _ in range(epochs):
+        for rows in torch.randperm(len(X), device=X.device).split(32):
+            opt.zero_grad()
+            loss = my_loss(net(X[rows])[seen[rows]], Y[rows][seen[rows]])
+            loss.backward()
+            opt.step()
+
+model = NetEnsembleConstructor(make_net, train=train, bounds=spec.bounds_tensor())
+```
+
+**What it gets:**
+
+- `net`: abbot's wrapper around your network. It takes raw designs and does the
+  input scaling (or your `featurize`) and the chunking, so call `net(X)`.
+  `net.parameters()` are your network's; your own module is `net.net`.
+- `X`: the training designs `(n, d)`, raw, float64, on the campaign's device.
+- `Y`: the outputs, standardized per output, `(n, outputs)`, with NaN where a run
+  didn't measure an output. Mask those in the loss, or it's NaN. `net(X)`
+  predicts in the same standardized units.
+- `epochs`: how long to train. abbot passes `epochs` for a fit from fresh
+  weights, `warm_epochs` for a later fit starting from the last weights, and
+  `refit_epochs` for InfoBAX's fine-tunes. Use it: a loop that ignores it makes
+  every fine-tune cost a full fit, and its control fine-tune no longer matches
+  the others.
+
+**When it's called:**
+
+- Once per member at every fit (once in all for dropout).
+- For InfoBAX (and SwitchBAX when it switches), on copies, every proposal: once
+  per member for each posterior sample's fine-tune on the data plus that sample's
+  values, and once more per member for the control. A slow loop multiplies
+  there; MeanBAX and PS-BAX only train at each fit.
+- For a batch (`n > 1`), once more per member for each pick after the first.
+
+**Keep to:**
+
+- Train in place. Don't replace, wrap, or convert the module: it stays float64
+  on the campaign's device.
+- Nothing carries over between calls except the weights (the warm start). Make the
+  optimizer inside the call.
+- For early stopping on held-out runs, split them from `X` and `Y` yourself.
+- Setting `net.train()` is fine: abbot switches to eval to predict, and applies
+  dropout's sampling masks itself.
+
+`DeepKernelConstructor` has no `train=`: it trains the network and the GP
+together on the GP's marginal likelihood with Adam (`epochs`, `lr`,
+`weight_decay`). A `train=` for it, and telling the loop which kind of call it is
+(fit, warm start, fine-tune), are possible additions.
 
 ## Fitting on a GPU
 
