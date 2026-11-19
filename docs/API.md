@@ -1057,6 +1057,21 @@ Three ways to get uncertainty from the network:
   often too narrow), so `check()` or a held-out run is worth a look. The deep
   kernel is a GP and works with all of them without a warning; with few runs its network can overfit, which
   shows as overconfidence. Keep it small, or use `weight_decay`.
+- **Bringing your own algorithm:** any function from the predicted values on the
+  candidates to the indices it selects is a goal (`FunctionGoal(lambda f, X:
+  my_algorithm(f))`), and `candidates=` is your domain. The notebook has a worked
+  example. The goal sees values on a fixed candidate set only; an algorithm that
+  queries the function at points of its own choosing (an optimizer's path) needs
+  continuous BAX, not built yet.
+- **Pretrained weights:** members started from the same weights and trained full
+  batch stay identical, with no spread. `NetEnsembleConstructor` warns when its
+  members agree everywhere; give each a different random part (a fresh head), or
+  use `batch_size=`.
+- **Memory and precision.** Predictions go through the network `chunk_size`
+  designs at a time (default 4096). abbot converts the network to float64: fine
+  on a CPU and for small networks, but most consumer GPUs run float64 many times
+  slower than float32, so a large network would be slow. Training in float32
+  inside the wrapper is a possible addition.
 - **Defaults are starting points.** They were checked only on two-input problems
   with up to about a hundred runs. Your network, its
   training and `refit_epochs` are yours to tune; that's the point of bringing your

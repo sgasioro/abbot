@@ -1,6 +1,7 @@
 """Neural-network surrogates (abbot.nn, experimental): ensembles, MC dropout and
 deep kernels on your own network, with InfoBAX by fine-tuning."""
 
+import copy
 import warnings
 
 import pytest
@@ -87,6 +88,32 @@ def test_a_dropout_sample_is_one_function_wherever_it_is_evaluated():
     alone = torch.stack([model(grid[i : i + 1])[:, 0] for i in range(5)], dim=1)
     assert torch.allclose(together[:, :5], alone)
     assert not torch.allclose(together[0], together[1])  # the masks differ
+
+
+@pytest.mark.parametrize("kind", ["ensemble", "dropout"])
+def test_prediction_in_chunks_matches_all_at_once(kind):
+    torch.manual_seed(0)
+    X, Y = _data()
+    chunked = CONSTRUCTORS[kind](chunk_size=7).build(X, Y)
+    whole = copy.deepcopy(chunked)
+    for net in whole.nets:
+        net.chunk_size = None
+    grid = torch.rand(50, 2, dtype=torch.double) * 4 - 2
+    assert torch.allclose(chunked(grid), whole(grid))  # dropout: the same masks per chunk
+
+
+def test_identical_members_warn():
+    pretrained = mlp(2, 2).double()
+
+    def same_every_time(d, m):
+        return copy.deepcopy(pretrained)  # the same weights for every member
+
+    X, Y = _data()
+    with pytest.warns(UserWarning, match="no uncertainty"):
+        NetEnsembleConstructor(same_every_time, n_members=3, epochs=20, bounds=BOUNDS).build(X, Y)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        CONSTRUCTORS["ensemble"]().build(X, Y)  # independent members: no warning
 
 
 def test_dropout_needs_a_dropout_layer():

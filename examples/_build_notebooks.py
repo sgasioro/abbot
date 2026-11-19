@@ -745,6 +745,66 @@ def featurize(X):                                     # (N, 1) indices -> (N, 8)
 model = NetEnsembleConstructor(lambda d_in, d_out: make_net(8, d_out), featurize=featurize)
 """),
     md("""
+### Bring your own algorithm and network
+The usual starting point: you already have an algorithm (what makes a design
+interesting) and a network. Neither needs to change.
+
+- **The algorithm** becomes a goal: any function from the model's predicted values
+  on the candidates, `(N, outputs)` in raw units, to the indices it selects
+  (`FunctionGoal`). It runs on every posterior sample, so it should take a few
+  milliseconds at most.
+- **The network** comes in through `make_net`; a lambda adapts its own
+  constructor. Its forward takes `(N, d_in)` (or whatever `featurize` returns) and
+  returns `(N, outputs)`.
+- **The candidates** are your domain: `candidates=` takes the designs to choose
+  from, one row per design.
+"""),
+    code("""
+from abbot import FunctionGoal
+
+def my_algorithm(values):
+    \"\"\"The designs within 20% of the best predicted signal.\"\"\"
+    signal = values[:, 0]
+    return (signal >= 0.8 * signal.max()).nonzero(as_tuple=True)[0].tolist()
+
+class MyNet(torch.nn.Module):
+    def __init__(self, n_in, n_out, width=64):
+        super().__init__()
+        self.body = torch.nn.Sequential(
+            torch.nn.Linear(n_in, width), torch.nn.SiLU(),
+            torch.nn.Linear(width, width), torch.nn.SiLU(),
+        )
+        self.head = torch.nn.Linear(width, n_out)
+
+    def forward(self, x):
+        return self.head(self.body(x))
+
+my_domain = torch.rand(500, 2, dtype=torch.double)     # your candidate designs, one per row
+
+policy = BAXPolicy(FunctionGoal(lambda f, X: my_algorithm(f)), "PSBAX", candidates=my_domain)
+model = NetEnsembleConstructor(lambda d_in, d_out: MyNet(d_in, d_out), bounds=spec.bounds_tensor())
+mine = Campaign(spec, policy, model)
+for _ in range(15):
+    mine.step(Experiment)
+print(len(mine.history), "runs; last pick:", mine.history.records[-1].candidate.tolist())
+"""),
+    md("""
+Things to know with your own network:
+
+- **Pretrained weights:** if `make_net` loads the same weights for every member,
+  the members start identical and, with full-batch training, stay identical: no
+  uncertainty. abbot warns when that happens. Give each member a different random
+  part (a freshly initialized head), or train with `batch_size=` so members see the
+  data in different orders.
+- **Precision:** abbot converts the network to float64. That's fine on a CPU and
+  for small networks; on most consumer GPUs float64 is many times slower than
+  float32, so a large network would be slow.
+- **Memory:** predictions go through the network `chunk_size` designs at a time
+  (default 4096); lower it for a big network or a big candidate set.
+- **Cost:** InfoBAX fine-tunes a copy of the ensemble for each member, every
+  proposal. For a big network, PS-BAX or MeanBAX costs about one prediction.
+"""),
+    md("""
 ### When a network helps
 A standard GP assumes the output varies about equally fast everywhere, with one
 lengthscale per input. Here the output **jumps** by 3 across a wavy boundary in

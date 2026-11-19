@@ -67,23 +67,31 @@ Train = Callable[[torch.nn.Module, torch.Tensor, torch.Tensor, int], None]
 class _Net(torch.nn.Module):
     """A user network behind abbot's input handling: designs ``(..., n, d)`` in raw
     units in, ``(..., n, m)`` out. Inputs are scaled to the unit box (``bounds``,
-    else the training data's range), or passed raw to ``featurize``."""
+    else the training data's range), or passed raw to ``featurize``. At most
+    ``chunk_size`` designs go through the network at once."""
 
-    def __init__(self, net, d: int, m: int, lo, hi, featurize=None) -> None:
+    def __init__(self, net, d: int, m: int, lo, hi, featurize=None, chunk_size=None) -> None:
         super().__init__()
         self.net = net
         self.d, self.m = d, m
         self.featurize = featurize
+        self.chunk_size = chunk_size
         self.register_buffer("lo", lo)
         self.register_buffer("span", (hi - lo).clamp_min(1e-12))
+
+    def _run(self, flat: torch.Tensor) -> torch.Tensor:
+        inputs = self.featurize(flat) if self.featurize is not None else (flat - self.lo) / self.span
+        out = self.net(inputs)
+        return out.unsqueeze(-1) if out.dim() == 1 else out
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         lead = X.shape[:-1]
         flat = X.reshape(-1, X.shape[-1])
-        inputs = self.featurize(flat) if self.featurize is not None else (flat - self.lo) / self.span
-        out = self.net(inputs)
-        if out.dim() == 1:
-            out = out.unsqueeze(-1)
+        size = self.chunk_size
+        if size is None or len(flat) <= size:
+            out = self._run(flat)
+        else:
+            out = torch.cat([self._run(flat[i : i + size]) for i in range(0, len(flat), size)])
         return out.reshape(*lead, out.shape[-1])
 
 
@@ -247,9 +255,11 @@ class _NetConstructor:
         train: Train | None = None,
         noise: float | list[float] | None = None,
         min_noise: float = 1e-3,
+        chunk_size: int | None = 4096,
         seed: int = 0,
     ) -> None:
         self.make_net = make_net
+        self.chunk_size = chunk_size
         self.bounds = bounds
         self.featurize = featurize
         self.epochs = epochs
@@ -267,7 +277,7 @@ class _NetConstructor:
             torch.manual_seed(self.seed * 1000 + i)
             net = self.make_net(X.shape[-1], m)
         lo, hi = _box(X, self.bounds)
-        return _Net(net, X.shape[-1], m, lo, hi, self.featurize).to(X)
+        return _Net(net, X.shape[-1], m, lo, hi, self.featurize, self.chunk_size).to(X)
 
     def _n_nets(self) -> int:
         raise NotImplementedError
@@ -308,6 +318,30 @@ class _NetConstructor:
     def _predict(self, nets, i, X):
         return nets[i](X)
 
+    def _check_spread(self, nets, X) -> None:
+        """Warn when the members agree everywhere: identical starting weights (the
+        same pretrained network for each, say) and deterministic training leave
+        them identical, with no spread for the policies to use."""
+        if self._n_samples(nets) < 2:
+            return
+        lo, hi = _box(X, self.bounds)
+        g = torch.Generator(device=X.device).manual_seed(0)
+        probe = lo + (hi - lo) * torch.rand(256, X.shape[-1], generator=g, dtype=X.dtype, device=X.device)
+        if self.featurize is not None:
+            probe = X  # featurize may only accept the designs it knows
+        with torch.no_grad():
+            values = torch.stack([self._predict(nets, i, probe) for i in range(self._n_samples(nets))])
+        if values.std(dim=0).max() < 1e-6:  # standardized units
+            msg = (
+                f"{type(self).__name__}: the {self._n_samples(nets)} samples predict the same "
+                "values everywhere, so the model has no uncertainty. If make_net loads "
+                "the same pretrained weights for every member, give each a different "
+                "random part (a freshly initialized last layer), or train with "
+                "batch_size= so members see the data in different orders."
+            )
+            warnings.warn(msg, UserWarning, stacklevel=4)
+            logger.warning("%s", msg)
+
     def _n_samples(self, nets) -> int:
         return len(nets)
 
@@ -322,6 +356,7 @@ class _NetConstructor:
         Z = (Y - y_mean) / y_std
         with torch.enable_grad():
             nets = self._fit_nets(X, Z)
+        self._check_spread(nets, X)
         noise = self._noise(nets, X, Z, Yvar, y_std)
         return _NetSamplesModel(
             nets, X, Y, y_mean=y_mean, y_std=y_std, noise=noise, train=self.train,
@@ -353,6 +388,9 @@ class NetEnsembleConstructor(_NetConstructor):
       fit's weights and train ``warm_epochs`` (``None``: always from fresh). The
       default trainer is Adam on the squared error (``lr``, ``weight_decay``,
       ``batch_size``); ``train(net, X, Y, epochs)`` replaces it.
+    - **Batches:** at most ``chunk_size`` designs go through the network at once
+      when predicting (``None``: all at once), to bound memory on large candidate
+      sets.
     - **Noise:** ``noise`` (variance in output units), else the mean ``Yvar``, else
       the mean squared residual, at least ``min_noise`` (as a fraction of each
       output's variance).
@@ -491,9 +529,11 @@ class DeepKernelConstructor:
         warm_epochs: int | None = 100,
         lr: float = 0.01,
         weight_decay: float = 0.0,
+        chunk_size: int | None = 4096,
         seed: int = 0,
     ) -> None:
         self.make_net = make_net
+        self.chunk_size = chunk_size
         self.n_features = n_features
         self.bounds = bounds
         self.featurize = featurize
@@ -509,7 +549,7 @@ class DeepKernelConstructor:
             torch.manual_seed(self.seed * 1000 + j)
             net = self.make_net(X.shape[-1], self.n_features)
         lo, hi = _box(X, self.bounds)
-        feature_net = _Net(net, X.shape[-1], self.n_features, lo, hi, self.featurize).to(X)
+        feature_net = _Net(net, X.shape[-1], self.n_features, lo, hi, self.featurize, self.chunk_size).to(X)
         epochs = self.epochs
         if self.warm_epochs is not None and self._last is not None and j < len(self._last):
             try:

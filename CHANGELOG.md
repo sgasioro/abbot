@@ -31,7 +31,10 @@ uses your own neural network as the model. One breaking change, below.
   values (after nn-bax), measured against a matching fine-tune on the data alone.
   US and the BO policies run on the ensemble and dropout models too, with a warning
   that the spread across samples isn't calibrated. New notebook:
-  `examples/06_neural_surrogates.ipynb`.
+  `examples/06_neural_surrogates.ipynb`, with a "bring your own algorithm and
+  network" section. Predictions go through the network in chunks (`chunk_size`),
+  and an ensemble whose members agree everywhere (the same pretrained weights for
+  each) warns.
 - **A single network** (`NetEnsembleConstructor(make_net, n_members=1)`) is a
   model with no uncertainty, for MeanBAX: it measures inside the set the
   network predicts, at random, and when that has nothing new, the design farthest
