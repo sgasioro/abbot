@@ -80,9 +80,26 @@ class _Net(torch.nn.Module):
         self.register_buffer("span", (hi - lo).clamp_min(1e-12))
 
     def _run(self, flat: torch.Tensor) -> torch.Tensor:
-        inputs = self.featurize(flat) if self.featurize is not None else (flat - self.lo) / self.span
+        if self.featurize is None:
+            inputs = (flat - self.lo) / self.span
+        else:
+            inputs = self.featurize(flat)
+            if torch.is_tensor(inputs) and inputs.is_floating_point():
+                inputs = inputs.to(flat)  # float32 features for a float64 network
         out = self.net(inputs)
         return out.unsqueeze(-1) if out.dim() == 1 else out
+
+    def check_shape(self, X: torch.Tensor) -> None:
+        """Refuse a network whose output doesn't have ``m`` columns for ``X``'s rows:
+        broadcasting would otherwise hide it."""
+        with torch.no_grad():
+            out = self._run(X[:2])
+        if tuple(out.shape) != (min(2, len(X)), self.m):
+            raise ValueError(
+                f"the network returns shape {tuple(out.shape)} for {min(2, len(X))} "
+                f"designs; it should be ({min(2, len(X))}, {self.m}): one column per "
+                "output (make_net's d_out), one row per design"
+            )
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         lead = X.shape[:-1]
@@ -277,7 +294,9 @@ class _NetConstructor:
             torch.manual_seed(self.seed * 1000 + i)
             net = self.make_net(X.shape[-1], m)
         lo, hi = _box(X, self.bounds)
-        return _Net(net, X.shape[-1], m, lo, hi, self.featurize, self.chunk_size).to(X)
+        wrapped = _Net(net, X.shape[-1], m, lo, hi, self.featurize, self.chunk_size).to(X)
+        wrapped.check_shape(X)
+        return wrapped
 
     def _n_nets(self) -> int:
         raise NotImplementedError
@@ -550,6 +569,7 @@ class DeepKernelConstructor:
             net = self.make_net(X.shape[-1], self.n_features)
         lo, hi = _box(X, self.bounds)
         feature_net = _Net(net, X.shape[-1], self.n_features, lo, hi, self.featurize, self.chunk_size).to(X)
+        feature_net.check_shape(X)
         epochs = self.epochs
         if self.warm_epochs is not None and self._last is not None and j < len(self._last):
             try:

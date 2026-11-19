@@ -116,6 +116,23 @@ def test_identical_members_warn():
         CONSTRUCTORS["ensemble"]().build(X, Y)  # independent members: no warning
 
 
+def test_a_network_with_the_wrong_number_of_outputs_is_refused():
+    X, Y = _data()  # two outputs
+    with pytest.raises(ValueError, match=r"returns shape \(2, 1\).*should be \(2, 2\)"):
+        NetEnsembleConstructor(lambda d, m: mlp(d, 1), bounds=BOUNDS, epochs=5).build(X, Y)
+    with pytest.raises(ValueError, match="should be"):
+        DeepKernelConstructor(lambda d, m: mlp(d, 3), n_features=4, bounds=BOUNDS, epochs=5).build(X, Y)
+
+
+def test_float32_features_are_converted():
+    table = torch.randn(20, 6)  # float32, as most data are
+    X = torch.arange(0, 20, 2, dtype=torch.double).unsqueeze(-1)
+    Y = table[X[:, 0].long()].double().sum(-1, keepdim=True)
+    model = NetEnsembleConstructor(lambda d, m: mlp(6, m), featurize=lambda X: table[X[:, 0].long()],
+                                   epochs=20).build(X, Y)
+    assert model.posterior(X).mean.dtype == torch.double
+
+
 def test_dropout_needs_a_dropout_layer():
     X, Y = _data()
     with pytest.raises(ValueError, match="no torch.nn.Dropout layer"):
