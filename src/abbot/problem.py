@@ -837,6 +837,62 @@ class ProblemSpec(BaseModel):
         canonical = canonical.double()
         return canonical * self.output_signs(dtype=canonical.dtype, device=canonical.device)
 
+    @classmethod
+    def from_candidates(
+        cls,
+        candidates,
+        names: list[str] | None = None,
+        outputs: list[OutputSpec] | None = None,
+        **kwargs,
+    ) -> ProblemSpec:
+        """A spec whose inputs span a fixed set of designs (one per row), for
+        ``BAXPolicy(candidates=...)``: each column's range is its smallest to
+        largest value, as a whole-number input if every value is a whole number,
+        else a real-valued one.
+
+        ``candidates`` is a tensor or array ``(n, d)`` with ``names``, a
+        ``{name: values}`` mapping, or a pandas ``DataFrame`` (its column names).
+        ``outputs`` and any other ``ProblemSpec`` field are passed through.
+        """
+        import torch
+
+        if hasattr(candidates, "columns") and hasattr(candidates, "to_numpy"):  # DataFrame
+            names = names or [str(c) for c in candidates.columns]
+            values = torch.as_tensor(candidates.to_numpy(), dtype=torch.double)
+        elif isinstance(candidates, dict):
+            names = names or list(candidates)
+            values = torch.stack(
+                [torch.as_tensor(candidates[n], dtype=torch.double).reshape(-1) for n in names], dim=-1
+            )
+        else:
+            values = torch.as_tensor(candidates, dtype=torch.double)
+            if values.dim() == 1:
+                values = values.unsqueeze(-1)
+        if names is None:
+            raise ValueError("from_candidates: give names=[...], one per column")
+        if len(names) != values.shape[-1]:
+            raise ValueError(
+                f"from_candidates: {len(names)} names for {values.shape[-1]} columns"
+            )
+        if not len(values):
+            raise ValueError("from_candidates: no candidates")
+        if outputs is None:
+            raise ValueError("from_candidates: give outputs=[OutputSpec(...), ...]")
+        domain = []
+        for j, name in enumerate(names):
+            col = values[:, j]
+            lo, hi = float(col.min()), float(col.max())
+            if lo == hi:
+                raise ValueError(
+                    f"from_candidates: every candidate has {name} = {lo:g}; leave a "
+                    "column that doesn't vary out of the spec"
+                )
+            if bool((col == col.round()).all()):
+                domain.append(IntegerDomain(name=name, lower=int(lo), upper=int(hi)))
+            else:
+                domain.append(ContinuousDomain(name=name, lower=lo, upper=hi))
+        return cls(domain=domain, outputs=outputs, **kwargs)
+
     def bounds_tensor(self, dtype=None, device=None):
         """Return a (2, d) lower/upper bounds tensor for ``optimize_acqf``.
 

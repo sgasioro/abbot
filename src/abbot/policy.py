@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import gc
 import logging
+from collections.abc import Callable
 from typing import Literal, Protocol, runtime_checkable
 
 import torch
@@ -30,6 +31,7 @@ from botorch.acquisition import (
     qMultiFidelityMaxValueEntropy,
 )
 from botorch.models.model import Model
+from botorch.posteriors.ensemble import EnsemblePosterior
 from botorch.utils.multi_objective.pareto import is_non_dominated
 
 from abbot.acq_opt import CandidateOptimizer, Continuous, optimize
@@ -361,6 +363,15 @@ class SimpleBO:
     With sources, the entropy search is weighted by that probability at the target
     and the best value is sampled over designs likely to satisfy the constraints (an
     approximation).
+
+    **Inside the target set**, MeanBAX, SwitchBAX (while measuring inside it) and
+    PS-BAX pick by ``in_set``: ``"uncertainty"`` (the most uncertain design),
+    ``"random"``, ``"farthest"`` (the farthest from the runs so far, in the unit
+    box), or ``fn(X_set, taken, uncertainty) -> scores``, the highest picked
+    (``taken``: designs measured or in flight, or ``None``). The default
+    (``None``) is ``"uncertainty"``, or ``"random"`` for a model with no
+    uncertainty (a single network). Such a model also replaces US, when MeanBAX
+    falls back to it, with the farthest design.
 
     **With bad-region runs** (``usability``), the log-acquisition gains the log
     chance of a usable result (the entropy search is multiplied by it).
@@ -793,6 +804,12 @@ class _SumPosteriorStd(torch.nn.Module):
 
 BAXStrategy = Literal["US", "MeanBAX", "SwitchBAX", "InfoBAX", "PSBAX"]
 
+# How MeanBAX / SwitchBAX / PS-BAX choose inside the target set: a name, or
+# ``fn(X_set (k, d), taken (n, d) or None, uncertainty (k,)) -> scores (k,)``, the
+# highest picked. ``taken`` is the designs measured or in flight.
+InSet = Literal["uncertainty", "random", "farthest"] | Callable[..., torch.Tensor]
+_IN_SET = ("uncertainty", "random", "farthest")
+
 _BAX_UQ: dict[str, UQRequirement] = {
     "US": "calibrated_variance",
     "MeanBAX": "point",  # runs the goal on the posterior mean; a point net suffices
@@ -873,15 +890,26 @@ class BAXPolicy:
         source_levels: int | dict[str, list[float]] = 5,
         respect_constraints: bool = True,
         requery: bool = False,
+        in_set: InSet | None = None,
     ) -> None:
         if strategy not in _BAX_UQ:
             raise ValueError(f"strategy must be one of {list(_BAX_UQ)}, got {strategy!r}")
+        if not (in_set is None or callable(in_set) or in_set in _IN_SET):
+            raise ValueError(
+                f"in_set must be one of {list(_IN_SET)}, a function, or None; got {in_set!r}"
+            )
         self.goal = goal
         self.strategy = strategy
+        self.in_set = in_set
+        self._no_spread = False  # the model's uncertainty is zero everywhere (one network)
+        self._taken = None  # designs measured or in flight, this pick (for "farthest")
         self.n_candidates = n_candidates
         self.n_posterior_samples = n_posterior_samples
         self.candidate_seed = candidate_seed
         self.uq_requirement: UQRequirement = _BAX_UQ[strategy]
+        # InfoBAX (also SwitchBAX's fallback) updates the model on each sample's
+        # values, so the model must support conditioning (exactly, or by fine-tuning).
+        self.needs_conditioning = strategy in ("InfoBAX", "SwitchBAX")
         # A caller-supplied candidate set (e.g. an application's own design grid) replaces
         # the Sobol grid; n_candidates / candidate_seed are then unused.
         self._candidates: torch.Tensor | None = (
@@ -929,6 +957,7 @@ class BAXPolicy:
         """
         if self._grid is None and self._candidates is not None:
             self._grid = self._at_target(spec, self._candidates)
+            _check_in_bounds(spec, self._grid)
         if self._grid is None:
             from torch.quasirandom import SobolEngine
 
@@ -950,6 +979,35 @@ class BAXPolicy:
                 grid = grid[keep]
             self._grid = grid
         return self._grid
+
+    @property
+    def has_fixed_candidates(self) -> bool:
+        """Whether the policy proposes from a set of designs you gave
+        (``candidates=``), rather than a grid it builds over the spec's ranges."""
+        return self._candidates is not None
+
+    def initial_designs(self, spec: ProblemSpec, n: int | None = None, *, seed: int = 0):
+        """Starting designs for a campaign on a fixed candidate set: ``n`` spread
+        out over the candidates (farthest-point selection in the unit box, from a
+        random start), so every starting run is a design you can measure. ``n``
+        defaults to the size of :func:`abbot.session.default_initial_designs`.
+        ``None`` without fixed candidates (the campaign uses its usual seeds)."""
+        if not self.has_fixed_candidates:
+            return None
+        grid = self.candidate_grid(spec)
+        if n is None:
+            n = max(2 * len(spec.inputs) + 1, 2 * spec.n_objectives)
+        n = min(n, len(grid))
+        bounds = spec.bounds_tensor().to(grid)
+        unit = (grid - bounds[0]) / (bounds[1] - bounds[0]).clamp_min(1e-12)
+        g = torch.Generator().manual_seed(seed)
+        picks = [int(torch.randint(len(grid), (1,), generator=g))]
+        nearest = torch.cdist(unit, unit[picks]).squeeze(-1)
+        while len(picks) < n:
+            nxt = int(nearest.argmax())
+            picks.append(nxt)
+            nearest = torch.minimum(nearest, torch.cdist(unit, unit[[nxt]]).squeeze(-1))
+        return grid[picks].clone()
 
     @staticmethod
     def _at_target(spec: ProblemSpec, grid: torch.Tensor) -> torch.Tensor:
@@ -1079,7 +1137,9 @@ class BAXPolicy:
         with torch.no_grad():
             post = model.posterior(X.double())
             mean = spec.to_raw(post.mean.reshape(X.shape[0], -1))
-            std = post.variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
+            variance = post.variance
+            std = variance.clamp_min(1e-12).sqrt().reshape(X.shape[0], -1)
+        self._no_spread = bool((variance == 0).all())
         return mean, std
 
     # -- Policy API --
@@ -1129,6 +1189,7 @@ class BAXPolicy:
             if inflight is not None:
                 taken.append(inflight)
             self._collected = _grid_matches(grid, torch.cat(taken)) if taken else []
+            self._taken = torch.cat(taken) if taken else None
             busy = self._collected
             if self.requery:
                 busy = _grid_matches(grid, inflight) if inflight is not None else []
@@ -1226,8 +1287,11 @@ class BAXPolicy:
         # Average uncertainty across outputs in scale-free units (multibax fits on
         # min-max-scaled outputs); raw stds would let the largest-unit output win.
         rel = (std / self._out_scale.to(std)).mean(dim=-1)
+        # With no uncertainty to go on (a single network), US is the design farthest
+        # from the runs so far.
+        explore = self._farthest(spec, at_target) if self._no_spread else rel
         if self.strategy == "US":
-            return at_target_only(rel)
+            return at_target_only(explore)
         if self.strategy == "PSBAX":
             with torch.no_grad():  # one joint draw over the grid, raw units for the goal
                 draw = model.posterior(at_target.double()).rsample(torch.Size([1]))
@@ -1235,10 +1299,8 @@ class BAXPolicy:
             target = self._identify(spec, f_raw, at_target)
             if self._stuck(target):
                 self.switched = True
-                return at_target_only(rel)  # fall back to US
-            acq = torch.zeros(n_target, dtype=torch.double, device=rel.device)
-            acq[target] = rel[target]
-            return at_target_only(acq)
+                return at_target_only(explore)  # fall back to US
+            return at_target_only(self._in_set_acq(spec, at_target, target, rel))
         # MeanBAX / SwitchBAX gate on the mean-execution target set.
         if self.strategy in ("MeanBAX", "SwitchBAX"):
             target = self._identify(spec, mean, at_target)
@@ -1250,13 +1312,46 @@ class BAXPolicy:
             if self._stuck(target):
                 self.switched = True
                 if self.strategy == "MeanBAX":
-                    return at_target_only(rel)  # fall back to US
+                    return at_target_only(explore)  # fall back to US
                 return self._infobax(spec, model, grid, std)  # SwitchBAX -> InfoBAX
-            acq = torch.zeros(n_target, dtype=torch.double, device=rel.device)
-            acq[target] = rel[target]
-            return at_target_only(acq)
+            return at_target_only(self._in_set_acq(spec, at_target, target, rel))
         # InfoBAX
         return self._infobax(spec, model, grid, std)
+
+    def _in_set_acq(self, spec, X, target: list[int], rel) -> torch.Tensor:
+        """The acquisition over ``X`` (the grid at the target): zero outside the
+        target set, and inside it the ``in_set`` rule's score, positive. The default
+        rule is the model's uncertainty, or random when it has none."""
+        acq = torch.zeros(len(X), dtype=torch.double, device=rel.device)
+        rule = self.in_set or ("random" if self._no_spread else "uncertainty")
+        if rule == "uncertainty":
+            acq[target] = rel[target]
+            return acq
+        if rule == "random":
+            score = torch.rand(len(target), dtype=torch.double, device=rel.device)
+        elif rule == "farthest":
+            score = self._farthest(spec, X[target])
+        else:
+            score = torch.as_tensor(
+                rule(X[target], self._taken, rel[target]), dtype=torch.double, device=rel.device
+            ).reshape(-1)
+            if score.shape[0] != len(target):
+                raise ValueError(
+                    f"in_set returned {score.shape[0]} scores for {len(target)} designs"
+                )
+        acq[target] = score - score.min() + 1  # positive, so the set outranks the rest
+        return acq
+
+    def _farthest(self, spec, X) -> torch.Tensor:
+        """Each design's distance to the nearest run so far (measured or in flight),
+        in the unit box: the largest is the most unexplored. Without runs, all 1."""
+        if self._taken is None or not len(self._taken):
+            return torch.ones(len(X), dtype=torch.double, device=X.device)
+        bounds = spec.bounds_tensor().to(X)
+        span = (bounds[1] - bounds[0]).clamp_min(1e-12)
+        a = (X - bounds[0]) / span
+        b = (self._taken.to(X) - bounds[0]) / span
+        return torch.cdist(a, b).min(dim=-1).values
 
     def _goal_for(self, spec):
         """The goal with output names resolved against ``spec`` (``bind``), once."""
@@ -1305,6 +1400,10 @@ class BAXPolicy:
         if self.noise_at is not None:
             noise = self.noise_at(grid)
             return torch.as_tensor(noise, dtype=torch.double, device=grid.device).reshape(N, -1)
+        own = getattr(model, "observation_noise_variance", None)
+        if callable(own):  # e.g. a network model (abbot.nn)
+            with torch.no_grad():
+                return own(grid.double()).reshape(N, -1)
         try:
             with torch.no_grad():
                 noisy = model.posterior(grid.double(), observation_noise=True).variance
@@ -1335,13 +1434,23 @@ class BAXPolicy:
             _, rest = self._raw_mean_std(model, grid[n_target:], spec)
             std = torch.cat([std, rest])
         noise = self._measurement_noise(model, grid)  # (N, m) or (N, 1)
-        term1 = _entropy((std**2 + noise).sqrt())  # (N, d_y)
+        # A model updated by fine-tuning (abbot.nn) gives a copy fine-tuned on the
+        # data alone, so the change fine-tuning makes by itself isn't counted.
+        control = getattr(model, "refit_control", None)
+        before = control() if callable(control) else None
+        base_std = std if before is None else self._raw_mean_std(before, grid, spec)[1]
+        term1 = _entropy((base_std**2 + noise).sqrt())  # (N, d_y)
         with torch.no_grad():
             post = model.posterior(at_target.double())
-            # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
-            samples = post.rsample(torch.Size([self.n_posterior_samples]))
+            if isinstance(post, EnsemblePosterior):
+                # Its samples are its members: take distinct ones, not repeats.
+                samples = post.values[..., : self.n_posterior_samples, :, :]
+                samples = samples.reshape(-1, *samples.shape[-2:])
+            else:
+                # (n_samples, N, d_y) coherent joint draws; raw units for the goal.
+                samples = post.rsample(torch.Size([self.n_posterior_samples]))
         term2 = torch.zeros_like(term1)
-        n = self.n_posterior_samples
+        n = len(samples)
         conditioned = failed = 0
         unconstrained = 0  # samples where only the constraints emptied the goal
         for i in range(n):
@@ -1412,6 +1521,28 @@ def _entropy(std: torch.Tensor) -> torch.Tensor:
 
     var = std.clamp_min(1e-12) ** 2
     return 0.5 * torch.log(2 * math.pi * var) + 0.5
+
+
+def _check_in_bounds(spec: ProblemSpec, grid: torch.Tensor) -> None:
+    """Refuse candidates outside the spec's ranges, naming the columns."""
+    bounds = spec.bounds_tensor().to(grid)
+    span = (bounds[1] - bounds[0]).clamp_min(1e-12)
+    tol = 1e-9 * span
+    below = (bounds[0] - tol - grid).clamp_min(0).max(dim=0).values
+    above = (grid - bounds[1] - tol).clamp_min(0).max(dim=0).values
+    bad = [
+        f"{name} (range {float(lo):g} to {float(hi):g}; candidates go "
+        + (f"down to {float(grid[:, j].min()):g}" if below[j] > 0 else f"up to {float(grid[:, j].max()):g}")
+        + ")"
+        for j, (name, lo, hi) in enumerate(zip(spec.variable_names, bounds[0], bounds[1]))
+        if below[j] > 0 or above[j] > 0
+    ]
+    if bad:
+        raise ValueError(
+            "BAXPolicy: some candidates lie outside the spec's ranges: " + "; ".join(bad)
+            + ". Widen the ranges, or build the spec from the candidates "
+            "(ProblemSpec.from_candidates)."
+        )
 
 
 def _grid_matches(grid: torch.Tensor, X: torch.Tensor) -> list[int]:

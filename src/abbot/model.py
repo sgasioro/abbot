@@ -10,8 +10,8 @@ correlated outputs (``MultiTaskGPConstructor``), and a multi-source GP for specs
 with source variables (``MultiSourceGPConstructor``). Involved SBI
 construction (correlated ``MultiTaskGP``/LCM, per-shot posterior variance via
 ``train_Yvar``, custom GPyTorch likelihoods) plugs in here WITHOUT touching the
-loop or the policy. NN surrogates are botorch ``EnsembleModel`` subclasses (see
-``abbot.models.ensemble``), not a parallel interface.
+loop or the policy. NN surrogates are botorch models too: :mod:`abbot.nn`
+(experimental) wraps your own network as an ensemble, MC dropout or a deep kernel.
 
 Modeled on Xopt's ``ModelConstructor`` ABC.
 """
@@ -364,19 +364,23 @@ class EnsembleConstructor:
     PROOF that the ``ModelConstructor`` seam is not GP-coupled — not a
     production neural-network surrogate (MC-dropout, deep kernels, calibration are later).
 
+    For a real network surrogate, use :mod:`abbot.nn`. This one can't be updated on
+    new values (``supports_conditioning = False``), so InfoBAX and SwitchBAX refuse it.
+
     ``provides_uq`` is honest and load-bearing (it feeds ``check_uq_pairing``):
-      - ``n_members > 1`` -> ``"samples"`` (coherent member draws; the InfoBAX/
-        SwitchBAX contract), which also exposes a (member-spread) variance.
+      - ``n_members > 1`` -> ``"samples"`` (coherent member draws; MeanBAX and
+        PS-BAX), which also exposes a (member-spread) variance.
       - ``n_members == 1`` -> ``"point"`` (a single deterministic net; only MeanBAX/
         greedy may pair with it).
-    An ensemble's spread is NOT calibrated variance, so it never claims that tier —
-    pairing one with ``UncertaintySampling`` is correctly refused.
+    An ensemble's spread is NOT calibrated variance, so it never claims that tier:
+    pairing one with ``UncertaintySampling`` warns.
 
     ``Yvar`` is ignored: an ensemble represents noise through member disagreement,
     not an explicit per-point variance.
     """
 
     handles_missing = True  # unmeasured outputs are left out of the loss
+    supports_conditioning = False  # InfoBAX / SwitchBAX: use abbot.nn instead
 
     def __init__(
         self,

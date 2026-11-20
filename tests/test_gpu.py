@@ -628,3 +628,33 @@ def test_the_agent_and_the_ui_fit_on_the_gpu(tmp_path):
     state.start_campaign()
     campaign = state.controller.campaign
     assert campaign.device.type == "cuda"
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("kind", ["ensemble", "dropout", "deep kernel"])
+def test_network_models_on_the_gpu(kind):
+    from abbot.nn import (
+        DeepKernelConstructor,
+        MCDropoutConstructor,
+        NetEnsembleConstructor,
+    )
+
+    def make_net(d, m):
+        return torch.nn.Sequential(
+            torch.nn.Linear(d, 32), torch.nn.ReLU(), torch.nn.Dropout(0.1), torch.nn.Linear(32, m)
+        )
+
+    spec = _bax_spec()
+    bounds = spec.bounds_tensor()
+    ctor = {
+        "ensemble": lambda: NetEnsembleConstructor(make_net, n_members=3, epochs=100, bounds=bounds),
+        "dropout": lambda: MCDropoutConstructor(make_net, n_samples=4, epochs=100, bounds=bounds),
+        "deep kernel": lambda: DeepKernelConstructor(make_net, epochs=50, bounds=bounds),
+    }[kind]()
+    torch.manual_seed(3)
+    policy = BAXPolicy(TopK(k=3, output="f", largest=False), "InfoBAX",
+                       n_candidates=128, n_posterior_samples=4)
+    c = _gpu_campaign(spec, policy, ctor)
+    _steps(c, _Bowl(), 3)
+    _steps(c, _Bowl(), 1, n=2)
+    assert _on_gpu(c.current_model())

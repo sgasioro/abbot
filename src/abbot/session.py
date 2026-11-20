@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -83,11 +84,25 @@ def check_uq_pairing(policy: Policy, model_constructor: ModelConstructor) -> Non
     the object that determines it — so the guardrail can't be defeated by a caller
     passing a string that disagrees with their model. E.g. a point-estimate NN
     constructor + ``UncertaintySampling`` (needs calibrated variance) is refused; the
-    same NN + ``MeanBAX`` (needs only a point prediction) is fine.
+    same NN + ``MeanBAX`` (needs only a point prediction) is fine. A model with
+    posterior samples (an ensemble) and a policy wanting calibrated variance runs
+    with a warning: the spread across samples ranks designs, uncalibrated.
     """
     required = policy.uq_requirement
     provided = getattr(model_constructor, "provides_uq", "calibrated_variance")
-    if provided not in _SATISFIES[required]:
+    if required == "calibrated_variance" and provided == "samples":
+        # A spread across samples (ensemble members, dropout masks) isn't calibrated,
+        # but ranking by it is a standard choice: allowed, with a warning.
+        name = getattr(policy, "strategy", type(policy).__name__)
+        msg = (
+            f"{name} reads the model's uncertainty as calibrated; "
+            f"{type(model_constructor).__name__} gives a spread across posterior "
+            "samples, which isn't. Its uncertainty will drive the choices anyway, so "
+            "check how far to trust it (Campaign.check(), or a held-out run)."
+        )
+        warnings.warn(msg, UserWarning, stacklevel=3)
+        logger.warning("%s", msg)
+    elif provided not in _SATISFIES[required]:
         _NEEDS = {
             "point": "a point prediction",
             "samples": "coherent posterior samples",
@@ -98,6 +113,16 @@ def check_uq_pairing(policy: Policy, model_constructor: ModelConstructor) -> Non
             f"this model only provides {_NEEDS[provided]}. Use a model that provides "
             f"{_NEEDS[required]} (a Gaussian-process surrogate does), or pick a method "
             "that needs less (e.g. a greedy/MeanBAX policy only needs a point prediction)."
+        )
+    if getattr(policy, "needs_conditioning", False) and not getattr(
+        model_constructor, "supports_conditioning", True
+    ):
+        strategy = getattr(policy, "strategy", type(policy).__name__)
+        raise ValueError(
+            f"{strategy} updates the model as if it had seen each posterior sample's "
+            f"values, and {type(model_constructor).__name__} can't be updated. Use a GP, "
+            "or a network from abbot.nn (NetEnsembleConstructor, MCDropoutConstructor, "
+            "DeepKernelConstructor), or a strategy that doesn't need it (MeanBAX, PSBAX)."
         )
 
 
@@ -423,7 +448,8 @@ def fit_model(
     Threads per-point noise through when every clean record carries it
     (``canonical_Yvar`` -> ``train_Yvar``); otherwise ``Yvar`` is ``None`` and the
     model infers the noise level, as before. The training data go to ``device``
-    (the CPU by default) before ``model_constructor.build`` sees them.
+    (the CPU by default) before ``model_constructor.build`` sees them, with
+    gradients on.
     """
     X = history.clean.designs.double().to(device)
     Y = canonical_Y(history, spec).to(device)
@@ -442,7 +468,10 @@ def fit_model(
                 "missing (it doesn't set handles_missing = True). Use a built-in model, "
                 "or fit each output on the runs that measured it (abbot.model.measured)."
             )
-    return model_constructor.build(X, Y, Yvar.to(device) if Yvar is not None else None)
+    # Fitting needs gradients, also when the caller is inside torch.no_grad() (e.g.
+    # reading current_model(), which fits lazily, to predict).
+    with torch.enable_grad():
+        return model_constructor.build(X, Y, Yvar.to(device) if Yvar is not None else None)
 
 
 # --- serializable snapshot ----------------------------------------------------
@@ -676,6 +705,8 @@ class Campaign:
             logger.info("Using default model %s.", type(model_constructor).__name__)
         # Guardrail reads the UQ capability off the real constructor, not a string.
         check_uq_pairing(policy, model_constructor)
+        if getattr(policy, "has_fixed_candidates", False):
+            policy.candidate_grid(spec)  # candidates outside the spec's ranges: say so now
         self.spec = spec
         self.policy = policy
         self.model_constructor = model_constructor
@@ -795,14 +826,18 @@ class Campaign:
             return
         if self.spec.has_travel_limits:
             return  # space-filling seeds can't be reached; _propose asks for a start
-        designs = default_initial_designs(self.spec)
+        from_policy = getattr(self.policy, "initial_designs", None)
+        designs = from_policy(self.spec) if callable(from_policy) else None
+        where = " from the candidates"
+        if designs is None:
+            designs = default_initial_designs(self.spec)
+            where = " (2 at the target)" if self.spec.sources else ""
         self._seed_queue.extend(list(designs))
         self._save_queue()
-        at_target = " (2 at the target)" if self.spec.sources else ""
         logger.info(
             "Queued %d default initial designs%s; pass Campaign(initial_designs=...) to "
             "choose them, or an empty tensor for a random cold start.",
-            len(designs), at_target,
+            len(designs), where,
         )
 
     def load_history(self, history: History) -> None:

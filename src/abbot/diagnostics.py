@@ -199,7 +199,7 @@ def check(history: History, spec: ProblemSpec, model: Model | None) -> CheckRepo
                             "in this many dimensions. If only some inputs matter, "
                             "consider TuRBO (GestGeneratorPolicy with Xopt's "
                             "ExpectedImprovementGenerator, turbo_controller=\"optimize\") "
-                            "or a neural-network surrogate (EnsembleConstructor)."))
+                            "or a neural-network surrogate (abbot.nn, experimental)."))
     if model is None:
         if n:
             add(Finding("warning", "No model: the fit failed (see the log)."))
@@ -358,6 +358,8 @@ def _lengthscales(gp, row: int | None, spec: ProblemSpec) -> dict[str, float]:
     their lengthscales aren't distances."""
     from gpytorch.kernels import MaternKernel, RBFKernel
 
+    if getattr(gp, "feature_net", None) is not None:
+        return {}  # a deep kernel (abbot.nn): its lengthscales are over learned features
     names = spec.variable_names
     categorical = set(spec.categorical_indices())
     out: dict[int, float] = {}

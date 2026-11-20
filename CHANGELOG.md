@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.4.0a1
 
+A pre-release (`pip install abbot==0.4.0a1`, or `pip install --pre abbot`). Runs
+that didn't measure every output can be recorded, and `abbot.nn` (experimental)
+uses your own neural network as the model. One breaking change, below.
+
+- **Breaking: InfoBAX and SwitchBAX refuse a model that can't be updated** when the campaign
+  is set up (a constructor with `supports_conditioning = False`, such as the toy
+  `EnsembleConstructor`), instead of failing at the first proposal. If you paired the toy
+  `EnsembleConstructor` with SwitchBAX, use `abbot.nn.NetEnsembleConstructor`, or
+  MeanBAX / PS-BAX.
 - **Runs that didn't measure every output:** give the missing one as `None`
   (`ingest({"yield": 0.82, "purity": None})`, `null` from the agent, an empty box
   in the UI, an empty CSV cell). Every output must still be named, so a typo
@@ -12,6 +21,38 @@
   so far, the observed front and fallbacks without a model skip runs missing an
   objective or a constrained output. `correct` fills a value in later. Output
   constraints ignore a gap in an output they don't use.
+- **Neural-network surrogates (experimental):** `abbot.nn` wraps your own
+  `torch.nn.Module` as a model: `NetEnsembleConstructor` (a deep ensemble),
+  `MCDropoutConstructor` (dropout masks shared across designs, so each sample is
+  one function) or `DeepKernelConstructor` (a GP on the network's features). abbot
+  scales inputs and outputs, trains with warm starts, skips missing outputs, and
+  `featurize=` handles inputs that aren't numbers. InfoBAX and SwitchBAX work with
+  the ensemble and dropout models by fine-tuning a copy on each posterior sample's
+  values (after nn-bax), measured against a matching fine-tune on the data alone.
+  US and the BO policies run on the ensemble and dropout models too, with a warning
+  that the spread across samples isn't calibrated. New notebook:
+  `examples/06_neural_surrogates.ipynb`, with a "bring your own algorithm and
+  network" section. Predictions go through the network in chunks (`chunk_size`),
+  and an ensemble whose members agree everywhere (the same pretrained weights for
+  each) warns.
+- **A single network** (`NetEnsembleConstructor(make_net, n_members=1)`) is a
+  model with no uncertainty, for MeanBAX: it measures inside the set the
+  network predicts, at random, and when that has nothing new, the design farthest
+  from the runs so far.
+- **A fixed set of designs** (`BAXPolicy(candidates=...)`): a campaign's default
+  starting runs now come from the candidates, spread out, instead of space-filling
+  points over the spec's ranges that might not be in the set.
+  `ProblemSpec.from_candidates(library, names=, outputs=)` builds the spec from the
+  set (each input's range from its column), and candidates outside the spec's
+  ranges are refused when the campaign is set up.
+- **`BAXPolicy(in_set=...)`** chooses which design MeanBAX, SwitchBAX and PS-BAX
+  measure inside the target set: `"uncertainty"` (the default), `"random"`,
+  `"farthest"`, or your own function.
+- **`current_model()` inside `torch.no_grad()`** fits: the fit runs with gradients
+  on. Before, a GP fit there failed, and the campaign took a random design.
+- **InfoBAX with an ensemble** takes distinct members as its samples, not repeated
+  draws of the same ones, and uses a model's own `observation_noise_variance` when
+  it has one.
 
 ## 0.3.0
 

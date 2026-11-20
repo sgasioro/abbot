@@ -21,7 +21,7 @@ without a deprecation period.
 | Training targets | `Campaign(..., targets=)` / `Targets` (`(history, spec) -> Y` or `(Y, Yvar)`), `apply_targets` |
 | Blocking driver | `run_campaign(spec, experiment, *, n_shots, batch_size, ...)`, `drive(campaign, experiment, evaluate, *, n_total, batch_size, on_persistent_fault, should_continue)` (the one blocking loop; `run_campaign` and the UI `RunController` run on it), `PersistentFaultError` |
 | Spec-derived defaults | `default_policy`, `default_constructor`, `default_initial_designs`, `ProblemSpec.sample_designs` — what `Campaign(spec)` / `run_campaign` use when `policy` / `model_constructor` / `initial_designs` / `evaluate` are omitted |
-| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
+| Policies | `Policy` (protocol: `suggest(history, spec, model, n, *, pending)` / `ingest`; optional `fixed=`, `last_acquisition_value`), `SimpleBO`, `ParetoBO`, `UncertaintySampling`, `BAXPolicy` (+ `candidates=`, `noise_at=`, `in_set=`, `candidate_grid`, `collected_count`), `abbot.policy.condition_on_pending` |
 | BAX goals | `Goal` (protocol; optional `bind(spec)` to resolve output names), `PercentileSet`, `BandIntersection`, `Wishlist`, `FunctionGoal`, `LevelSet`, `TopK`, `goals_from_spec` |
 | Surrogate seam | `ModelConstructor` (protocol: `build` + `provides_uq`), `SingleTaskGPConstructor`, `ModelListConstructor`, `EnsembleConstructor`, `MultiSourceGPConstructor` (provisional; formerly `MultiFidelityGPConstructor`, kept as an alias), `default_constructor` |
 | Experiment seams | `Experiment` (protocol: `run(design) -> outputs or observation`, optional `cost(design)`), `BatchExperiment` (protocol: `run_batch(designs) -> list`, for hardware that runs several at once), `Supervisor(faults=, stops=)` (fault checks and stop rules, see [Supervisors](#supervisors-faults-and-stops); any callable `(history) -> Verdict` is also accepted), `Verdict`, `ManualExperiment`, `TensorExperiment`, `CommandExperiment(command, spec=, timeout=, cwd=, env=, shell=)` (a command run for each design, `{name}` for each value, printing its outputs as JSON on its last line; see [A command as the experiment](#a-command-as-the-experiment)); mocks for offline runs: `MockAnalyticExperiment` (a seeded formula over any spec; with sources, cheap runs are biased and `cost` simulates a cost ratio), `MockDatasetExperiment` (replays known results for a fixed set of designs; `.candidates`, `.from_history`) |
@@ -52,6 +52,10 @@ on them.
   and the constructors' `prior_mean=`. New.
 - **Correlated outputs** — `default_constructor(spec, correlated=True)`,
   `MultiTaskGPConstructor(spec, rank=)`. New.
+- **Neural-network surrogates** — `abbot.nn` (`NetEnsembleConstructor`,
+  `MCDropoutConstructor`, `DeepKernelConstructor`, `adam`). Experimental: the
+  options and defaults will move as people use it. See
+  [Neural-network surrogates](#neural-network-surrogates-experimental). New.
 - **GPU** — `Campaign(device=)`, `run_campaign(device=)`, `Campaign.device`,
   `abbot.model.model_device`, and `device=` on `abbot.session.fit_model` and
   `abbot.usability.fit_usability`. See [Fitting on a GPU](#fitting-on-a-gpu). New.
@@ -699,7 +703,7 @@ reuses the cached fit, so it costs one fit at most.
   the output's shortest: the output hasn't shown a dependence on that input.
 - **Runs vs. inputs:** fewer clean runs than inputs leaves the model guessing.
   With 15 or more inputs and fewer than 10 runs per input, a note points to TuRBO
-  (`GestGeneratorPolicy`) and neural-network surrogates (`EnsembleConstructor`).
+  (`GestGeneratorPolicy`) and neural-network surrogates (`abbot.nn`).
 - **Coverage:** the fit checks read any BoTorch exact GP (the builtin constructors,
   model lists, categorical and source-aware GPs). For other models only the run
   counts apply.
@@ -938,7 +942,11 @@ specs with sources; use the JSON spec.
 what the posterior actually supplies (`"calibrated_variance"` for a GP, `"samples"`
 for an ensemble, `"point"` for a bare net — the loop enforces the match). A different
 kernel, a fully-Bayesian GP, or a deep ensemble all slot in this way; see
-`examples/custom_models.py`. `EnsembleConstructor` is the builtin non-GP example. The GP constructors take
+`examples/custom_models.py`. For a neural network, `abbot.nn` does the wrapping (see
+[Neural-network surrogates](#neural-network-surrogates-experimental));
+`EnsembleConstructor` is a toy one. InfoBAX and SwitchBAX update the model on each
+posterior sample's values (`condition_on_observations`); a constructor whose models
+can't sets `supports_conditioning = False`, and those two strategies refuse it. The GP constructors take
 `kernel="default"` (BoTorch's choice) or `kernel="matern52"` (scaled ARD Matern-5/2,
 what multibax's sklearn GPs used).
 
@@ -946,6 +954,190 @@ On a GPU campaign, `build` receives `X`, `Y` and `Yvar` on the campaign's device
 and the model it returns should live there too: make any tensor of your own (bounds,
 a mean's parameters, a kernel's indices) on `X.device`. See
 [Fitting on a GPU](#fitting-on-a-gpu).
+
+## Neural-network surrogates (experimental)
+
+```python
+import torch
+from abbot.nn import NetEnsembleConstructor
+
+def make_net(d_in, d_out):
+    return torch.nn.Sequential(
+        torch.nn.Linear(d_in, 128), torch.nn.ReLU(),
+        torch.nn.Linear(128, 128), torch.nn.ReLU(),
+        torch.nn.Linear(128, d_out),
+    )
+
+model = NetEnsembleConstructor(make_net, n_members=5, bounds=spec.bounds_tensor())
+campaign = Campaign(spec, BAXPolicy(goal, "InfoBAX"), model)
+```
+
+You write the network; `abbot.nn` does the rest. To start, run
+`examples/06_neural_surrogates.ipynb`. `make_net(d_in, d_out)` returns a
+`torch.nn.Module` from a batch of inputs `(N, d_in)` to `(N, d_out)`; abbot converts
+it to float64, moves it to the campaign's device, and:
+
+- **scales the inputs** to the unit box given by `bounds` (else the training data's
+  range at each fit), or hands the raw designs to your `featurize(X)` instead: for
+  an index variable into a table of structures, say, it returns the network's input
+  (a tensor, a batch of graphs). `d_in` is then the number of design columns, and
+  your network takes whatever `featurize` returns;
+- **standardizes each output** and trains on the runs that measured it (a gap is
+  left out of the loss);
+- **trains** `epochs` from fresh weights, and later fits from the last fit's weights
+  for `warm_epochs` (`None`: always fresh). The default trainer is full-batch Adam
+  on the squared error (`lr=1e-2`, `weight_decay`, `batch_size`);
+  `train=fn` replaces it (see [Your own training loop](#your-own-training-loop);
+  `abbot.nn.adam(...)` builds the default);
+- **estimates the measurement noise** as each output's mean squared residual, at
+  least `min_noise` of its variance; `noise=` (a variance in output units, one per
+  output) or per-run `Yvar` set it instead. InfoBAX's entropies include it.
+
+Three ways to get uncertainty from the network:
+
+| | Uncertainty from | Works with | InfoBAX updates by |
+| --- | --- | --- | --- |
+| `NetEnsembleConstructor(make_net, n_members=5)` | independently initialized copies | MeanBAX, PS-BAX, SwitchBAX, InfoBAX | fine-tuning |
+| `MCDropoutConstructor(make_net, n_samples=32)` | dropout left on; needs `torch.nn.Dropout` layers | the same | fine-tuning |
+| `DeepKernelConstructor(make_net, n_features=4)` | a GP on the network's features | every policy | exact (it's a GP) |
+| `NetEnsembleConstructor(make_net, n_members=1)` | none: one network's prediction | MeanBAX | — |
+
+- **One network, no uncertainty.** With `n_members=1`, MeanBAX runs the goal on
+  the network's prediction and measures inside the predicted set, at random by
+  default (`BAXPolicy(in_set=...)`, see [BAX details](#bax-details)); when the set
+  has nothing new, it measures the design farthest from the runs so far. With
+  nothing to say where the model is unsure, it explores less well than the
+  ensemble.
+- **A posterior sample is one function.** For an ensemble it's one member. For
+  dropout it's one fixed mask, shared by every design it's evaluated at.
+  `torch.nn.Dropout` draws a fresh mask for every row of a batch, and fixing the
+  random seed doesn't change that: it makes a run repeatable, but a design's value
+  still depends on where it sits in the batch and what else is in it. A "sample"
+  drawn that way is close to independent noise at each design, and the goal (and
+  InfoBAX's fantasy values) would run on it. abbot applies one mask per layer
+  instead, over the layer's last dimension: the features for fully connected and
+  graph networks (`(N, features)`, `(atoms, features)`). For a convolutional layer
+  `(N, C, H, W)` that's the width, not the channels, so such a network's masks
+  aren't the usual channel dropout.
+- **Dropout's spread has a floor.** The dropout rate is fixed, so the spread
+  doesn't shrink fully where there's data (a known limit of MC dropout as a
+  posterior; Osband, 2016). In a check with data on half of one input, dropout's
+  spread was 7–8× larger away from the data, against 44× for an ensemble, and
+  near the data about ten times the ensemble's. InfoBAX scores a design by how
+  much a run would shrink the uncertainty, so this floor compresses its signal:
+  on FeCoNi, InfoBAX with dropout did worst of all the pairings we tried, and
+  MeanBAX with dropout better. For InfoBAX, prefer the ensemble; dropout is the
+  cheap option for MeanBAX or PS-BAX, or for a network too big to train several
+  copies of, and its rate is worth tuning.
+- **InfoBAX by fine-tuning.** InfoBAX asks how much a run would tell about the
+  target set: the entropy at each design now, minus its average after the model is
+  updated on one posterior sample's values at that sample's target set. A GP does
+  the update exactly. An ensemble or dropout model fine-tunes a copy on the data
+  plus those values for `refit_epochs` (default 100), as
+  nn-bax does. Fine-tuning on the same data
+  for longer changes the spread by itself (members keep converging), so by default
+  the "now" entropy comes from a matching fine-tune on the data alone
+  (`control=True`, one extra fine-tune per proposal); `control=False` uses the
+  model as it is, nn-bax's version. The samples are the ensemble's members (or
+  dropout masks), the first `n_posterior_samples` of them: each is one fine-tune,
+  so a proposal costs `n_members + 1` of them. A batch (`n > 1`) fine-tunes once
+  more per pick, on the earlier picks at the model's mean.
+- **Fine-tuning is an approximate update.** Fine-tuned on one sample's values,
+  the other members usually move toward that sample, narrowing the spread there,
+  but not always: in our checks, about one time in five the spread at those designs
+  came out wider than after the matching fine-tune on the data alone.
+  `refit_epochs` trades this off against time.
+- **The entropies are Gaussian,** from each design's predicted variance. Exact for
+  a GP; for an ensemble or dropout, it treats the spread of a handful of samples
+  as Gaussian. With 5 members the variance itself is noisy; split predictions
+  (two groups of members) read as more uncertain than they are.
+- **US and the BO policies read the uncertainty as calibrated.** With the ensemble
+  and dropout models they run, ranking by the spread across samples, and warn
+  when the campaign is set up: that spread isn't calibrated (with few members it's
+  often too narrow), so `check()` or a held-out run is worth a look. The deep
+  kernel is a GP and works with all of them without a warning; with few runs its network can overfit, which
+  shows as overconfidence. Keep it small, or use `weight_decay`.
+- **Bringing your own algorithm:** any function from the predicted values on the
+  candidates to the indices it selects is a goal (`FunctionGoal(lambda f, X:
+  my_algorithm(f))`). The designs are a grid over the spec's ranges, or your own
+  set (`candidates=`, with `ProblemSpec.from_candidates`; see
+  [BAX details](#bax-details)). The notebook has a worked
+  example. The goal sees values on a fixed candidate set only; an algorithm that
+  queries the function at points of its own choosing (an optimizer's path) needs
+  continuous BAX, not built yet.
+- **Pretrained weights:** members started from the same weights and trained full
+  batch stay identical, with no spread. `NetEnsembleConstructor` warns when its
+  members agree everywhere; give each a different random part (a fresh head), or
+  use `batch_size=`.
+- **Memory and precision.** Predictions go through the network `chunk_size`
+  designs at a time (default 4096). abbot converts the network to float64: fine
+  on a CPU and for small networks, but most consumer GPUs run float64 many times
+  slower than float32, so a large network would be slow. Training in float32
+  inside the wrapper is a possible addition.
+- **Defaults are starting points.** They were checked only on two-input problems
+  with up to about a hundred runs. Your network, its
+  training and `refit_epochs` are yours to tune; that's the point of bringing your
+  own.
+
+### Your own training loop
+
+`NetEnsembleConstructor` and `MCDropoutConstructor` take `train=fn`, which replaces
+the default trainer:
+
+```python
+def train(net, X, Y, epochs):
+    """Fit net in place; return nothing."""
+    opt = torch.optim.AdamW(net.parameters(), lr=3e-3, weight_decay=1e-4)
+    seen = ~Y.isnan()                                   # outputs a run didn't measure
+    net.train()
+    for _ in range(epochs):
+        for rows in torch.randperm(len(X), device=X.device).split(32):
+            opt.zero_grad()
+            loss = my_loss(net(X[rows])[seen[rows]], Y[rows][seen[rows]])
+            loss.backward()
+            opt.step()
+
+model = NetEnsembleConstructor(make_net, train=train, bounds=spec.bounds_tensor())
+```
+
+**What it gets:**
+
+- `net`: abbot's wrapper around your network. It takes raw designs and does the
+  input scaling (or your `featurize`) and the chunking, so call `net(X)`.
+  `net.parameters()` are your network's; your own module is `net.net`.
+- `X`: the training designs `(n, d)`, raw, float64, on the campaign's device.
+- `Y`: the outputs, standardized per output, `(n, outputs)`, with NaN where a run
+  didn't measure an output. Mask those in the loss, or it's NaN. `net(X)`
+  predicts in the same standardized units.
+- `epochs`: how long to train. abbot passes `epochs` for a fit from fresh
+  weights, `warm_epochs` for a later fit starting from the last weights, and
+  `refit_epochs` for InfoBAX's fine-tunes. Use it: a loop that ignores it makes
+  every fine-tune cost a full fit, and its control fine-tune no longer matches
+  the others.
+
+**When it's called:**
+
+- Once per member at every fit (once in all for dropout).
+- For InfoBAX (and SwitchBAX when it switches), on copies, every proposal: once
+  per member for each posterior sample's fine-tune on the data plus that sample's
+  values, and once more per member for the control. A slow loop multiplies
+  there; MeanBAX and PS-BAX only train at each fit.
+- For a batch (`n > 1`), once more per member for each pick after the first.
+
+**Keep to:**
+
+- Train in place. Don't replace, wrap, or convert the module: it stays float64
+  on the campaign's device.
+- Nothing carries over between calls except the weights (the warm start). Make the
+  optimizer inside the call.
+- For early stopping on held-out runs, split them from `X` and `Y` yourself.
+- Setting `net.train()` is fine: abbot switches to eval to predict, and applies
+  dropout's sampling masks itself.
+
+`DeepKernelConstructor` has no `train=`: it trains the network and the GP
+together on the GP's marginal likelihood with Adam (`epochs`, `lr`,
+`weight_decay`). A `train=` for it, and telling the loop which kind of call it is
+(fit, warm start, fine-tune), are possible additions.
 
 ## Fitting on a GPU
 
@@ -1057,6 +1249,31 @@ explicitly if you need it pinned.
   function values, not measurements.
 - **US / MeanBAX / PS-BAX compare outputs in relative units:** each output's posterior std
   is divided by its observed spread before averaging, so units don't decide.
+- **A fixed set of designs.** By default BAX searches a grid over the spec's
+  ranges (`n_candidates`). When only certain designs exist (the compositions on a
+  wafer, a list of structures), pass them as `candidates=` (one row per design, in
+  the spec's units and input order) and build the spec from them:
+
+  ```python
+  spec = ProblemSpec.from_candidates(library, names=["c1", "c2"],
+                                     outputs=[OutputSpec(name="y", direction="OBSERVE")])
+  policy = BAXPolicy(goal, "InfoBAX", candidates=library)
+  ```
+
+  `from_candidates` takes each input's range from its column (whole numbers as an
+  integer input) from a tensor with `names=`, a `{name: values}` mapping or a
+  pandas DataFrame. The campaign's starting runs come from the candidates, spread
+  out by farthest-point selection (`BAXPolicy.initial_designs`), so every run is
+  one you can make; `initial_designs=` still overrides. Candidates outside the
+  spec's ranges are refused when the campaign is set up, naming the column.
+- **Which design inside the target set.** MeanBAX, SwitchBAX (while measuring
+  inside its set) and PS-BAX pick by `BAXPolicy(in_set=...)`: `"uncertainty"` (the
+  most uncertain design, the default), `"random"`, `"farthest"` (the design
+  farthest from the runs so far, measured or in flight, in the unit box), or your
+  own `fn(X_set, taken, uncertainty) -> scores`, the highest picked (`taken` is
+  `None` before any run). A model with no uncertainty (a single network,
+  `NetEnsembleConstructor(make_net, n_members=1)`) defaults to `"random"`, and
+  where MeanBAX would fall back to US it measures the farthest design instead.
 - **A design isn't proposed twice by default.** Grid points already measured, or in
   flight, are left out. `BAXPolicy(requery=True)` leaves out only those in flight,
   so a noisy measurement can be repeated where it matters most (US and InfoBAX
@@ -1068,7 +1285,9 @@ explicitly if you need it pinned.
 - **Misconfiguration fails loud.** A policy that can't serve the spec (e.g.
   `ParetoBO` on a single-objective spec, too many enumerated combinations to
   enumerate, a model whose uncertainty is too weak for the policy) raises immediately — it
-  will not silently do something else. The UQ guardrail reads the capability off
+  will not silently do something else. One pairing warns instead: a model with
+  posterior samples (an ensemble) and a policy that wants calibrated variance
+  (US, `SimpleBO`, `ParetoBO`) run, ranking by the samples' spread. The UQ guardrail reads the capability off
   the actual `ModelConstructor` (`provides_uq`), so it can't be bypassed by a
   mismatched argument — `Campaign` has no `model_uq` parameter.
 - **Experiment errors retry, then halt.** If `experiment.run` raises inside
@@ -1115,7 +1334,7 @@ explicitly if you need it pinned.
 
 ## Deprecation policy (pre-1.0)
 
-- `abbot` is `0.3.0` — pre-release. The **Stable** tier above is the compatibility
+- `abbot` is `0.4.0a1` — pre-release. The **Stable** tier above is the compatibility
   promise; **Provisional** may change on any release; **Private** has no promise.
 - Soft-deprecated aliases (`ObjectiveSpec`, `objectives=`, `constraints=`,
   `InequalitySpec`, `_safe_fit`, `_ensure_grid`) are kept at least one minor version after a replacement ships.
@@ -1132,6 +1351,17 @@ a feasibility stopping rule, a run-level JSON serializer including the SBI `aux`
 - **Correlated outputs with sources, and with prior means.** One model over
   outputs *and* sources, and a prior mean per output in the correlated model;
   see [Correlated outputs](#correlated-outputs).
-- **PFN / deep-kernel surrogates — research models, same seam.** Both are a custom
-  `ModelConstructor` returning a botorch `Model`; built when a problem needs them,
-  not speculatively.
+- **More models in `abbot.nn`: a random forest.** Each tree is one posterior
+  sample (a BoTorch `EnsembleModel`), so the BAX strategies would work unchanged;
+  InfoBAX would update it by refitting on the data plus the sample's values. Not
+  for the BO policies (trees have no gradients to follow). Needs scikit-learn as
+  an optional install.
+- **Training an ensemble's members together.** Today `abbot.nn` trains, predicts
+  with and fine-tunes the members one after another. Stacking them into one batched
+  model (`torch.func`'s `stack_module_state` and `vmap`) would do each in one pass:
+  much faster on a GPU. It would cover the default trainer, with the loop kept for
+  a custom `train=` and for networks `vmap` can't take (BatchNorm, in-place
+  operations).
+- **PFN surrogates — a research model, same seam.** A custom `ModelConstructor`
+  returning a botorch `Model`; built when a problem needs it, not speculatively.
+  (Deep kernels are in `abbot.nn`.)

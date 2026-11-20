@@ -37,6 +37,7 @@ is shown.
 | never retry, ask me at once | `Campaign(spec, max_retries=0)`. |
 | stop rather than take a random probe when the model fails | By default a failed fit or proposal takes one random design and says so in `last_warning`. To stop instead, opt in with `Campaign(spec, on_model_error="raise")`. [Failure behavior](API.md#failure-behavior) |
 | see errors from my `on_step` hook | By default they're logged and the campaign carries on. To have them raised, opt in with `Campaign(spec, on_step=hook, hook_errors="raise")`. |
+| choose only from a fixed set of designs (a library) | `spec = ProblemSpec.from_candidates(library, names=[...], outputs=[...])`, then `BAXPolicy(goal, candidates=library)`. The starting runs come from the library. [BAX details](API.md#bax-details) |
 | let BAX measure a design again | `BAXPolicy(goal, requery=True)`: only designs in flight are left out. [BAX details](API.md#bax-details) |
 | tell abbot a region gives nothing usable | `per_shot(is_dark, bad_region="dark")` in `faults=`, or a rule returning `Verdict(bad_region=True)`; proposals then steer away. [Faults and bad regions](API.md#faults-and-bad-regions) |
 | withdraw a design I won't run | `campaign.cancel(c.id)`. |
@@ -85,4 +86,5 @@ is shown.
 | use an Xopt generator (TuRBO, Nelder-Mead, …) in abbot | `Campaign(spec, GestGeneratorPolicy(NelderMeadGenerator))` from `abbot.interop.xopt`. [Xopt's generators](API.md#xopts-generators-in-abbots-loop) |
 | use abbot inside Xopt | `CorePolicyGenerator(spec)` from `abbot.interop.xopt`. |
 | account for runs that cost different amounts | `SimpleBO(cost_model=...)`. [Column contract → cost and stopping](API.md#column-contract) |
+| use my own neural network as the model | `abbot.nn` (experimental): `NetEnsembleConstructor(make_net)`, `MCDropoutConstructor(make_net)` or `DeepKernelConstructor(make_net)`, with `make_net(d_in, d_out)` returning your `torch.nn.Module`. abbot scales, trains, warm-starts and samples; InfoBAX works by fine-tuning. `featurize=` for inputs that aren't numbers. Start from `examples/06_neural_surrogates.ipynb`. [Neural-network surrogates](API.md#neural-network-surrogates-experimental) |
 | fit on a GPU | `Campaign(spec, device="cuda")` (or `run_campaign(..., device="cuda")`; in the UI or the agent's server, `--device cuda`), with a CUDA build of torch. The history, the store and the candidates stay on the CPU. Worth it from a few hundred runs, or for BAX over thousands of candidates. [Fitting on a GPU](API.md#fitting-on-a-gpu) |
